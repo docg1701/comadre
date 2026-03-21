@@ -4,9 +4,6 @@
 # BMAD framework (vendored, not part of project source)
 _bmad/
 
-# BMAD generated output
-_bmad-output/
-
 # Python
 __pycache__/
 *.py[cod]
