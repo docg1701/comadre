@@ -45,7 +45,7 @@ development_status:
   # Epic 1: Audio Generation API
   epic-1: in-progress
   1-1-project-scaffolding-quality-tooling: done
-  1-2-configuration-structured-logging: backlog
+  1-2-configuration-structured-logging: done
   1-3-voice-discovery-validation: backlog
   1-4-kokoclone-tts-service-wrapper: backlog
   1-5-exception-handling-request-schemas: backlog

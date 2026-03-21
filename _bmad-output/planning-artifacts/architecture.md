@@ -590,7 +590,7 @@ async def generate_speech(...):
 ```python
 # config.py — single source of truth
 class Settings(BaseSettings):
-    api_key: str
+    api_key: SecretStr
     default_voice: str = "default"
     workers: int = 1
     port: int = 8000
