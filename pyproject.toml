@@ -1,0 +1,46 @@
+[project]
+name = "cumadre"
+version = "0.1.0"
+description = "Custom Multi-voice Audio Driver — OpenAI-compatible TTS API powered by KokoClone"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Galvani Filho", email = "galvani4987@gmail.com" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic-settings>=2.7",
+    "soundfile>=0.13",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.3,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+    { include-group = "type-check" },
+]
+lint = ["ruff>=0.9", "pre-commit>=4.0"]
+test = ["pytest>=8.3", "pytest-asyncio>=0.25", "httpx>=0.28", "coverage>=7.6"]
+type-check = ["mypy>=1.14"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "C4", "PTH", "RUF"]
+ignore = []
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

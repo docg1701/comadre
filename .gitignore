@@ -11,10 +11,17 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.eggs/
 *.egg
 .venv/
 venv/
 env/
+
+# Type checking
+.mypy_cache/
+
+# Linting
+.ruff_cache/
 
 # Docker
 .docker/
@@ -45,6 +52,7 @@ Thumbs.db
 !voices/**/*.wav
 
 # Model cache
+models/
 *.onnx
 *.bin
 *.safetensors
