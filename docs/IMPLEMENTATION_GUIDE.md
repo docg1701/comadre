@@ -1,105 +1,105 @@
-# CUMADRE — Guia de Implementacao
+# CUMADRE — Implementation Guide
 
 > **CUMADRE** = **Cu**madre **M**anda **A**udio **D**ireto, **R**apido e **E**ficiente
 
-Servico self-hosted de text-to-speech com clonagem de voz, otimizado para respostas automaticas em portugues brasileiro. Integra-se a plataformas de atendimento ao cliente via n8n para converter respostas textuais de LLMs em mensagens de audio com voz humana clonada.
+Self-hosted text-to-speech service with voice cloning, optimized for automated customer service responses in Brazilian Portuguese. Integrates with customer support platforms via n8n to convert LLM text responses into audio messages using a cloned human voice.
 
 ---
 
-## O que e o KokoClone
+## What is KokoClone
 
-KokoClone e uma solucao completa e autonoma de TTS com clonagem de voz. Ao instalar o KokoClone, voce recebe:
+KokoClone is a complete, self-contained TTS solution with voice cloning. When you install KokoClone, you get:
 
-| Componente | Funcao | Vem como |
+| Component | Purpose | Shipped as |
 |---|---|---|
-| **Kokoro-ONNX** (82M params) | Gera fala a partir de texto | dependencia pip |
-| **Kanade** (120M params) | Converte a voz gerada para a voz clonada | dependencia pip (GitHub) |
-| **Vocoder** (Vocos 24kHz) | Sintetiza audio final | incluso no Kanade |
-| **Misaki** | Fonematizador (en, ja, zh; pt via espeak-ng) | dependencia pip |
-| **Gradio UI** | Interface web para testes | dependencia pip |
+| **Kokoro-ONNX** (82M params) | Generates speech from text | pip dependency |
+| **Kanade** (120M params) | Converts generated voice to the cloned voice | pip dependency (GitHub) |
+| **Vocoder** (Vocos 24kHz) | Synthesizes final audio | included in Kanade |
+| **Misaki** | Phonemizer (en, ja, zh; pt via espeak-ng) | pip dependency |
+| **Gradio UI** | Web interface for testing | pip dependency |
 
-Nao existe outro projeto para instalar. Nao precisa de Kokoro-FastAPI, nao precisa de nada separado. O `pip install -r requirements.txt` do KokoClone traz tudo.
+There is no other project to install. No need for Kokoro-FastAPI or anything separate. KokoClone's `pip install -r requirements.txt` brings everything.
 
-### Como funciona internamente (cada chamada)
+### Internal pipeline (per request)
 
 ```
-Texto → Kokoro TTS (gera fala com voz base) → Kanade (converte para voz clonada) → Audio WAV
+Text → Kokoro TTS (generates speech with base voice) → Kanade (converts to cloned voice) → WAV audio
 ```
 
-Os dois passos acontecem em toda chamada. O audio de referencia do funcionario (3-10s WAV) e carregado e processado pelo Kanade a cada geracao. Nao existe perfil de voz persistente — e zero-shot puro.
+Both steps run on every request. The employee reference audio (3-10s WAV) is loaded and processed by Kanade on each generation. There is no persistent voice profile — it is pure zero-shot.
 
-### O que o KokoClone NAO tem
+### What KokoClone does NOT have
 
-- **REST API** — so tem Gradio UI, CLI e Python API
-- **Dockerfile** — nao existe no repositorio
-- **Releases/versoes** — nenhuma release publicada no GitHub
+- **REST API** — only Gradio UI, CLI, and Python API
+- **Dockerfile** — none exists in the repository
+- **Releases/versions** — no published GitHub releases
 
-Portanto, o trabalho de implementacao e:
-1. Escrever um wrapper FastAPI fino (~80 linhas) em cima da Python API
-2. Escrever um Dockerfile
-3. Escrever um docker-compose.yml
-4. Configurar o n8n para chamar o endpoint
+Therefore, the implementation work is:
+1. Write a thin FastAPI wrapper (~80 lines) on top of the Python API
+2. Write a Dockerfile
+3. Write a docker-compose.yml
+4. Configure n8n to call the endpoint
 
 ---
 
-## Recursos Estimados
+## Estimated Resources
 
-### Disco
+### Disk
 
-| Item | Tamanho |
+| Item | Size |
 |---|---|
 | Kokoro ONNX (82M params) | ~300-400 MB |
 | Kanade + Vocoder (120M params) | ~500 MB - 1 GB |
-| PyTorch CPU + dependencias Python | ~1-1.5 GB |
-| Modelos de voz (.bin) | ~50-100 MB |
+| PyTorch CPU + Python dependencies | ~1-1.5 GB |
+| Voice models (.bin) | ~50-100 MB |
 | **Total** | **~2-3 GB** |
 
-Modelos sao baixados automaticamente do HuggingFace no primeiro run. Nao e necessario baixar manualmente.
+Models are downloaded automatically from HuggingFace on first run. No manual download required.
 
 ### RAM
 
-| Item | Uso |
+| Item | Usage |
 |---|---|
-| Kokoro ONNX em memoria | ~400-600 MB |
-| Kanade + Vocoder em memoria | ~600 MB - 1 GB |
+| Kokoro ONNX in memory | ~400-600 MB |
+| Kanade + Vocoder in memory | ~600 MB - 1 GB |
 | PyTorch runtime + buffers | ~300-500 MB |
 | FastAPI + overhead | ~100 MB |
-| **Total estimado** | **~1.5-2.5 GB** |
+| **Estimated total** | **~1.5-2.5 GB** |
 
-O KokoClone cacheia o modelo Kokoro por idioma (`self.kokoro_cache`), entao apos a primeira geracao em pt-BR, as subsequentes nao recarregam o modelo.
+KokoClone caches the Kokoro model per language (`self.kokoro_cache`), so after the first pt-BR generation, subsequent ones do not reload the model.
 
 ### CPU
 
-Kokoro ONNX usa threads configuraveis. O Kanade usa PyTorch CPU. Para frases curtas de 15 palavras:
+Kokoro ONNX uses configurable threads. Kanade uses PyTorch CPU. For short phrases of ~15 words:
 
-| Etapa | Tempo estimado (4 vCPU) |
+| Step | Estimated time (4 vCPU) |
 |---|---|
-| Kokoro TTS (gerar fala base) | ~200-500 ms |
+| Kokoro TTS (generate base speech) | ~200-500 ms |
 | Kanade voice conversion | ~500 ms - 2 s |
-| **Total por request** | **~1-3 s** |
+| **Total per request** | **~1-3 s** |
 
-**Throughput estimado: 20-60 req/min** em 4 vCPUs. Isso e uma estimativa — nao existem benchmarks publicados para KokoClone em CPU. O valor real precisa ser medido no VPS.
+**Estimated throughput: 20-60 req/min** on 4 vCPUs. This is an estimate — no published benchmarks exist for KokoClone on CPU. Actual values must be measured on the VPS.
 
-**Nota importante:** O throughput de 200-400 req/min mencionado no guia anterior era do Kokoro-FastAPI puro (sem Kanade). Com a etapa extra de voice conversion do KokoClone, o throughput e significativamente menor. Se 20-60 req/min for insuficiente para a demanda real, as opcoes sao:
-- Rodar 2 workers (dobra throughput, dobra RAM para ~4-5 GB)
-- Cachear respostas frequentes (reduz chamadas reais ao TTS)
-- Adicionar GPU ao VPS
+**Important note:** The 200-400 req/min throughput mentioned in the previous guide was for Kokoro-FastAPI alone (without Kanade). With KokoClone's extra voice conversion step, throughput is significantly lower. If 20-60 req/min is insufficient for actual demand, the options are:
+- Run 2 workers (doubles throughput, doubles RAM to ~4-5 GB)
+- Cache frequent responses (reduces actual TTS calls)
+- Add a GPU to the VPS
 
-### Distribuicao de recursos no VPS (4 vCPU / 8 GB RAM)
+### Resource distribution on VPS (4 vCPU / 8 GB RAM)
 
-| Servico | CPU | RAM |
+| Service | CPU | RAM |
 |---|---|---|
 | TTS Service (KokoClone + FastAPI) | 2-3 vCPUs | 2-3 GB |
 | n8n | 0.5-1 vCPU | 0.5-1 GB |
-| SO + overhead | 0.5 vCPU | 0.5 GB |
+| OS + overhead | 0.5 vCPU | 0.5 GB |
 | **Total** | **~4 vCPUs** | **~3-4.5 GB** |
-| **Livre** | — | **~3.5-5 GB** |
+| **Available** | — | **~3.5-5 GB** |
 
-Sobra RAM confortavelmente. Se for adicionar Chatwoot+Postgres+Redis na Phase 4 (+1.5-2 GB), ainda cabe.
+RAM headroom is comfortable. Adding Chatwoot+Postgres+Redis in Phase 4 (+1.5-2 GB) still fits.
 
 ---
 
-## Arquitetura
+## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -116,29 +116,29 @@ Sobra RAM confortavelmente. Se for adicionar Chatwoot+Postgres+Redis na Phase 4 
 │  │  - Chatwoot  │     │  GET  /health             │     │
 │  └──────────────┘     └──────────────────────────┘     │
 │                                                         │
-│  voices/employee.wav   (arquivo unico, copiado 1x)     │
+│  voices/employee.wav   (single file, copied once)       │
 └────────────────────────────────────────────────────────┘
 ```
 
-### Fluxo completo (audio do cliente → audio de resposta)
+### Full flow (customer audio → response audio)
 
 ```
-1. Cliente manda audio (WhatsApp/Telegram/etc)
-2. n8n recebe via webhook/trigger
-3. n8n detecta: e audio → faz download do arquivo
-4. n8n envia audio para Groq Whisper (STT) → recebe texto
-5. n8n envia texto para LLM → recebe resposta em texto
-6. n8n envia POST /v1/audio/speech com o texto da resposta
-7. TTS Service: Kokoro gera fala base → Kanade converte para voz clonada
-8. TTS Service retorna audio WAV/OGG
-9. n8n envia audio de volta ao cliente
+1. Customer sends audio (WhatsApp/Telegram/etc)
+2. n8n receives via webhook/trigger
+3. n8n detects audio → downloads the file
+4. n8n sends audio to Groq Whisper (STT) → receives text
+5. n8n sends text to LLM → receives text response
+6. n8n sends POST /v1/audio/speech with the response text
+7. TTS Service: Kokoro generates base speech → Kanade converts to cloned voice
+8. TTS Service returns WAV/OGG audio
+9. n8n sends audio back to customer
 ```
 
 ---
 
-## Implementacao
+## Implementation
 
-### Estrutura do projeto
+### Project structure
 
 ```
 kokoclone-service/
@@ -146,15 +146,15 @@ kokoclone-service/
 ├── tts-service/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── server.py              # FastAPI wrapper (~80 linhas)
+│   ├── server.py              # FastAPI wrapper (~80 lines)
 │   └── voices/
-│       └── employee.wav       # Audio de referencia (3-10s)
+│       └── employee.wav       # Reference audio (3-10s)
 ```
 
 ### requirements.txt
 
 ```
-# TTS + Voice Cloning (KokoClone e suas dependencias)
+# TTS + Voice Cloning (KokoClone and its dependencies)
 torch --index-url https://download.pytorch.org/whl/cpu
 torchaudio --index-url https://download.pytorch.org/whl/cpu
 kokoro-onnx
@@ -170,14 +170,14 @@ uvicorn[standard]
 python-multipart
 ```
 
-**Nota:** Esses requirements sao baseados no `requirements.txt` oficial do KokoClone [1]. Na hora do build, verificar se houve alteracoes no repositorio original.
+**Note:** These requirements are based on KokoClone's official `requirements.txt` [1]. At build time, verify whether the original repository has been updated.
 
 ### server.py
 
 ```python
 """
-TTS Service: wrapper FastAPI sobre a Python API do KokoClone.
-Unico endpoint relevante: POST /v1/audio/speech (OpenAI-compatible).
+TTS Service: FastAPI wrapper on top of KokoClone's Python API.
+Single relevant endpoint: POST /v1/audio/speech (OpenAI-compatible).
 """
 import io
 import os
@@ -204,24 +204,24 @@ engine = None  # KokoClone instance
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
-    # Import aqui para nao quebrar se dependencias faltarem
+    # Import here to avoid breaking if dependencies are missing
     from core.cloner import KokoClone
 
-    log.info("Carregando KokoClone (Kokoro + Kanade)...")
+    log.info("Loading KokoClone (Kokoro + Kanade)...")
     engine = KokoClone()
 
-    # Aquecer: primeira geracao carrega modelos e e mais lenta
+    # Warm up: first generation loads models and is slower
     ref = VOICES_DIR / f"{DEFAULT_VOICE}.wav"
     if ref.exists():
-        log.info(f"Aquecendo com voz padrao: {ref}")
-        engine.generate("Teste.", lang="pt", reference_audio=str(ref), output_path="/tmp/_warmup.wav")
+        log.info(f"Warming up with default voice: {ref}")
+        engine.generate("Test.", lang="pt", reference_audio=str(ref), output_path="/tmp/_warmup.wav")
         os.unlink("/tmp/_warmup.wav")
-        log.info("Aquecimento concluido.")
+        log.info("Warm-up complete.")
     else:
-        log.warning(f"Voz padrao nao encontrada em {ref}")
+        log.warning(f"Default voice not found at {ref}")
 
     yield
-    log.info("Encerrando TTS Service.")
+    log.info("Shutting down TTS Service.")
 
 
 app = FastAPI(title="KokoClone TTS Service", lifespan=lifespan)
@@ -243,11 +243,11 @@ def health():
 @app.post("/v1/audio/speech")
 def speech(req: SpeechRequest):
     if not req.input.strip():
-        raise HTTPException(400, "Texto vazio")
+        raise HTTPException(400, "Empty text")
 
     ref = VOICES_DIR / f"{req.voice}.wav"
     if not ref.exists():
-        raise HTTPException(404, f"Voz '{req.voice}' nao encontrada em {VOICES_DIR}")
+        raise HTTPException(404, f"Voice '{req.voice}' not found in {VOICES_DIR}")
 
     out_path = f"/tmp/tts_{os.getpid()}_{time.time_ns()}.wav"
     t0 = time.perf_counter()
@@ -262,7 +262,7 @@ def speech(req: SpeechRequest):
         elapsed = time.perf_counter() - t0
         data, sr = sf.read(out_path)
         duration = len(data) / sr
-        log.info(f"Gerado {duration:.1f}s de audio em {elapsed:.2f}s (RTF {elapsed/duration:.2f})")
+        log.info(f"Generated {duration:.1f}s of audio in {elapsed:.2f}s (RTF {elapsed/duration:.2f})")
 
         buf = io.BytesIO()
         fmt = "OGG" if req.response_format == "ogg" else "WAV"
@@ -282,37 +282,37 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT, workers=1)
 ```
 
-**Sobre o codigo:**
-- `workers=1` porque KokoClone carrega modelos em memoria e compartilha `self.kokoro_cache`. Multiplos workers carregariam modelos duplicados.
-- O aquecimento (`warmup`) no startup carrega todos os modelos na memoria e evita que a primeira requisicao real demore 10-30s.
-- O `engine.generate()` e exatamente a API publica do KokoClone, conforme documentada no README e confirmada no codigo-fonte [1][2].
-- O endpoint retorna WAV por padrao. Para Telegram voice notes, usar `response_format: ogg`.
+**About the code:**
+- `workers=1` because KokoClone loads models in memory and shares `self.kokoro_cache`. Multiple workers would load duplicate models.
+- The warm-up on startup loads all models into memory and prevents the first real request from taking 10-30s.
+- `engine.generate()` is exactly KokoClone's public API, as documented in its README and confirmed in the source code [1][2].
+- The endpoint returns WAV by default. For Telegram voice notes, use `response_format: ogg`.
 
 ### Dockerfile
 
 ```dockerfile
 FROM python:3.12-slim
 
-# espeak-ng para fonematizacao pt-BR + ffmpeg + libsndfile
+# espeak-ng for pt-BR phonemization + ffmpeg + libsndfile
 RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng libespeak-ng-dev ffmpeg libsndfile1 git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Clonar KokoClone (pega core/, model/, voice/ etc.)
+# Clone KokoClone (gets core/, model/, voice/ etc.)
 RUN git clone --depth 1 https://github.com/Ashish-Patnaik/kokoclone.git /tmp/kokoclone \
     && cp -r /tmp/kokoclone/core /app/core \
     && rm -rf /tmp/kokoclone
 
-# Dependencias Python
+# Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Servidor
+# Server
 COPY server.py .
 
-# Diretorio de vozes (montado como volume)
+# Voices directory (mounted as volume)
 RUN mkdir -p /app/voices
 
 ENV VOICES_DIR=/app/voices
@@ -321,7 +321,7 @@ ENV PORT=8880
 
 EXPOSE 8880
 
-# Modelos baixam automaticamente do HuggingFace no primeiro run
+# Models are downloaded automatically from HuggingFace on first run
 CMD ["python", "server.py"]
 ```
 
@@ -335,8 +335,8 @@ services:
     ports:
       - "8880:8880"
     volumes:
-      - ./tts-service/voices:/app/voices    # audio de referencia
-      - tts-models:/root/.cache/huggingface # cache de modelos
+      - ./tts-service/voices:/app/voices    # reference audio
+      - tts-models:/root/.cache/huggingface # model cache
     environment:
       - DEFAULT_VOICE=employee
       - PORT=8880
@@ -354,7 +354,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s  # modelos demoram para baixar no primeiro run
+      start_period: 120s  # models take time to download on first run
 
   n8n:
     image: n8nio/n8n:latest
@@ -365,7 +365,7 @@ services:
       - n8n-data:/home/node/.n8n
     environment:
       - N8N_HOST=0.0.0.0
-      - WEBHOOK_URL=https://seu-dominio.com/
+      - WEBHOOK_URL=https://your-domain.com/
       - GENERIC_TIMEZONE=America/Sao_Paulo
     restart: unless-stopped
 
@@ -376,66 +376,66 @@ volumes:
 
 ---
 
-## Deploy
+## Deployment
 
-### 1. Preparar voz de referencia (DevOps, unica vez)
+### 1. Prepare reference voice (DevOps, one-time)
 
-Gravar 3-10 segundos do funcionario falando naturalmente. Requisitos:
-- Ambiente silencioso, sem eco
-- Fala natural, nao lida de um script
-- Formato WAV, 16kHz+ sample rate (24kHz ideal, e o sample rate do Kanade)
-- Conteudo irrelevante — o que importa e o timbre, nao as palavras
+Record 3-10 seconds of the employee speaking naturally. Requirements:
+- Quiet environment, no echo
+- Natural speech, not read from a script
+- WAV format, 16kHz+ sample rate (24kHz ideal — Kanade's native sample rate)
+- Content is irrelevant — what matters is the timbre, not the words
 
 ```bash
-# Salvar como employee.wav na pasta voices/
-cp gravacao_funcionario.wav kokoclone-service/tts-service/voices/employee.wav
+# Save as employee.wav in the voices/ directory
+cp employee_recording.wav kokoclone-service/tts-service/voices/employee.wav
 ```
 
-### 2. Build e deploy
+### 2. Build and deploy
 
 ```bash
 cd kokoclone-service
 docker compose up --build -d
 
-# Acompanhar primeiro boot (download de modelos ~1-3 GB)
+# Follow first boot (model download ~1-3 GB)
 docker compose logs -f tts
 
-# Quando aparecer "Aquecimento concluido." esta pronto
+# When "Warm-up complete." appears, the service is ready
 ```
 
-### 3. Testar
+### 3. Test
 
 ```bash
 # Health check
 curl http://localhost:8880/health
 
-# Gerar audio em pt-BR
+# Generate pt-BR audio
 curl -X POST http://localhost:8880/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, sua solicitacao foi registrada com sucesso.","voice":"employee"}' \
-  --output teste.wav
+  --output test.wav
 
-# Ouvir o audio e avaliar qualidade
+# Listen to the audio and evaluate quality
 ```
 
-### 4. Restart preventivo (memory leak do Kokoro)
+### 4. Preventive restart (Kokoro memory leak)
 
 ```bash
-# Cron no host: restart diario as 4h da manha
+# Cron on host: daily restart at 4 AM
 (crontab -l 2>/dev/null; echo "0 4 * * * docker restart tts-service") | crontab -
 ```
 
 ---
 
-## Integracao n8n
+## n8n Integration
 
-### Phase 1: Chat basico (texto → audio)
+### Phase 1: Basic chat (text → audio)
 
-Workflow n8n: `Chat Trigger → HTTP Request (TTS) → Respond to Chat`
+n8n workflow: `Chat Trigger → HTTP Request (TTS) → Respond to Chat`
 
 **HTTP Request node:**
 
-| Campo | Valor |
+| Field | Value |
 |---|---|
 | Method | POST |
 | URL | `http://tts-service:8880/v1/audio/speech` |
@@ -451,83 +451,83 @@ Workflow n8n: `Chat Trigger → HTTP Request (TTS) → Respond to Chat`
 }
 ```
 
-Funciona porque n8n e tts-service estao na mesma Docker network (mesmo docker-compose).
+This works because n8n and tts-service are on the same Docker network (same docker-compose).
 
 ### Phase 2: Telegram (audio → audio)
 
 ```
-[Telegram Trigger] → [Switch: tipo de mensagem]
-     ├── texto → [LLM] → [TTS] → [Telegram: enviar audio]
-     └── voice → [Download arquivo .oga]
-                      → [Groq Whisper STT] → texto
-                      → [LLM] → resposta em texto
+[Telegram Trigger] → [Switch: message type]
+     ├── text → [LLM] → [TTS] → [Telegram: send audio]
+     └── voice → [Download .oga file]
+                      → [Groq Whisper STT] → text
+                      → [LLM] → text response
                       → [TTS: POST /v1/audio/speech] → audio
-                      → [Telegram: enviar audio]
+                      → [Telegram: send audio]
 ```
 
-**Enviar voice note no Telegram (nao arquivo de musica):**
+**Sending a voice note on Telegram (not a music file):**
 
-O node Telegram do n8n so tem `sendAudio` (envia como musica). Para enviar como voice note, usar HTTP Request direto na Bot API [3]:
+n8n's Telegram node only has `sendAudio` (sends as music). To send as a voice note, use HTTP Request directly to the Bot API [3]:
 
 ```
 Method: POST
 URL: https://api.telegram.org/bot{{ $credentials.telegramApi }}/sendVoice
 Body: Form-Data / Multipart
   chat_id: {{ $json.message.chat.id }}
-  voice: [binary do audio em formato OGG]
+  voice: [audio binary in OGG format]
 ```
 
-O audio DEVE ser OGG/Opus. Configurar o TTS para retornar `response_format: ogg`.
+The audio MUST be OGG/Opus. Configure TTS to return `response_format: ogg`.
 
 ### Phase 3: Chatwoot + Human-in-the-Loop
 
 **Setup:**
 1. Chatwoot → Settings → Integrations → Webhooks
-2. URL do webhook: `https://seu-dominio.com/webhook/chatwoot`
-3. Evento: `message_created`
+2. Webhook URL: `https://your-domain.com/webhook/chatwoot`
+3. Event: `message_created`
 
-**Logica de pausa/retomada do bot:**
+**Bot pause/resume logic:**
 
 ```
-Webhook recebe mensagem do Chatwoot
-    → Checar: conversa tem label "human"?
-        SIM → Ignorar (humano respondendo)
-        NAO → Processar com LLM + TTS → responder via API Chatwoot
+Webhook receives message from Chatwoot
+    → Check: does the conversation have a "human" label?
+        YES → Ignore (human is responding)
+        NO → Process with LLM + TTS → respond via Chatwoot API
 ```
 
-O agente humano no dashboard do Chatwoot:
-- **Pausar bot:** adicionar label `human` na conversa
-- **Retomar bot:** remover label `human`
-- **Corrigir:** apagar resposta do bot e enviar manualmente
+The human agent in the Chatwoot dashboard:
+- **Pause bot:** add the `human` label to the conversation
+- **Resume bot:** remove the `human` label
+- **Correct:** delete the bot's response and send manually
 
-Chatwoot adiciona ~1.5-2 GB de RAM (app + Postgres + Redis). O VPS de 8 GB ainda comporta (total ~6-6.5 GB).
+Chatwoot adds ~1.5-2 GB of RAM (app + Postgres + Redis). The 8 GB VPS still handles it (total ~6-6.5 GB).
 
 ---
 
-## O que ainda precisa ser validado empiricamente
+## Items Requiring Empirical Validation
 
-| Item | Como validar | Risco se falhar |
+| Item | How to validate | Risk if it fails |
 |---|---|---|
-| Qualidade pt-BR do KokoClone | Gerar 20 frases de atendimento, ouvir | Baixo — espeak-ng pt-BR e funcional |
-| Latencia real no VPS | Medir com `time curl ...` | Medio — se >3s por request, throughput cai |
-| RAM real do container | `docker stats tts-service` | Baixo — estimativa de 2-3 GB e conservadora |
-| Memory leak ao longo de horas | Monitorar RAM por 24h | Mitigado com restart diario |
-| Formato OGG via soundfile | Testar `response_format: ogg` | Se falhar, converter com ffmpeg no server |
+| KokoClone pt-BR quality | Generate 20 customer service phrases, listen | Low — espeak-ng pt-BR is functional |
+| Actual VPS latency | Measure with `time curl ...` | Medium — if >3s per request, throughput drops |
+| Actual container RAM | `docker stats tts-service` | Low — 2-3 GB estimate is conservative |
+| Memory leak over hours | Monitor RAM for 24h | Mitigated by daily restart |
+| OGG format via soundfile | Test `response_format: ogg` | If it fails, convert with ffmpeg on server |
 
 ---
 
-## Cronograma
+## Timeline
 
-| Fase | O que | Tempo |
+| Phase | What | Time |
 |---|---|---|
-| 1 | Build Docker + deploy TTS + testar pt-BR | Dia 1 |
-| 2 | Workflow n8n: chat texto → audio | Dia 1 |
-| 3 | Telegram bot: audio bidirecional | Dia 2 |
-| 4 | Chatwoot + human-in-the-loop | Dia 3-4 |
+| 1 | Docker build + deploy TTS + test pt-BR | Day 1 |
+| 2 | n8n workflow: text chat → audio | Day 1 |
+| 3 | Telegram bot: bidirectional audio | Day 2 |
+| 4 | Chatwoot + human-in-the-loop | Day 3-4 |
 
 ---
 
-## Referencias
+## References
 
 [1] Ashish-Patnaik. "KokoClone: Voice Cloning, Now Inside Kokoro". GitHub. https://github.com/Ashish-Patnaik/kokoclone
 
