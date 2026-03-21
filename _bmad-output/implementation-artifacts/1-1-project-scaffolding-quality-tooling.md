@@ -1,6 +1,6 @@
 # Story 1.1: Project Scaffolding & Quality Tooling
 
-Status: review
+Status: done
 
 ## Story
 
