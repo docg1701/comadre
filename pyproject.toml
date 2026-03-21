@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.7",
     "soundfile>=0.13",
+    "kokoclone",
 ]
 
 [build-system]
@@ -41,6 +42,19 @@ ignore = []
 strict = true
 plugins = ["pydantic.mypy"]
 
+[[tool.mypy.overrides]]
+module = [
+    "core.*",
+    "torch.*",
+    "torchaudio.*",
+    "kokoro_onnx.*",
+    "soundfile.*",
+]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.uv.sources]
+kokoclone = { git = "https://github.com/Ashish-Patnaik/kokoclone" }
