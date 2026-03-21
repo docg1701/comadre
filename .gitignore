@@ -1,0 +1,53 @@
+# Claude Code local settings
+.claude/
+
+# BMAD framework (vendored, not part of project source)
+_bmad/
+
+# BMAD generated output
+_bmad-output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Audio test files
+*.wav
+*.ogg
+*.mp3
+!voices/**/*.wav
+
+# Model cache
+*.onnx
+*.bin
+*.safetensors
