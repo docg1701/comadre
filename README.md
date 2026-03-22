@@ -6,8 +6,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
-  <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?logo=openai&logoColor=white" alt="OpenAI Compatible">
+  <img src="https://img.shields.io/badge/TTS-Kokoro_82M-ff6f00" alt="Kokoro TTS">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
