@@ -4,6 +4,13 @@
   <img src="assets/logo-cumadre.webp" alt="CUMADRE Logo">
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?logo=openai&logoColor=white" alt="OpenAI Compatible">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+</p>
+
 **Cumadre Manda Audio Direto, Rapido e Eficiente**
 
 Self-hosted text-to-speech service with voice cloning, optimized for automated customer service responses in Brazilian Portuguese. Integrates with n8n workflows to convert LLM text responses into audio messages using a cloned human voice.
