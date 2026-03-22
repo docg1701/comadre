@@ -92,6 +92,22 @@ class TestSettings:
         with pytest.raises(ValidationError):
             Settings()
 
+    def test_espeak_data_path_defaults_to_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.delenv("ESPEAK_DATA_PATH", raising=False)
+        settings = Settings()
+        assert settings.espeak_data_path is None
+
+    def test_espeak_data_path_accepts_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("ESPEAK_DATA_PATH", "/custom/espeak-ng-data")
+        settings = Settings()
+        assert settings.espeak_data_path == "/custom/espeak-ng-data"
+
 
 class TestGetSettings:
     """Tests for the get_settings cached function."""

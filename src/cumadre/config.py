@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     default_voice: str = "default"
     workers: int = Field(default=1, ge=1)
     port: int = Field(default=8000, ge=1, le=65535)
+    espeak_data_path: str | None = Field(
+        default=None,
+        description="Override bundled espeak-ng data path",
+    )
 
 
 @lru_cache(maxsize=1)

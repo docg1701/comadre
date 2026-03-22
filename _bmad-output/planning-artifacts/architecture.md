@@ -59,7 +59,7 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 |---|---|---|
 | KokoClone is a bare Python library | Upstream project | Must wrap API, manage model lifecycle, handle memory leak |
 | Kokoro memory leak | Known upstream issue | Daily container restart cron required; health endpoint must report memory |
-| espeak-ng required for pt-BR | Kokoro phonemizer dependency | Must be installed in Docker image (system package) |
+| espeak-ng is the sole phonemizer for pt-BR | Kokoro/misaki has no native Portuguese G2P | Must build espeak-ng from source (PR #2344, Mar 2026) for quality pt-BR; bundled `espeakng-loader` data is outdated |
 | ffmpeg required for OGG encoding | Audio format conversion | Must be installed in Docker image (system package) |
 | HuggingFace model download on first run | Model distribution | Internet required once at bootstrap; models cached in Docker volume |
 | uv for Python dependency management | Project policy | Dockerfile uses uv, not pip |
@@ -77,6 +77,8 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 4. **Error Consistency** — The OpenAI-compatible error format with `hint` field must be uniform across all error paths (auth, validation, voice not found, model failure, encoding failure, warm-up). Centralized exception handling is required to prevent inconsistency.
 
 5. **Structured Logging** — Pipe-delimited format with component tags must be configured application-wide. All modules (startup, request handling, voice discovery, health) log through the same formatter.
+
+6. **pt-BR Phonemization Quality** — espeak-ng is the sole phonemizer for Portuguese with known limitations (vowel confusion, stress errors). Mitigated by: building espeak-ng from source (PR #2344), text pre-processing (numbers, currency, dates, chunking), custom dictionary for domain words, and a quality validation listening test before production.
 
 ## Starter Template Evaluation
 
@@ -105,20 +107,176 @@ uv init --package cumadre
 
 ### KokoClone Integration Discovery
 
-KokoClone is **not on PyPI** — it's a GitHub-only project. Key findings from research:
+KokoClone is **not on PyPI** — it's a GitHub-only project built on **kokoro-onnx** (not the official `kokoro` PyTorch package). Key findings from research:
+
+#### kokoro vs kokoro-onnx
+
+| | `kokoro` (official, hexgrad) | `kokoro-onnx` (thewh1teagle) |
+|---|---|---|
+| Runtime | PyTorch (~873 MB wheel) | **ONNX Runtime (~16 MB wheel)** |
+| Extra deps | transformers, spacy, huggingface_hub | Minimal (numpy, phonemizer-fork) |
+| Model format | `.pth` 325 MB | `.onnx` 310 MB / **int8: 88 MB** |
+| CPU quantization | No | **Yes (int8, 2-3x faster on CPU)** |
+| espeak-ng bundling | via espeakng-loader | via espeakng-loader |
+
+KokoClone uses **kokoro-onnx** — the right choice for CPU-only deployment due to dramatically smaller footprint and int8 quantization support. Same Kokoro-82M model, same voices, same quality — only the inference runtime differs.
+
+#### KokoClone capabilities
 
 | Aspect | Detail |
 |---|---|
-| Installation | Clone from GitHub, not pip-installable |
+| Installation | uv git dependency from GitHub |
 | Core API | `from core.cloner import KokoClone` → `cloner.generate(text, lang, reference_audio, output_path)` |
 | Voice cloning | Zero-shot: 3-10s reference WAV → speaker embedding → cloned speech |
 | Models | ~1 GB auto-downloaded from HuggingFace on first run (Kokoro ONNX + Kanade tokenizer + Vocos vocoder) |
 | Sample rate | 24kHz output |
-| Languages | en, pt, hi, fr, ja, zh, it, es |
+| Languages | en, pt (Brazilian), hi, fr, ja, zh, it, es |
 | Memory leak | **Fixed** in `phonemizer-fork>=3.3.2` (kokoro-onnx >=0.5.0). Daily restart cron is a safety net, not a hard requirement |
-| System deps | espeak-ng (phonemizer), ffmpeg (OGG encoding), libsndfile |
-| Python deps | torch, torchaudio, kokoro-onnx, misaki, kanade-tokenizer (git dep), soundfile, huggingface_hub |
+| System deps | espeak-ng (phonemizer — **must build from source for pt-BR quality**), ffmpeg (OGG encoding), libsndfile |
+| Python deps | kokoro-onnx, misaki, kanade-tokenizer (git dep), soundfile, phonemizer-fork, espeakng-loader |
 | Device | Auto-detects CPU/GPU; CPU-only for this project |
+
+### pt-BR Phonemization: Research Findings & Mitigations
+
+#### The core problem
+
+The `misaki` G2P library (Kokoro's phonemizer) has **no native Portuguese module**. Native G2P exists only for English, Japanese, Chinese, Korean, Vietnamese, and Hebrew. For Portuguese (and Spanish, French, Hindi, Italian), misaki falls back entirely to `espeak.EspeakG2P(language='pt-br')`.
+
+This means pt-BR quality is **bounded by espeak-ng's phonemization quality**.
+
+#### Known espeak-ng limitations for pt-BR
+
+| Issue | Severity | Impact |
+|---|---|---|
+| Open/close vowel confusion (`é`/`ê`, `ó`/`ô`) | **High** | Phonemic in pt-BR — wrong vowel = wrong word |
+| Stress position errors | Medium | Rules work for most cases, fails on exceptions |
+| No text chunking in Kokoro for pt-BR | **High** | Texts >510 tokens silently truncated |
+| No pronunciation override syntax | Medium | The `[word](/phonemes/)` syntax only works for English |
+| Dates and times not normalized | Medium | Pronounced as digit sequences |
+
+#### Mitigation: Updated espeak-ng data (CRITICAL)
+
+espeak-ng PR [#2344](https://github.com/espeak-ng/espeak-ng/pull/2344) (merged 2026-03-20, by fabiolimace — new official Portuguese maintainer) delivered massive pt-BR improvements:
+
+- **+5,618 lines** in pronunciation dictionary
+- 250+ pronunciation corrections
+- 900+ abbreviations and acronyms (tech, politics, etc.)
+- 3,500+ words and names
+- Improved phoneme definitions for pt-BR
+- Unicode Latin-1 Supplement normalization
+- New documentation at `docs/languages/roa/pt.md`
+
+**Problem:** `espeakng-loader` v1.52 (Jan 2025) bundles espeak-ng data that is **over a year old** — none of these improvements are included.
+
+**Solution:** Build espeak-ng from source and override the data path:
+
+```bash
+# In Dockerfile: build espeak-ng from master
+RUN git clone --depth 1 https://github.com/espeak-ng/espeak-ng.git /tmp/espeak-ng && \
+    cd /tmp/espeak-ng && ./autogen.sh && ./configure && make && \
+    cp -r espeak-ng-data /usr/share/espeak-ng-data-custom && \
+    rm -rf /tmp/espeak-ng
+```
+
+```python
+# In service startup, before loading models:
+import os
+os.environ["ESPEAK_DATA_PATH"] = "/usr/share/espeak-ng-data-custom"
+```
+
+New config field: `ESPEAK_DATA_PATH` (optional, defaults to bundled espeakng-loader path).
+
+#### Mitigation: Text pre-processing module (REQUIRED)
+
+A new `preprocessing.py` module must normalize text before sending to the TTS pipeline. espeak-ng does NOT normalize dates or times for pt-BR, and numbers/currency are more reliable when pre-processed.
+
+**Required normalizations:**
+
+| Input | Output | Library |
+|---|---|---|
+| `R$ 1.500,00` | `mil e quinhentos reais` | `num2words` (lang='pt_BR', to='currency') |
+| `1500` | `mil e quinhentos` | `num2words` (lang='pt_BR') |
+| `3º` | `terceiro` | `num2words` (lang='pt_BR', to='ordinal') |
+| `21/03/2026` | `vinte e um de março de dois mil e vinte e seis` | Custom |
+| `14:30` | `quatorze e trinta` | Custom |
+| Domain-specific abbreviations | Expanded form | Custom dictionary |
+
+New dependency: `num2words>=0.5` (already supports pt_BR).
+
+#### Mitigation: Text chunking (REQUIRED)
+
+Kokoro has **no chunking logic for Portuguese** — long texts are silently truncated at ~510 tokens. The `preprocessing.py` module must split text at sentence boundaries, targeting 100-200 tokens per chunk.
+
+```python
+import re
+sentences = re.split(r'(?<=[.!?])\s+', text)
+```
+
+#### Mitigation: Custom espeak-ng dictionary
+
+For domain-specific words that espeak-ng mispronounces, create a `pt_extra` file:
+
+```
+// dictsource/pt_extra — compiled with: espeak-ng --compile=pt
+cumadre  kum'adR@
+```
+
+This file is compiled into `pt_dict` and applied after the main dictionary. Include it in the Docker build.
+
+#### Mitigation: Voice blending
+
+Kokoro supports mixing pt-BR voices for potentially better results:
+
+```python
+voice = 'pf_dora:60,pm_alex:40'  # Weighted blend
+```
+
+Available pt-BR voices: `pf_dora` (F), `pm_alex` (M), `pm_santa` (M). No quality grades are published for any of them — experimentation is needed.
+
+#### Mitigation: Direct phoneme input for critical phrases
+
+The `generate_from_tokens()` API bypasses espeak-ng entirely:
+
+```python
+# Inspect what espeak-ng generates
+for result in pipeline("Seu texto"):
+    print(result.phonemes)
+
+# Override with corrected phonemes
+for result in pipeline.generate_from_tokens(
+    tokens="corrected_phonemes",
+    voice='pf_dora'
+):
+    pass  # result.audio
+```
+
+This is a last-resort escape hatch for phrases where espeak-ng produces unacceptable results.
+
+#### Alternative TTS engines evaluated
+
+All alternatives were evaluated and **rejected** due to hardware constraints (4 vCPU / 8 GB RAM, CPU-only):
+
+| Engine | pt-BR | Voice Clone | CPU Feasible | Why Rejected |
+|---|---|---|---|---|
+| XTTS v2 (Coqui) | Good | Zero-shot | No (~250s/phrase) | CPU inference unusable |
+| Fish Speech S2 | Good | Zero-shot | No (needs 12GB+ VRAM) | Needs GPU |
+| F5-TTS pt-BR | Very good (dedicated fine-tune) | Zero-shot | No (7+ min/phrase) | CPU inference unusable |
+| Qwen3-TTS 0.6B | Good | Zero-shot | Marginal (10-15x RTF) | 6-8 GB RAM, too slow on 4 vCPU |
+| Qwen3-TTS 1.7B | Good | Zero-shot | No (needs 14-16 GB RAM) | OOM on 8 GB |
+| Bark | Fair | No real cloning | No (10-20x slow) | No voice cloning, too slow |
+| Piper | No pt-BR voices | None | Excellent | No pt-BR, no cloning |
+| Edge TTS | Excellent | None | Cloud-only | Not self-hosted |
+
+**Conclusion:** KokoClone (Kokoro-82M + Kanade) remains the only viable option for CPU-only, self-hosted, pt-BR voice cloning. Quality mitigation through the strategies above is the path forward.
+
+#### Quality validation gate
+
+Before production deployment, a **listening test** of 20+ typical customer service phrases is required:
+
+1. Generate audio for representative phrases (greetings, order status, scheduling, etc.)
+2. Evaluate: pronunciation accuracy, naturalness, voice cloning similarity
+3. If unacceptable, iterate on pre-processing rules, custom dictionary entries, or voice blending
+4. This is tracked as an acceptance criterion for Story 1.4 (Service Wrapper)
 
 ### Project Structure
 
@@ -131,6 +289,7 @@ cumadre/
 │       ├── api.py             # POST /v1/audio/speech route
 │       ├── schemas.py         # Pydantic request/response models
 │       ├── service.py         # KokoClone wrapper, audio generation logic
+│       ├── preprocessing.py   # pt-BR text normalization (numbers, currency, dates, chunking)
 │       ├── config.py          # Settings via pydantic-settings
 │       ├── exceptions.py      # Custom exceptions + error response builder
 │       ├── health.py          # Health response assembler
@@ -284,7 +443,7 @@ Not applicable. No frontend. No UI.
 |---|---|
 | Container runtime | Docker with compose.yaml (Compose v2) |
 | Base image | python:3.12-slim |
-| System packages | espeak-ng, ffmpeg, libsndfile1-dev |
+| System packages | espeak-ng (**built from source** for pt-BR quality — PR #2344), ffmpeg, libsndfile1-dev, autoconf, automake, libtool, pkg-config (espeak-ng build deps) |
 | Python packages | uv sync from uv.lock |
 | Deployment tool | Ansible (4 playbooks: bootstrap, update, cleanup, health) |
 | Ansible structure | Flat playbooks in deploy/ansible/playbooks/ (no roles — project too small) |
@@ -400,6 +559,7 @@ ansible-playbook deploy/ansible/playbooks/update.yml
 | `api.py` | Route handlers for `/v1/audio/speech` | Model loading, audio encoding |
 | `schemas.py` | Pydantic request/response models only | Logic, imports from other app modules |
 | `service.py` | KokoClone wrapper, TTS generation, OGG encoding | HTTP concerns, FastAPI dependencies |
+| `preprocessing.py` | pt-BR text normalization: numbers, currency, dates, times, chunking | HTTP concerns, TTS generation, voice discovery |
 | `config.py` | pydantic-settings class, env var definitions | Logic beyond defaults/validation |
 | `exceptions.py` | Exception classes + FastAPI exception handlers | Business logic |
 | `health.py` | Health endpoint, runtime state aggregation | Audio generation logic |
@@ -409,15 +569,16 @@ ansible-playbook deploy/ansible/playbooks/update.yml
 **Import Dependency Graph:**
 
 ```
-config.py      ← imported by everything (no app imports)
-logging.py     ← imported by everything (no app imports)
-schemas.py     ← imported by api.py, health.py (no app imports)
-exceptions.py  ← imported by api.py, service.py, voices.py
-voices.py      ← imported by service.py, health.py
-service.py     ← imported by api.py
-health.py      ← imported by main.py
-api.py         ← imported by main.py
-main.py        ← entry point (imports everything, imported by nothing)
+config.py          ← imported by everything (no app imports)
+logging.py         ← imported by everything (no app imports)
+schemas.py         ← imported by api.py, health.py (no app imports)
+exceptions.py      ← imported by api.py, service.py, voices.py, preprocessing.py
+preprocessing.py   ← imported by service.py (depends on config.py only)
+voices.py          ← imported by service.py, health.py
+service.py         ← imported by api.py
+health.py          ← imported by main.py
+api.py             ← imported by main.py
+main.py            ← entry point (imports everything, imported by nothing)
 ```
 
 No circular imports. Dependencies flow downward.
@@ -522,10 +683,11 @@ Rules:
 ```
 1. Load config (validate env vars — fail fast if API_KEY missing)
 2. Configure structured logging
-3. Discover voices (log found/skipped files)
-4. Load KokoClone model
-5. Run warm-up inference (short dummy text)
-6. Set ready flag → health returns "healthy"
+3. Override espeak-ng data path if ESPEAK_DATA_PATH is set (for updated pt-BR data)
+4. Discover voices (log found/skipped files)
+5. Load KokoClone model
+6. Run warm-up inference (short dummy pt-BR text through full pipeline including preprocessing)
+7. Set ready flag → health returns "healthy"
 ```
 
 Rules:
@@ -539,9 +701,11 @@ Rules:
 1. Auth check (dependency injection)
 2. Validate request body (Pydantic — automatic)
 3. Resolve voice (voices module)
-4. Generate TTS (service module)
-5. Encode to requested format (service module)
-6. Return binary response
+4. Preprocess text for pt-BR (preprocessing module — numbers, currency, dates, chunking)
+5. Generate TTS for each chunk (service module — espeak-ng → Kokoro → Kanade)
+6. Concatenate audio chunks
+7. Encode to requested format (service module — WAV or OGG via ffmpeg)
+8. Return binary response
 ```
 
 Rules:
@@ -594,6 +758,7 @@ class Settings(BaseSettings):
     default_voice: str = "default"
     workers: int = 1
     port: int = 8000
+    espeak_data_path: str | None = None  # Override bundled espeak-ng data for pt-BR quality
 ```
 
 **Anti-pattern:**
@@ -618,6 +783,7 @@ cumadre/
 │       ├── api.py                    # POST /v1/audio/speech route handler
 │       ├── schemas.py                # SpeechRequest, HealthResponse, ErrorResponse
 │       ├── service.py                # KokoClone wrapper, TTS + voice cloning + OGG encoding
+│       ├── preprocessing.py          # pt-BR text normalization + sentence chunking
 │       ├── config.py                 # Settings(BaseSettings) — all env vars
 │       ├── exceptions.py             # CumadreError hierarchy + exception handlers
 │       ├── health.py                 # GET /health route, runtime state assembly
@@ -752,7 +918,7 @@ No files in /opt, /tmp, /src, /bin, or any system directory.
 
 | FR Category | Primary File(s) | Supporting Files |
 |---|---|---|
-| Audio Generation (FR1-FR5) | `service.py` | `voices.py`, `config.py` |
+| Audio Generation (FR1-FR5) | `service.py`, `preprocessing.py` | `voices.py`, `config.py` |
 | API Interface (FR6-FR10) | `api.py`, `schemas.py` | `exceptions.py`, `main.py` |
 | Health & Monitoring (FR11-FR13) | `health.py` | `voices.py`, `config.py` |
 | Voice Management (FR14-FR16) | `voices.py` | `config.py` |
@@ -779,19 +945,31 @@ n8n POST /v1/audio/speech
 api.py: validate request (Pydantic) → verify auth (dependency)
     │
     ▼
-service.py: resolve voice → KokoClone.generate(text, lang, ref_wav)
+service.py: resolve voice
+    │
+    ▼
+preprocessing.py: normalize text for pt-BR
+    ├── num2words: numbers, currency (R$), ordinals
+    ├── custom: dates, times, domain abbreviations
+    └── chunking: split into sentences (100-200 tokens each)
+    │
+    ▼ (for each chunk)
+service.py: KokoClone.generate(normalized_text, lang, ref_wav)
     │                              │
-    │                    ┌─────────▼──────────┐
-    │                    │ Kokoro TTS (ONNX)   │
-    │                    │ → raw speech audio   │
-    │                    │                      │
-    │                    │ Kanade voice clone    │
-    │                    │ → cloned audio (24kHz)│
-    │                    └─────────┬────────────┘
+    │                    ┌─────────▼──────────────────┐
+    │                    │ espeak-ng (updated PR #2344) │
+    │                    │ → pt-BR phonemes (IPA)       │
+    │                    │                              │
+    │                    │ Kokoro TTS (ONNX, int8)      │
+    │                    │ → raw speech audio            │
+    │                    │                              │
+    │                    │ Kanade voice clone            │
+    │                    │ → cloned audio (24kHz)        │
+    │                    └─────────┬────────────────────┘
     │                              │
     ▼                              ▼
-service.py: if ogg → ffmpeg subprocess → OGG bytes
-          : if wav → raw WAV bytes
+service.py: concatenate chunks → if ogg → ffmpeg subprocess → OGG bytes
+                                : if wav → raw WAV bytes
     │
     ▼
 api.py: return Response(content=audio_bytes, media_type="audio/wav|ogg")

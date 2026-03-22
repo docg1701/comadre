@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import io
+import os
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cumadre.exceptions import GenerationError, VoiceNotFoundError
 from cumadre.logging import get_logger
+from cumadre.preprocessing import chunk_text, normalize_text
 from cumadre.voices import VoiceInfo, list_voice_names
 
 if TYPE_CHECKING:
@@ -31,8 +35,11 @@ class TTSService:
         """Return True if the KokoClone model is loaded."""
         return self._cloner is not None
 
-    def load_model(self) -> None:
+    def load_model(self, espeak_data_path: str | None = None) -> None:
         """Import and instantiate KokoClone (lazy import — heavy dependency)."""
+        if espeak_data_path is not None:
+            os.environ["ESPEAK_DATA_PATH"] = espeak_data_path
+            startup_logger.info("espeak-ng data path overridden: %s", espeak_data_path)
         from core.cloner import KokoClone
 
         startup_logger.info("Loading KokoClone model...")
@@ -81,22 +88,64 @@ class TTSService:
             msg = "Model not loaded — call load_model() first"
             raise RuntimeError(msg)
 
-        tmp_path: Path | None = None
+        normalized = normalize_text(text)
+        chunks = chunk_text(normalized)
+        logger.info("Generating %d chunk(s) for %d characters", len(chunks), len(text))
+
+        tmp_paths: list[Path] = []
         try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-            self._cloner.generate(text, LANGUAGE, str(voice.path), str(tmp_path))
+            wav_parts: list[bytes] = []
+            for chunk in chunks:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                tmp_paths.append(tmp_path)
+                self._cloner.generate(chunk, LANGUAGE, str(voice.path), str(tmp_path))
+                wav_parts.append(tmp_path.read_bytes())
+
+            wav_bytes = _concatenate_wavs(wav_parts)
+
             if response_format == "ogg":
-                return _encode_ogg(tmp_path)
-            return tmp_path.read_bytes()
+                with tempfile.NamedTemporaryFile(
+                    suffix=".wav", delete=False
+                ) as ogg_tmp:
+                    ogg_path = Path(ogg_tmp.name)
+                tmp_paths.append(ogg_path)
+                ogg_path.write_bytes(wav_bytes)
+                return _encode_ogg(ogg_path)
+            return wav_bytes
         except (VoiceNotFoundError, GenerationError):
             raise
         except Exception as exc:
             logger.error("TTS generation failed: %s", exc, exc_info=True)
             raise GenerationError(f"TTS generation failed: {exc}") from exc
         finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
+            for p in tmp_paths:
+                p.unlink(missing_ok=True)
+
+
+def _concatenate_wavs(wav_bytes_list: list[bytes]) -> bytes:
+    """Concatenate multiple WAV byte sequences into one."""
+    if len(wav_bytes_list) == 1:
+        return wav_bytes_list[0]
+
+    output = io.BytesIO()
+    params: wave._wave_params | None = None
+    with wave.open(output, "wb") as out_wf:
+        for i, wav_bytes in enumerate(wav_bytes_list):
+            with wave.open(io.BytesIO(wav_bytes), "rb") as in_wf:
+                if i == 0:
+                    params = in_wf.getparams()
+                    out_wf.setparams(params)
+                else:
+                    chunk_params = in_wf.getparams()
+                    if chunk_params[:3] != params[:3]:  # type: ignore[index]
+                        msg = (
+                            f"WAV params mismatch: chunk 0={params},"
+                            f" chunk {i}={chunk_params}"
+                        )
+                        raise GenerationError(msg)
+                out_wf.writeframes(in_wf.readframes(in_wf.getnframes()))
+    return output.getvalue()
 
 
 def _encode_ogg(wav_path: Path) -> bytes:

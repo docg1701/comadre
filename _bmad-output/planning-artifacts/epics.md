@@ -74,11 +74,11 @@ This document provides the complete epic and story breakdown for cumadre, decomp
 - KokoClone is not on PyPI — must be installed as a uv git dependency pinned by commit hash in uv.lock
 - Code quality tooling: ruff (lint+format), mypy --strict with pydantic plugin, pytest + pytest-asyncio + httpx, hadolint, yamllint, ansible-lint, shellcheck, markdownlint-cli2, all orchestrated by pre-commit
 - Dependency groups (PEP 735): dev = lint + test + type-check groups in pyproject.toml
-- Project structure: src/cumadre/ layout with 9 modules (main.py, api.py, schemas.py, service.py, config.py, exceptions.py, health.py, logging.py, voices.py)
+- Project structure: src/cumadre/ layout with 10 modules (main.py, api.py, schemas.py, service.py, preprocessing.py, config.py, exceptions.py, health.py, logging.py, voices.py)
 - Import dependency graph enforced: config/logging at bottom, main.py at top, no circular imports
 - Module responsibility boundaries: no HTTP concerns in service.py, no business logic in api.py, no raw os.environ (use pydantic-settings)
 - All errors via CumadreError exception hierarchy, never raw HTTPException
-- Docker single-stage build using python:3.12-slim with system deps (espeak-ng, ffmpeg, libsndfile1-dev)
+- Docker single-stage build using python:3.12-slim with system deps (espeak-ng **built from source** for pt-BR quality — PR #2344, ffmpeg, libsndfile1-dev, build deps: autoconf, automake, libtool, pkg-config)
 - Compose v2 standard filename: compose.yaml (not docker-compose.yml)
 - OGG encoding via ffmpeg subprocess call (~5 lines)
 - CI/CD: GitHub Actions pipeline running pre-commit + pytest + docker build
@@ -92,7 +92,8 @@ This document provides the complete epic and story breakdown for cumadre, decomp
 - Docker named volumes: cumadre-voices (ro), cumadre-models (rw)
 - .env.example template with API_KEY, DEFAULT_VOICE, WORKERS, PORT
 - entrypoint.sh script for uvicorn launch with WORKERS/PORT from env
-- Implementation sequence: scaffolding → config → logging → voices → service → FastAPI app → Docker → Ansible → CI/CD → docs
+- Implementation sequence: scaffolding → config → logging → voices → preprocessing + service → FastAPI app → Docker → Ansible → CI/CD → docs
+- New dependency: `num2words>=0.5` for pt-BR text normalization (numbers, currency, ordinals)
 
 ### UX Design Requirements
 
@@ -237,17 +238,31 @@ So that I know which voices are available and get clear warnings about invalid f
 **When** the voice discovery module scans the directory
 **Then** it returns an empty list and logs a warning that no voices were found
 
-### Story 1.4: KokoClone TTS Service Wrapper
+### Story 1.4: pt-BR Text Preprocessing & KokoClone TTS Service Wrapper
 
 As an **n8n workflow**,
 I want the service to generate cloned-voice speech from text,
-So that customers hear natural-sounding audio responses.
+So that customers hear natural-sounding audio responses in Brazilian Portuguese.
+
+**Context:** Kokoro TTS uses espeak-ng as sole phonemizer for pt-BR (misaki has no native Portuguese G2P module). espeak-ng has known limitations: open/close vowel confusion, stress errors, no date/time normalization. Mitigations: text preprocessing, updated espeak-ng data (PR #2344), and sentence chunking are REQUIRED for acceptable quality.
 
 **Acceptance Criteria:**
 
 **Given** KokoClone is installed as a uv git dependency
 **When** service.py receives text, a voice name, and format "wav"
-**Then** it generates Brazilian Portuguese speech via Kokoro TTS, converts it to the cloned voice via Kanade using the reference WAV, and returns WAV bytes at 24kHz
+**Then** it preprocesses the text (normalize numbers, currency, dates, times, abbreviations), chunks into sentences (100-200 tokens), generates Brazilian Portuguese speech via Kokoro TTS for each chunk, converts to the cloned voice via Kanade using the reference WAV, concatenates chunks, and returns WAV bytes at 24kHz
+
+**Given** text containing numbers, currency, dates, or times
+**When** preprocessing.py normalizes the text
+**Then** `1500` becomes "mil e quinhentos", `R$ 1.500,00` becomes "mil e quinhentos reais", `21/03/2026` becomes "vinte e um de março de dois mil e vinte e seis", `14:30` becomes "quatorze e trinta"
+
+**Given** text longer than ~510 tokens (Kokoro's limit for Portuguese)
+**When** preprocessing.py chunks the text
+**Then** it splits at sentence boundaries targeting 100-200 tokens per chunk, and service.py generates audio for each chunk and concatenates the results
+
+**Given** the ESPEAK_DATA_PATH environment variable is set
+**When** the service starts
+**Then** it overrides the bundled espeakng-loader data path with the custom path (for updated pt-BR pronunciation from espeak-ng PR #2344)
 
 **Given** a valid text input and format "ogg"
 **When** service.py generates audio
@@ -260,6 +275,10 @@ So that customers hear natural-sounding audio responses.
 **Given** KokoClone fails during generation
 **When** service.py catches the model error
 **Then** it raises a `GenerationError` with a descriptive message and logs the full traceback at ERROR level
+
+**Given** 20+ representative customer service phrases in pt-BR
+**When** the service generates audio for each
+**Then** a manual listening test validates acceptable pronunciation, naturalness, and voice cloning quality before the story is marked as done
 
 ### Story 1.5: Exception Handling & Request Schemas
 
@@ -383,7 +402,7 @@ So that I can run CUMADRE as a container without installing Python or system pac
 
 **Given** the Dockerfile
 **When** I run `docker compose build`
-**Then** it builds a single-stage image from python:3.12-slim with espeak-ng, ffmpeg, and libsndfile1-dev installed as system packages
+**Then** it builds a single-stage image from python:3.12-slim with espeak-ng **built from source** (git master, includes PR #2344 pt-BR improvements), ffmpeg, and libsndfile1-dev installed as system packages
 **And** Python dependencies are installed via `uv sync --frozen` from the committed uv.lock
 
 **Given** the entrypoint.sh script

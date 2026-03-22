@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cumadre.exceptions import GenerationError, VoiceNotFoundError
-from cumadre.service import TTSService, _encode_ogg
+from cumadre.service import TTSService, _concatenate_wavs, _encode_ogg
 from cumadre.voices import VoiceInfo
 
 
@@ -261,3 +261,111 @@ class TestEncodeOgg:
         wav_path.write_bytes(_create_wav_bytes())
         with pytest.raises(GenerationError, match="OGG"):
             _encode_ogg(wav_path)
+
+
+# --- Test multi-chunk generation (Story 1.4a AC #5) ---
+
+
+class TestMultiChunkGeneration:
+    @patch("cumadre.service.chunk_text")
+    @patch("cumadre.service.normalize_text")
+    def test_multi_chunk_calls_generate_per_chunk(
+        self,
+        mock_normalize: MagicMock,
+        mock_chunk: MagicMock,
+        service: TTSService,
+        voices: list[VoiceInfo],
+    ) -> None:
+        mock_normalize.return_value = "chunk one. chunk two."
+        mock_chunk.return_value = ["chunk one.", "chunk two."]
+        result = service.generate_speech(
+            "chunk one. chunk two.", "alice", "wav", voices
+        )
+        assert service._cloner.generate.call_count == 2
+        assert result[:4] == b"RIFF"
+
+    @patch("cumadre.service.chunk_text")
+    @patch("cumadre.service.normalize_text")
+    def test_single_chunk_no_concatenation_overhead(
+        self,
+        mock_normalize: MagicMock,
+        mock_chunk: MagicMock,
+        service: TTSService,
+        voices: list[VoiceInfo],
+    ) -> None:
+        mock_normalize.return_value = "short text"
+        mock_chunk.return_value = ["short text"]
+        result = service.generate_speech("short text", "alice", "wav", voices)
+        assert service._cloner.generate.call_count == 1
+        assert result[:4] == b"RIFF"
+
+    def test_logs_chunk_count(
+        self,
+        service: TTSService,
+        voices: list[VoiceInfo],
+        request_logger: pytest.LogCaptureFixture,
+    ) -> None:
+        with request_logger.at_level(logging.DEBUG, logger="request"):
+            service.generate_speech("hello world", "alice", "wav", voices)
+        info_records = [r for r in request_logger.records if r.levelno == logging.INFO]
+        assert any("chunk" in r.message.lower() for r in info_records)
+
+
+# --- Test _concatenate_wavs ---
+
+
+class TestConcatenateWavs:
+    def test_single_wav_returns_unchanged(self) -> None:
+        wav = _create_wav_bytes(duration=1.0)
+        assert _concatenate_wavs([wav]) is wav
+
+    def test_two_wavs_produce_valid_output(self) -> None:
+        wav1 = _create_wav_bytes(duration=1.0)
+        wav2 = _create_wav_bytes(duration=0.5)
+        result = _concatenate_wavs([wav1, wav2])
+        assert result[:4] == b"RIFF"
+        assert len(result) > len(wav1)
+
+
+# --- Test ESPEAK_DATA_PATH override (Story 1.4a AC #6) ---
+
+
+class TestEspeakDataPath:
+    def test_load_model_sets_env_var(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        svc = TTSService()
+        monkeypatch.delenv("ESPEAK_DATA_PATH", raising=False)
+        mock_cloner_class = MagicMock()
+        with patch.dict(
+            "sys.modules",
+            {
+                "core": MagicMock(),
+                "core.cloner": MagicMock(KokoClone=mock_cloner_class),
+            },
+        ):
+            svc.load_model(espeak_data_path="/custom/data")
+        import os
+
+        assert os.environ.get("ESPEAK_DATA_PATH") == "/custom/data"
+        monkeypatch.delenv("ESPEAK_DATA_PATH", raising=False)
+
+    def test_load_model_without_path_skips_override(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        svc = TTSService()
+        monkeypatch.delenv("ESPEAK_DATA_PATH", raising=False)
+        mock_cloner_class = MagicMock()
+        with patch.dict(
+            "sys.modules",
+            {
+                "core": MagicMock(),
+                "core.cloner": MagicMock(KokoClone=mock_cloner_class),
+            },
+        ):
+            svc.load_model()
+        import os
+
+        assert os.environ.get("ESPEAK_DATA_PATH") is None

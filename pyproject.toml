@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-settings>=2.7",
     "soundfile>=0.13",
     "kokoclone",
+    "num2words>=0.5",
 ]
 
 [build-system]
@@ -49,6 +50,7 @@ module = [
     "torchaudio.*",
     "kokoro_onnx.*",
     "soundfile.*",
+    "num2words.*",
 ]
 ignore_missing_imports = true
 
