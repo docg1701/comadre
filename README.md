@@ -1,5 +1,9 @@
 # CUMADRE
 
+<p align="center">
+  <img src="assets/logo-cumadre.webp" alt="CUMADRE Logo">
+</p>
+
 **Cumadre Manda Audio Direto, Rapido e Eficiente**
 
 Self-hosted text-to-speech service with voice cloning, optimized for automated customer service responses in Brazilian Portuguese. Integrates with n8n workflows to convert LLM text responses into audio messages using a cloned human voice.
