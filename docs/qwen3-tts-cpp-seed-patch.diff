@@ -1,0 +1,73 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index b609099..879ba2a 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -17,6 +17,7 @@ void print_usage(const char * program) {
+     fprintf(stderr, "  --top-p <val>          Top-p sampling (default: 1.0)\n");
+     fprintf(stderr, "  --max-tokens <n>       Maximum audio tokens (default: 4096)\n");
+     fprintf(stderr, "  --repetition-penalty <val> Repetition penalty (default: 1.05)\n");
++    fprintf(stderr, "  --seed <n>             Random seed for reproducibility (-1=random, default: -1)\n");
+     fprintf(stderr, "  -l, --language <lang>  Language: en,ru,zh,ja,ko,de,fr,es (default: en)\n");
+     fprintf(stderr, "  -j, --threads <n>      Number of threads (default: 4)\n");
+     fprintf(stderr, "  -h, --help             Show this help\n");
+@@ -95,6 +96,12 @@ int main(int argc, char ** argv) {
+                 return 1;
+             }
+             params.repetition_penalty = std::stof(argv[i]);
++        } else if (arg == "--seed") {
++            if (++i >= argc) {
++                fprintf(stderr, "Error: missing seed value\n");
++                return 1;
++            }
++            params.seed = std::stoll(argv[i]);
+         } else if (arg == "-l" || arg == "--language") {
+             if (++i >= argc) {
+                 fprintf(stderr, "Error: missing language value\n");
+diff --git a/src/qwen3_tts.cpp b/src/qwen3_tts.cpp
+index c2f3434..7a6ff72 100644
+--- a/src/qwen3_tts.cpp
++++ b/src/qwen3_tts.cpp
+@@ -403,7 +403,12 @@ tts_result Qwen3TTS::synthesize_internal(const std::string & text,
+         }
+     }
+     transformer_.clear_kv_cache();
+-
++
++    // Seed RNG for reproducibility
++    if (params.seed >= 0) {
++        transformer_.seed_rng(params.seed);
++    }
++
+     std::vector<int32_t> speech_codes;
+     if (!transformer_.generate(text_tokens.data(), (int32_t)text_tokens.size(),
+                                speaker_embedding, params.max_audio_tokens, speech_codes,
+diff --git a/src/qwen3_tts.h b/src/qwen3_tts.h
+index 623a272..e0286db 100644
+--- a/src/qwen3_tts.h
++++ b/src/qwen3_tts.h
+@@ -41,6 +41,9 @@ struct tts_params {
+     // Language ID for codec (2050=en, 2069=ru, 2055=zh, 2058=ja, 2064=ko, 2053=de, 2061=fr, 2054=es)
+     int32_t language_id = 2050;
+
++    // Random seed (-1 = random device)
++    int64_t seed = -1;
++
+ };
+
+ // TTS generation result
+diff --git a/src/tts_transformer.h b/src/tts_transformer.h
+index 3b228da..077b244 100644
+--- a/src/tts_transformer.h
++++ b/src/tts_transformer.h
+@@ -267,8 +267,10 @@ public:
+                   int32_t top_k = 50);
+
+     const tts_transformer_config & get_config() const { return model_.config; }
+-
++
+     const std::string & get_error() const { return error_msg_; }
++
++    void seed_rng(int64_t seed) { rng_.seed(static_cast<uint32_t>(seed)); }
+
+     // Legacy interface for compatibility
+     bool forward(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
