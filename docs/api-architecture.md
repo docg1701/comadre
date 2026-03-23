@@ -153,17 +153,36 @@ async def speech(request: SpeechRequest):
 
 | Engine | Time per request | Throughput | Max comfortable conversations |
 |---|---|---|---|
-| Kokoro | ~5.5s | ~10 req/min | ~7-10 |
-| Qwen3 | ~12.5s | ~4.8 req/min | ~3-5 |
+| Kokoro | ~5.5s | ~10 req/min | ~15-20 |
+| Qwen3 | ~12.5s | ~4.8 req/min | ~5-8 |
 
-### Queue wait times
+### Realistic queue behavior
+
+Requests don't arrive simultaneously — they're spread across time because WhatsApp conversations have natural pauses (user reading, typing, thinking). Each conversation generates ~1 request every 30-60 seconds.
+
+**Example: 15 conversations with Kokoro**
+- Average request arrival: 1 every 2-4 seconds
+- Kokoro processes 1 every 5.5 seconds
+- Queue depth oscillates between 0-3 (rarely peaks above 4)
+- Typical latency: 5.5s (no queue) to 16s (2-3 in queue)
+- Burst scenario (rare): 5+ simultaneous → 27s max wait
+
+**Example: 8 conversations with Qwen3**
+- Average request arrival: 1 every 4-7 seconds
+- Qwen3 processes 1 every 12.5 seconds
+- Queue depth oscillates between 0-2
+- Typical latency: 12.5s to 37s
+- Burst scenario (rare): 4+ simultaneous → 50s max wait
+
+### Theoretical worst-case (all requests arrive at once)
 
 | Queue depth | Kokoro wait | Qwen3 wait |
 |---|---|---|
 | 1 | 5.5s | 12.5s |
 | 5 | 27.5s | 62.5s |
 | 10 | 55s | 125s |
-| 20 | 110s | 250s |
+
+These worst-case numbers rarely occur in practice due to the natural spacing of WhatsApp conversations.
 
 ## Horizontal Scaling
 
@@ -200,16 +219,50 @@ tts.example.com {
 
 | Conversations | Kokoro instances | Qwen3 instances |
 |---|---|---|
-| < 10 | 1 | 1 |
-| 10-20 | 2 | 2-3 |
-| 20-40 | 3-4 | 4-6 |
-| 40+ | Auto-scale | Auto-scale |
+| < 15 | 1 | 1 |
+| 15-30 | 2 | 2-3 |
+| 30-60 | 3-4 | 4-6 |
+| 60+ | Auto-scale | Auto-scale |
 
 Each instance is independent — own model loaded, own queue, own processing. No shared state. Adding/removing instances requires only Caddy config update.
 
-### n8n timeout configuration
+### Failover pattern (n8n-side)
 
-Set the HTTP Request node timeout to 600 seconds (10 minutes) to handle worst-case queue waits. The n8n workflow should not retry on timeout — the request was queued and will be processed.
+When a cumadre instance times out, the n8n workflow handles failover — not the load balancer. This gives the workflow control over retry logic and alerting.
+
+```
+n8n workflow:
+    │
+    ├── HTTP Request to cumadre primary (timeout: 120s)
+    │   ├── Success → send audio to WhatsApp
+    │   └── Timeout/Error ─┐
+    │                       ▼
+    │   HTTP Request to cumadre backup (timeout: 120s)
+    │   ├── Success → send audio to WhatsApp
+    │   └── Timeout/Error → send text message instead + alert sysop
+    │
+    └── On any failover: notify sysop (Slack/email/webhook)
+        "cumadre primary overloaded, failover triggered"
+```
+
+**Why n8n-side failover (not Caddy):**
+- n8n can alert the sysop about overload
+- n8n can fall back to text message if both instances fail
+- n8n controls retry logic per conversation context
+- Caddy round-robin doesn't know about queue depth or overload
+
+**n8n timeout configuration:**
+- Primary request: 120 seconds (enough for ~20 in queue with Kokoro)
+- Backup request: 120 seconds
+- Total worst case: 240 seconds (within n8n's 300s workflow timeout)
+
+### When to use Caddy load balancer vs n8n failover
+
+| Scenario | Approach |
+|---|---|
+| Predictable high volume (always 30+ conversations) | Caddy load balancer across N instances |
+| Normal volume with occasional spikes | n8n failover to backup instance |
+| Mixed: high volume + need for alerting | Both: Caddy for primary pool + n8n failover to separate backup |
 
 ## Voice Cloning Configuration
 
