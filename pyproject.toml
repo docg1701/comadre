@@ -1,7 +1,7 @@
 [project]
 name = "cumadre"
 version = "0.1.0"
-description = "Custom Multi-voice Audio Driver — OpenAI-compatible TTS API powered by KokoClone"
+description = "Custom Multi-voice Audio Driver — Dual-engine TTS API: Kokoro fp32 + Qwen3-TTS C++"
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.7",
     "soundfile>=0.13",
+    # LEGACY: will be replaced by kokoro-onnx in Story 1.4
     "kokoclone",
     "num2words>=0.5",
 ]

@@ -58,7 +58,7 @@ so that I know which voices are available and get clear warnings about invalid f
 - `voices.py` is a mid-level module: imported by `service.py` and `health.py`
 - `voices.py` may import from: `config.py`, `logging.py`, `exceptions.py`
 - `voices.py` must NOT import from: `main.py`, `api.py`, `schemas.py`, `service.py`, `health.py`
-- For this story, `voices.py` imports ONLY from `logging.py` (for `get_logger`). The `config.py` import is not needed because `discover_voices()` takes a `Path` parameter. The `exceptions.py` module does not exist yet (Story 1.5).
+- For this story, `voices.py` imports ONLY from `logging.py` (for `get_logger`). The `config.py` import is not needed because `discover_voices()` takes a `Path` parameter. The `exceptions.py` module already exists (created in previous sprint iteration).
 
 **Module Responsibility:**
 - `voices.py` handles: voice file discovery, WAV validation, voice listing
@@ -97,9 +97,9 @@ class VoiceInfo:
 
 - **`wave` stdlib, NOT `soundfile`:** The architecture specifies "Python wave stdlib" for voice discovery (~40 lines). The `soundfile` dependency exists for TTS audio output in Story 1.4 — voice discovery only needs to read WAV headers for validation, not decode audio data.
 - **`discover_voices()` takes a `Path` parameter:** No default value. In Docker, the caller passes `Path("/voices")`. In tests, the caller passes `tmp_path`. This keeps the module pure (no filesystem assumptions) and fully testable.
-- **No state storage:** `discover_voices()` is a pure function that scans and returns. State caching is the caller's responsibility (main.py lifespan in Story 1.7 will store the result).
-- **VoiceInfo dataclass:** Frozen (immutable) dataclass carrying `name` (stem of filename), `path` (full Path to WAV), and `duration_seconds`. The `path` field is needed by Story 1.4's service wrapper to pass the reference WAV to KokoClone.
-- **`list_voice_names()` helper:** Takes an already-discovered `list[VoiceInfo]` and returns sorted names. Used by health endpoint (Story 1.6) and error messages (Story 1.5 `VoiceNotFoundError` hint).
+- **No state storage:** `discover_voices()` is a pure function that scans and returns. State caching is the caller's responsibility (main.py lifespan in Story 1.9 will store the result).
+- **VoiceInfo dataclass:** Frozen (immutable) dataclass carrying `name` (stem of filename), `path` (full Path to WAV), and `duration_seconds`. The `path` field is used for clone reference WAV detection (Qwen3 voice cloning path).
+- **`list_voice_names()` helper:** Takes an already-discovered `list[VoiceInfo]` and returns sorted names. Used by health endpoint (Story 1.8) and error messages (Story 1.7 `VoiceNotFoundError` hint).
 
 **Duration calculation:**
 ```python
@@ -157,7 +157,7 @@ Since we use a custom `PipeFormatter`, capture output from the `voice` logger. U
 - Do NOT use `soundfile` or `librosa` — `wave` stdlib is sufficient for header reading and is zero-dependency
 - Do NOT use `os.listdir()` or `os.walk()` — use `pathlib.Path.iterdir()` for type safety
 - Do NOT recurse into subdirectories — flat scan of the voices directory only
-- Do NOT import from `exceptions.py` — that module does not exist yet (Story 1.5). For this story, validation failures are logged and skipped, not raised as exceptions
+- Do NOT import from `exceptions.py` — for this story, validation failures are logged and skipped, not raised as exceptions
 - Do NOT add voices_dir to `Settings` in `config.py` — the architecture does not prescribe it; the path is passed as a parameter
 - Do NOT create `main.py`, `service.py`, `health.py`, or any other module — those belong to later stories
 - Do NOT store module-level mutable state (e.g., `_discovered_voices: list[VoiceInfo] = []`) — the discovery function is pure; state management is the caller's responsibility

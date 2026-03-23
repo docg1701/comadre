@@ -37,6 +37,7 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 | `speed` | float | No | `1.0` | 0.5 — 2.0 | Speed multiplier (stacks with enhance speed) |
 | `enhance` | bool | No | `true` | true/false | Apply post-processing pipeline |
 | `seed` | int | No | `-1` | -1 or any positive int | Qwen3 random seed (-1 = random). Ignored for Kokoro. |
+| `destination` | string | No | `"whatsapp"` | `whatsapp`, `telegram`, `messenger`, `instagram` | Target platform. When `instagram`, encode as AAC M4A instead of OGG Opus. |
 
 #### Engine routing (fixed, based on `voice`)
 

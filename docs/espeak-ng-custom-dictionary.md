@@ -112,7 +112,7 @@ gps     $abbrev
 sus     s'us       // Sistema Único de Saúde
 pix     p'iks      // Sistema de pagamento instantâneo
 detran  detr'&~    // Departamento de Trânsito
-loas    l'Oas      // Lei Orgânica da Assistência Social
+loas    l'oas      // Lei Orgânica da Assistência Social
 cras    kr'as      // Centro de Referência de Assistência Social
 creas   kr'Eas     // Centro de Referência Especializado
 suas    s'uas      // Sistema Único de Assistência Social
@@ -120,7 +120,7 @@ upa     'upa       // Unidade de Pronto Atendimento
 samu    sam'u      // Serviço de Atendimento Móvel de Urgência
 anvisa  &~v'iza    // Agência Nacional de Vigilância Sanitária
 fiocruz fiokr'us   // Fundação Oswaldo Cruz
-enem    en'e~      // Exame Nacional do Ensino Médio
+enem    en'eIN     // Exame Nacional do Ensino Médio
 fies    f'iEs      // Fundo de Financiamento Estudantil
 prouni  proun'i    // Programa Universidade para Todos
 sisu    siz'u      // Sistema de Seleção Unificada
@@ -209,7 +209,7 @@ done
 | SUS | Palavra | `s'us` | "sus" ✓ |
 | PIX | Palavra | `p'iks` | "pix" ✓ |
 | DETRAN | Palavra | `detr'&~` | "detran" ✓ |
-| ENEM | Palavra | `en'e~` | "enem" ✓ |
+| ENEM | Palavra | `en'eIN` | "enem" ✓ |
 | SAMU | Palavra | `sam'u` | "samu" ✓ |
 | ANVISA | Palavra | `,&~v'iza` | "anvisa" ✓ |
 

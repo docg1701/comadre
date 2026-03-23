@@ -387,7 +387,7 @@ Some seeds cause runaway generation for specific phrases. Always test the chosen
 
 ```python
 # Siglas pronounced as WORD (do NOT space out)
-WORD_ACRONYMS = {'SUS', 'PIX', 'PIS', 'LOAS', 'CEP'}
+WORD_ACRONYMS = {'SUS', 'PIX', 'PIS', 'LOAS', 'CEP', 'DETRAN', 'ENEM', 'SAMU', 'ANVISA'}
 
 # Siglas that must be SPELLED (space between letters)
 # All other 2+ uppercase letter sequences

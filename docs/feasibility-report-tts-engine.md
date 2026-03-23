@@ -118,14 +118,14 @@ ffmpeg -y -i _final.wav -c:a libopus -b:a 24k -ar 16000 -ac 1 output.ogg
 | Temperature | 0.7 (more stable than default 0.9) |
 | Top-k | 50+ (k10 causes infinite loops) |
 | Seed | `--seed N` for reproducibility (custom patch) |
-| Max tokens | Dynamic: `min(768, len(text) * 6 + 100)` |
+| Max tokens | Dynamic: `min(4096, max(100, len(text) * 8))` |
 | Voice cloning | `-r reference.wav` (x-vector extraction) |
 | Speed | 1.15x via ffmpeg atempo (Qwen3 tends to sound slow) |
 
 ### Qwen3 sigla format
 
 ```python
-WORD_ACRONYMS = {'SUS', 'PIX', 'PIS', 'LOAS', 'CEP'}
+WORD_ACRONYMS = {'SUS', 'PIX', 'PIS', 'LOAS', 'CEP', 'DETRAN', 'ENEM', 'SAMU', 'ANVISA'}
 
 def expand_siglas(text):
     import re
@@ -216,7 +216,7 @@ The default voice (no reference audio) produces **better pt-BR accent** than the
 
 ## Runaway Generation Safeguards (Qwen3 ONNX + C++)
 
-- Dynamic `max_tokens` based on text length: `min(768, len(text) * 6 + 100)`
+- Dynamic `max_tokens` based on text length: `min(4096, max(100, len(text) * 8))`
 - Post-generation silence trimming
 - Seed-based reproducibility for known-good outputs
 - Chatterbox ONNX: TokenLoopDetector (3x repeat, ABAB, silence loop detection)
@@ -234,7 +234,7 @@ Request arrives
     │   │
     │   └── NO → Kokoro fp32
     │             ├── Voice: pm_santa (default), pf_dora (female), pm_alex (alt male)
-    │             ├── Preprocessing: normalize_text() + chunk_text() + expand_siglas()
+    │             ├── Preprocessing: normalize_text() + chunk_text()
     │             ├── Phonemizer: espeak-ng compiled (PR #2344)
     │             └── Post-process: vibrato_warm + noise 0.45/0.24
     │

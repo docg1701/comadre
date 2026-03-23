@@ -113,7 +113,7 @@ Four fields, pipe-delimited:
 
 **Component tags used across the project** (from UX-DR3): `startup`, `request`, `memory`, `health`, `voice`. Other stories will call `get_logger()` with these names.
 
-**Request logs** (future Story 1.7) will include: method, path, voice, format, chars, duration — but the logging module itself just provides the formatter and `get_logger()`. The calling code constructs the message string.
+**Request logs** (future Story 1.9) will include: method, path, voice, format, chars, duration — but the logging module itself just provides the formatter and `get_logger()`. The calling code constructs the message string.
 
 **Implementation approach:**
 - Subclass `logging.Formatter` to create `PipeFormatter`

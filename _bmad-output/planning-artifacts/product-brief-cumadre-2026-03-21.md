@@ -13,7 +13,7 @@ author: Galvani
 
 ## Executive Summary
 
-CUMADRE (Cumadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with zero-shot voice cloning, purpose-built for automated customer service audio responses in Brazilian Portuguese. It runs as a network-isolated Docker service on a cheap VPS or any internet-connected PC, serving n8n chatbot workflows over the local network. The service wraps KokoClone (Kokoro TTS + Kanade voice conversion) behind a thin FastAPI layer with an OpenAI-compatible endpoint, requiring no cloud dependencies after deployment.
+CUMADRE (Cumadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with optional voice cloning, purpose-built for automated customer service audio responses in Brazilian Portuguese. It runs as a network-isolated Docker service on a cheap VPS or any internet-connected PC, serving n8n chatbot workflows over the local network. The service uses a dual-engine architecture — Kokoro fp32 for fast built-in voices and Qwen3-TTS C++ Q8_0 for voice cloning — behind a FastAPI layer with an OpenAI-compatible endpoint, requiring no cloud dependencies after deployment.
 
 ---
 
@@ -31,16 +31,20 @@ Without a self-hosted voice solution, every audio response depends on third-part
 
 - **Cloud TTS APIs** (ElevenLabs, Google, Azure) require internet access on every request, introduce latency, cost per character, and send customer data externally.
 - **Kokoro-FastAPI** provides TTS but lacks voice cloning — responses sound generic, not like a real employee.
-- **KokoClone** provides the full TTS + voice cloning pipeline but ships without a REST API, Dockerfile, or any deployment tooling.
+- **KokoClone** (Kokoro + Kanade voice conversion) was evaluated and rejected — Kanade produces 1/10 diction quality on CPU.
+- **Chatterbox Multilingual** was evaluated and rejected — sigla pronunciation fundamentally broken for the legal domain (character-level tokenization, no phoneme control).
+- **No single open-source engine** provides both fast built-in voices and voice cloning at acceptable quality on CPU-only hardware.
 
 ### Proposed Solution
 
-A minimal Docker service that wraps KokoClone's Python API with a single FastAPI endpoint (`POST /v1/audio/speech`), deployed via Ansible to a network-isolated VPS. The service receives text from n8n workflows, generates speech with Kokoro, converts it to a cloned employee voice with Kanade, and returns WAV or OGG audio. No internet access required after initial model download. Managed entirely through Ansible playbooks for bootstrap, updates, cleanup, and health monitoring.
+A Docker service with a dual-engine TTS architecture behind a single FastAPI endpoint (`POST /v1/audio/speech`), deployed via Ansible to a network-isolated VPS. Kokoro fp32 handles fast built-in voices (pm_santa, pf_dora, pm_alex) with perfect sigla pronunciation via espeak-ng custom dictionary. Qwen3-TTS C++ Q8_0 handles voice cloning with a pre-configured reference audio. Voice-based routing selects the engine automatically. Each engine has its own post-processing pipeline optimized for WhatsApp audio delivery (OGG Opus 24kbps 16kHz mono). No internet access required after initial model download. Managed entirely through Ansible playbooks for bootstrap, updates, cleanup, and health monitoring. n8n-side failover pattern enables alerting and text fallback when the service is overloaded.
 
 ### Key Differentiators
 
 - **Fully network-isolated** — zero external API calls after deploy, no customer data leaves the local network.
-- **Zero-shot voice cloning** — a single 3-10s WAV reference produces consistent employee-voice responses without training.
+- **Dual-engine architecture** — Kokoro fp32 for speed (RTF 1.1x, perfect sigla pronunciation), Qwen3-TTS C++ Q8_0 for voice cloning (RTF 2.5x).
+- **Pre-configured voice cloning** — reference audio placed on server at deploy time, seed-based reproducibility for consistent output.
+- **Perfect sigla pronunciation** — custom espeak-ng pt_extra dictionary with 67 entries (CPF, CNPJ, FGTS, SUS, etc.) verified 34/34 correct.
 - **Self-hosted on commodity hardware** — runs on a 4 vCPU / 8 GB RAM VPS or any home PC.
 - **OpenAI-compatible API** — drop-in integration with n8n HTTP Request nodes.
 - **Complete lifecycle management** — Ansible playbooks for bootstrap deploy, safe updates, full cleanup, and health checks.
@@ -55,7 +59,7 @@ CUMADRE's primary consumer is the n8n instance running on the same local network
 
 - **Interaction:** HTTP POST with JSON body, receives WAV/OGG binary response
 - **Frequency:** On every customer interaction that requires an audio response
-- **Expectation:** Response within 1-3 seconds, consistent voice quality
+- **Expectation:** Response within 5-16s (Kokoro) or 12-37s (Qwen3), consistent voice quality. WhatsApp conversations are async — latency is acceptable.
 
 #### DevOps Operator (Human Operator)
 
@@ -74,8 +78,8 @@ Customers interacting with the chatbot on WhatsApp, Telegram, or other messaging
 ### User Journey
 
 1. **DevOps operator** runs Ansible bootstrap playbook → CUMADRE is deployed, models download, warm-up completes
-2. **DevOps operator** copies employee reference WAV to the voices directory
-3. **n8n workflow** receives customer message → processes through STT/LLM → calls CUMADRE API → receives audio → sends to customer
+2. **DevOps operator** optionally places clone reference WAV on the server for Qwen3 voice cloning
+3. **n8n workflow** receives customer message → processes through STT/LLM → calls CUMADRE API (voice name selects engine) → receives OGG Opus audio → sends to customer on WhatsApp
 4. **DevOps operator** periodically checks health endpoint and docker stats, runs update playbook when repo changes
 
 ## Success Metrics
@@ -86,13 +90,15 @@ Service success is measured by operational reliability and audio quality — the
 
 | Metric | Target | Measurement |
 |---|---|---|
-| Response latency | < 3s per request (short phrases ~15 words) | `time curl` against the endpoint |
-| Audio quality | Natural-sounding cloned voice in pt-BR | Manual listening test (20 sample phrases) |
+| Response latency (Kokoro) | Typical 5-16s per request | `time curl` against the endpoint with Kokoro voice |
+| Response latency (Qwen3) | Typical 12-37s per request | `time curl` against the endpoint with clone voice |
+| Audio quality | Natural-sounding pt-BR with correct sigla pronunciation | Manual listening test (20 sample phrases) |
 | Service availability | 99%+ uptime (excluding scheduled restarts) | Health endpoint monitoring |
-| Throughput | 20-60 req/min on 4 vCPU | Load test with concurrent requests |
-| RAM usage | < 3 GB steady state | `docker stats tts-service` |
+| Throughput (Kokoro) | ~10 req/min per instance on 4 vCPU | Load test with concurrent requests |
+| Throughput (Qwen3) | ~4.8 req/min per instance on 4 vCPU | Load test with concurrent requests |
+| RAM usage | < 6 GB total (both engines loaded) | `docker stats tts-service` |
 | Cold start time | < 120s (model download excluded) | Time from `docker compose up` to healthy |
-| Warm-up time | First request after restart < 5s | Health check `start_period` |
+| Warm-up time | First request after restart < 10s | Health check `start_period` |
 
 ### Business Objectives
 
@@ -108,27 +114,32 @@ Service success is measured by operational reliability and audio quality — the
 - **Deploy success rate:** Ansible bootstrap completes without manual intervention on a clean VPS
 - **Safe update rate:** Repo update playbook preserves voice files and model cache 100% of the time
 - **OGG compatibility:** `response_format: ogg` produces valid Telegram-compatible voice notes
-- **Memory stability:** RAM does not grow beyond 4 GB over 24h continuous operation (mitigated by daily restart cron)
+- **Memory stability:** RAM does not grow beyond 6 GB over 24h continuous operation (daily restart as safety net; Kokoro leak fixed in phonemizer-fork >=3.3.2)
 
 ## MVP Scope
 
 ### Core Features
 
 **TTS Service (Docker container):**
-- FastAPI server wrapping KokoClone's Python API (~80 lines)
-- `POST /v1/audio/speech` — OpenAI-compatible endpoint, accepts JSON, returns WAV or OGG
-- `GET /health` — reports status and available voices
+- FastAPI server with dual-engine architecture (Kokoro fp32 + Qwen3-TTS C++ Q8_0)
+- `POST /v1/audio/speech` — OpenAI-compatible endpoint, accepts JSON, returns OGG Opus audio
+- `GET /health` — reports status, available voices, engine load, queue depth, clone configuration
 - Bearer token authentication via `API_KEY` environment variable (shared secret, checked on every request)
-- Configurable worker count via `WORKERS` env var (default 1, increase to scale throughput at cost of RAM)
-- Automatic model download from HuggingFace on first run
-- Warm-up on startup to prevent slow first request
-- Brazilian Portuguese via espeak-ng phonemizer
+- Single FIFO queue per instance with asyncio.Lock (horizontal scaling via Caddy load balancer)
+- Voice-based engine routing: santa/dora/alex → Kokoro; clone/qwen-female/qwen-male → Qwen3
+- Engine-specific post-processing: vibrato_warm (Kokoro), whatsapp-subtle (Qwen3) → OGG Opus 24kbps 16kHz mono
+- Engine-specific preprocessing: normalize_text + chunk_text (Kokoro), expand_siglas (Qwen3)
+- espeak-ng custom pt_extra dictionary for perfect sigla pronunciation (Kokoro path)
+- Qwen3 THINK mode with seed reproducibility for consistent cloned voice output
+- Automatic model download on first run (Kokoro ONNX ~325 MB, Qwen3 GGUF ~1.6 GB)
+- Dual-engine warm-up on startup
+- Brazilian Portuguese via espeak-ng phonemizer (Kokoro) and native BPE tokenizer (Qwen3)
 
 **Docker packaging:**
 - Dockerfile based on python:3.12-slim with espeak-ng, ffmpeg, libsndfile
-- docker-compose.yml with TTS service, volume mounts for voices and model cache
-- Resource limits and health check configured
-- Daily restart cron on host to mitigate Kokoro memory leak
+- compose.yaml (Docker Compose v2) with TTS service, volume mounts for voices, models, and noise files
+- Resource limits (4 CPU, 6 GB) and health check configured
+- Daily restart cron on host as safety net
 
 **Ansible playbooks:**
 - `bootstrap.yml` — full deploy from scratch: install Docker, clone repo, copy voice files, configure API key, build and start containers
@@ -137,8 +148,9 @@ Service success is measured by operational reliability and audio quality — the
 - `health.yml` — check service status: health endpoint, docker stats, container state, disk usage
 
 **Voice configuration:**
-- Single employee reference WAV (3-10s) mounted as volume
-- Configurable via `DEFAULT_VOICE` environment variable
+- Built-in Kokoro voices: pm_santa (M, default), pf_dora (F), pm_alex (M)
+- Optional clone reference WAV (3-10s) placed on server at deploy time for Qwen3 voice cloning
+- Voice selection via `voice` request parameter; `DEFAULT_VOICE` env var for default
 
 **Project documentation:**
 - README.md (Brazilian Portuguese) — public-facing project description
@@ -160,11 +172,13 @@ Service success is measured by operational reliability and audio quality — the
 | Criteria | Validation |
 |---|---|
 | Bootstrap deploys cleanly on a fresh VPS | Run `ansible-playbook bootstrap.yml` on clean Ubuntu, service reaches healthy state |
-| Audio generation works end-to-end | `curl POST /v1/audio/speech` with API key returns playable WAV with cloned voice |
+| Audio generation works end-to-end | `curl POST /v1/audio/speech` with API key returns playable OGG Opus audio with correct voice |
+| Dual engine routing works | Kokoro voices (santa, dora, alex) use Kokoro engine; clone/qwen voices use Qwen3 |
 | Unauthorized requests rejected | Requests without valid API key return 401 |
-| OGG output works for Telegram | `response_format: ogg` produces valid OGG/Vorbis audio |
-| Latency within budget | < 3s for ~15 word phrases on 4 vCPU |
-| Multiple workers function correctly | Service runs with `WORKERS=2`, handles concurrent requests |
+| OGG Opus output works for WhatsApp | Output is valid OGG Opus 24kbps 16kHz mono |
+| Sigla pronunciation correct | CPF, CNPJ, FGTS, SUS, LOAS etc. pronounce correctly via Kokoro+pt_extra |
+| Latency within budget | Kokoro typical 5-16s, Qwen3 typical 12-37s on 4 vCPU |
+| Queue handles concurrent requests | Single FIFO queue processes requests sequentially without failures |
 | Update preserves data | Run `update.yml`, verify voices, model cache, and API key intact |
 | Cleanup is total | Run `cleanup.yml`, verify zero CUMADRE artifacts remain on VPS |
 | Health check is accurate | `health.yml` reports real container/service state |

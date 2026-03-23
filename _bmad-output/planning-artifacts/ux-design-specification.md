@@ -19,18 +19,18 @@ inputDocuments:
 
 ### Project Vision
 
-CUMADRE is a headless, self-hosted TTS service with zero-shot voice cloning — a pure API backend with no graphical interface. The UX domain is API ergonomics, developer experience, and operational workflows. The "interfaces" are: the HTTP API contract (consumed by n8n), the health endpoint (consumed by monitoring and operators), Ansible playbook output (the operator's primary interaction surface), and error/log messages (the service's voice when things go wrong).
+CUMADRE is a headless, self-hosted TTS service with optional dual-engine TTS via dual-engine architecture — a pure API backend with no graphical interface. The UX domain is API ergonomics, developer experience, and operational workflows. The "interfaces" are: the HTTP API contract (consumed by n8n), the health endpoint (consumed by monitoring and operators), Ansible playbook output (the operator's primary interaction surface), and error/log messages (the service's voice when things go wrong).
 
 ### Target Users
 
 **n8n Workflow Engine (Machine Consumer)**
-The primary consumer. Interacts exclusively via HTTP. UX needs: predictable OpenAI-compatible contract, clear error codes for programmatic handling, fast responses (<3s), and a reliable warm-up/readiness signal (503 → 200 transition).
+The primary consumer. Interacts exclusively via HTTP. UX needs: predictable OpenAI-compatible contract, clear error codes for programmatic handling, timely responses (Kokoro 5-16s, Qwen3 12-37s — acceptable for async WhatsApp), and a reliable warm-up/readiness signal (503 → 200 transition).
 
 **DevOps Operator (Human — "Carlos")**
 Deploys, updates, monitors, and decommissions via Ansible CLI and SSH. UX needs: single-command lifecycle operations, data preservation guarantees on updates, at-a-glance health status, guided first-run experience, and clear failure diagnostics.
 
 **End Customers (Indirect Beneficiaries)**
-Hear the cloned voice on WhatsApp/Telegram. Never interact with CUMADRE directly. UX impact: voice quality and latency determine their experience, but they are outside the design boundary.
+Hear the natural voice on WhatsApp/Telegram. Never interact with CUMADRE directly. UX impact: voice quality and latency determine their experience, but they are outside the design boundary.
 
 ### Key Design Challenges
 
@@ -58,7 +58,7 @@ CUMADRE has two distinct interaction surfaces, each with its own "core experienc
 
 **API Consumer (n8n):** The defining experience is `POST /v1/audio/speech` — text in, audio out. This request/response cycle executes on every customer interaction and must be indistinguishable from calling the OpenAI audio API. The core loop is: receive text from LLM → POST to CUMADRE → receive audio binary → send to customer. Any friction in this loop (unexpected response format, unclear errors, inconsistent behavior) breaks the automation chain.
 
-**DevOps Operator (Carlos):** The defining experience is the first deployment. Running `ansible-playbook bootstrap.yml` and hearing cloned-voice audio from the first test `curl` is the moment CUMADRE proves its value. Every subsequent interaction (update, health check, troubleshooting) must reinforce the confidence established in that first deployment.
+**DevOps Operator (Carlos):** The defining experience is the first deployment. Running `ansible-playbook bootstrap.yml` and hearing natural-voice audio from the first test `curl` is the moment CUMADRE proves its value. Every subsequent interaction (update, health check, troubleshooting) must reinforce the confidence established in that first deployment.
 
 ### Platform Strategy
 
@@ -82,9 +82,9 @@ No browser-based UI. No mobile considerations. No offline mode. The service is a
 
 ### Critical Success Moments
 
-1. **First audio from first curl** — Bootstrap completes, operator runs a test request, hears the cloned voice. This is the trust-establishing moment. If this works cleanly, the operator believes in the system.
+1. **First audio from first curl** — Bootstrap completes, operator runs a test request, hears the natural voice. This is the trust-establishing moment. If this works cleanly, the operator believes in the system.
 
-2. **First production customer response** — n8n sends real customer text, audio returns in <3s, customer hears a natural voice on WhatsApp. The system delivers its core promise.
+2. **First production customer response** — n8n sends real customer text, audio arrives before the customer moves on, customer hears a natural voice on WhatsApp. The system delivers its core promise.
 
 3. **First update preserves everything** — Operator runs `update.yml`, service restarts with new code, voices and cache intact. Trust is reinforced — updates are safe.
 
@@ -116,7 +116,7 @@ No browser-based UI. No mobile considerations. No offline mode. The service is a
 |---|---|---|
 | Discovery (reading docs) | Clarity — "I understand exactly what this does and doesn't do" | Concise, honest documentation with no marketing fluff |
 | First bootstrap | Guided confidence — "Each step is working, I can see progress" | Clear Ansible task names, visible progress, no silent pauses |
-| First test curl | Delight — "It actually sounds like a real person" | High-quality cloned voice audio from the first request |
+| First test curl | Delight — "It actually sounds like a real person" | High-quality natural voice audio from the first request |
 | Production integration | Relief — "It just plugs in, no custom code" | OpenAI-compatible API works with n8n HTTP Request node immediately |
 | Routine operation | Forgettable — "I don't think about it, it just runs" | Service runs silently, daily restart cron handles memory leak |
 | Incident at 2 AM | Calm control — "I know what's wrong and how to fix it" | Health playbook gives actionable diagnosis, not raw data |
@@ -180,7 +180,7 @@ The tools Carlos already uses daily. Ansible's strength: task-based output where
 - Structured JSON error responses with `error.message` and `error.type` fields for both machine parsing and human reading
 
 **Operational Patterns (from Caddy):**
-- Sensible defaults eliminate config: if you don't specify a voice, use `DEFAULT_VOICE`; if you don't specify format, default to `wav`; if you don't set workers, default to 1
+- Sensible defaults eliminate config: if you don't specify a voice, use `DEFAULT_VOICE`; if you don't specify format, default to `ogg`
 - Single artifact deployment: one Dockerfile, one docker-compose.yml, one Ansible playbook per operation
 - Structured JSON health output that tools can parse and humans can read
 - Clear startup logging: what's loading, what's ready, what failed — no silent boot
@@ -260,11 +260,13 @@ This is the "design system" for a headless service: not visual components, but i
 ```json
 {
   "status": "healthy|warming_up|degraded",
-  "voices": ["carlos"],
+  "voices": ["santa", "dora", "alex", "clone", "qwen-female", "qwen-male"],
+  "engines": {"kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]}, "qwen3": {"loaded": true, "model": "q8_0", "clone_reference": "configured"}},
+  "queue_depth": 0,
+  "clone_configured": true,
   "uptime_seconds": 3600,
-  "memory_mb": 2048,
-  "workers": 2,
-  "version": "1.0.0"
+  "memory_mb": 4200,
+  "version": "0.2.0"
 }
 ```
 
@@ -298,9 +300,9 @@ No visual theming, no brand tokens, no typography decisions. The "brand" is cons
 
 CUMADRE's defining experience is making something complex feel like something users already do every day:
 
-**For n8n (machine consumer):** "Send text, get back a human-sounding voice — in one HTTP call." The defining moment is indistinguishable from calling OpenAI's API, except the response comes from local hardware with a cloned voice. The innovation is invisible — it's in the result, not the interaction.
+**For n8n (machine consumer):** "Send text, get back a human-sounding voice — in one HTTP call." The defining moment is indistinguishable from calling OpenAI's API, except the response comes from local hardware with a natural voice. The innovation is invisible — it's in the result, not the interaction.
 
-**For Carlos (DevOps operator):** "Run one command, get a working voice cloning service." The defining moment is hearing cloned-voice audio from the first test curl after bootstrap. A complex ML pipeline (TTS + voice conversion + audio encoding) reduced to a familiar Ansible workflow.
+**For Carlos (DevOps operator):** "Run one command, get a working dual-engine TTS service." The defining moment is hearing natural-voice audio from the first test curl after bootstrap. A complex ML pipeline (TTS + voice conversion + audio encoding) reduced to a familiar Ansible workflow.
 
 The product's genius is that users never feel like they're doing something new. They feel like they're doing something they already know — but the output is remarkable.
 
@@ -335,9 +337,9 @@ CUMADRE must fit into Carlos's existing operational workflow, not create a new o
 |---|---|
 | API contract matches OpenAI exactly | n8n HTTP Request node works with zero custom configuration |
 | Response contains valid audio | Output plays correctly on WhatsApp/Telegram |
-| Latency is imperceptible to workflow | < 3s for short phrases, within n8n's timeout budget |
+| Latency is imperceptible to workflow | Kokoro typical 5-16s, Qwen3 typical 12-37s — acceptable for async WhatsApp conversations |
 | Errors are parseable by n8n | n8n IF node can route on HTTP status code and error type |
-| Voice sounds natural and consistent | Manual listening test: cloned voice is recognizable across requests |
+| Voice sounds natural and consistent | Manual listening test: natural voice is recognizable across requests |
 
 **Service Lifecycle Loop (Carlos):**
 
@@ -356,7 +358,7 @@ CUMADRE uses **zero novel interaction patterns**. Both core loops follow establi
 - **API loop:** Standard REST request/response, identical to OpenAI's audio API — a pattern millions of developers already know
 - **Ops loop:** Standard Ansible playbook execution with Docker Compose — a pattern every DevOps engineer uses daily
 
-**The innovation is in the output, not the interaction.** Voice cloning from a single reference WAV on commodity hardware is remarkable. The way you access it is deliberately unremarkable. This is a conscious design choice: reducing cognitive load to zero by meeting users exactly where they already are.
+**The innovation is in the output, not the interaction.** Dual-engine TTS with perfect sigla pronunciation and optional voice cloning on commodity hardware is remarkable. The way you access it is deliberately unremarkable. This is a conscious design choice: reducing cognitive load to zero by meeting users exactly where they already are.
 
 **One adapted pattern:** The `error.hint` field in API error responses. This extends the OpenAI error format (established) with actionable recovery guidance (adapted). It's a minor addition that doesn't break the existing mental model but adds significant value for a self-hosted context where the operator can actually fix things.
 
@@ -390,7 +392,7 @@ CUMADRE uses **zero novel interaction patterns**. Both core loops follow establi
 4. COMPLETION
    n8n receives audio binary
    → Forwards to WhatsApp/Telegram as voice note
-   → Customer hears cloned voice response
+   → Customer hears natural voice response
 ```
 
 **Loop 2: Service Lifecycle (Carlos → Ansible → CUMADRE)**
@@ -454,11 +456,13 @@ All JSON output follows consistent formatting rules:
 ```json
 {
   "status": "healthy",
-  "voices": ["carlos"],
+  "voices": ["santa", "dora", "alex", "clone", "qwen-female", "qwen-male"],
+  "engines": {"kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]}, "qwen3": {"loaded": true, "model": "q8_0", "clone_reference": "configured"}},
+  "queue_depth": 0,
+  "clone_configured": true,
   "uptime_seconds": 3600,
-  "memory_mb": 2048,
-  "workers": 2,
-  "version": "1.0.0"
+  "memory_mb": 4200,
+  "version": "0.2.0"
 }
 ```
 
@@ -558,7 +562,7 @@ The service extends established patterns (OpenAI API, Ansible conventions) with 
 |---|---|---|
 | API success responses | OpenAI-identical binary audio | None — exact match |
 | API error responses | OpenAI JSON error format | Added `hint` field with actionable recovery guidance |
-| Health endpoint | Simple status JSON | Extended with voices, memory, uptime, workers, version, warm-up status |
+| Health endpoint | Simple status JSON | Extended with voices, engines, queue_depth, clone_configured, memory, uptime, version, warm-up status |
 | Ansible playbooks | Standard task execution | `[Component] Action` naming, summary tasks, prerequisite checks |
 | Application logs | Python logging | Pipe-delimited structured format with component tags |
 | Documentation | Standard markdown | Copy-paste-ready examples, configuration tables, error examples alongside successes |
@@ -625,7 +629,7 @@ flowchart TD
 
     P --> Q["[Summary] Bootstrap complete"]
     Q --> R["Carlos runs test curl"]
-    R --> S["Hears cloned voice audio"]
+    R --> S["Hears natural voice audio"]
 
     style F1 fill:#ff6b6b,color:#fff
     style G1 fill:#ff6b6b,color:#fff
@@ -659,14 +663,14 @@ flowchart TD
     F -->|Valid token| G{Parse request body}
 
     G -->|Missing 'input'| G1["400 + hint: Required field 'input' with text"]
-    G -->|Invalid format| G2["400 + hint: response_format must be wav or ogg"]
+    G -->|Invalid format| G2["400 + hint: response_format must be ogg or wav"]
     G -->|Valid| H{Voice lookup}
 
     H -->|Not found| H1["404 + hint: Available voices list + how to add"]
-    H -->|Found| I[Kokoro TTS generates speech]
+    H -->|Found| I[Route to engine based on voice name]
 
     I -->|Model error| I1["500 + hint: Check logs, consider restart"]
-    I -->|OK| J[Kanade converts to cloned voice]
+    I -->|OK| J[Engine generates speech + post-processing pipeline]
 
     J --> K{response_format?}
     K -->|wav| L["Return audio/wav binary"]
@@ -677,7 +681,7 @@ flowchart TD
     L --> O[n8n receives audio]
     N --> O
     O --> P[n8n sends voice note to customer]
-    P --> Q["Customer hears cloned voice"]
+    P --> Q["Customer hears natural voice"]
 
     style F1 fill:#ff6b6b,color:#fff
     style G1 fill:#ff6b6b,color:#fff
@@ -820,20 +824,22 @@ raise VoiceNotFoundError(
 
 **Specification:**
 - Input: None (reads from runtime state)
-- Output: JSON with `status`, `voices`, `uptime_seconds`, `memory_mb`, `workers`, `version`
+- Output: JSON with `status`, `voices`, `engines`, `queue_depth`, `clone_configured`, `uptime_seconds`, `memory_mb`, `version`
 - States: `healthy` (all systems normal), `warming_up` (models loading), `degraded` (high memory or missing voices)
-- Sources: `psutil` for memory, voice discovery module for voices, startup timestamp for uptime, env var for workers
+- Sources: `psutil` for memory, voice config for voices/engines, startup timestamp for uptime, asyncio.Lock state for queue_depth, clone reference path for clone_configured
 
 **Implementation:** Called by the `GET /health` endpoint. Aggregates data from multiple sources into a single flat JSON response.
 
 ```json
 {
   "status": "healthy",
-  "voices": ["carlos"],
+  "voices": ["santa", "dora", "alex", "clone", "qwen-female", "qwen-male"],
+  "engines": {"kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]}, "qwen3": {"loaded": true, "model": "q8_0", "clone_reference": "configured"}},
+  "queue_depth": 0,
+  "clone_configured": true,
   "uptime_seconds": 3600,
-  "memory_mb": 2048,
-  "workers": 2,
-  "version": "1.0.0"
+  "memory_mb": 4200,
+  "version": "0.2.0"
 }
 ```
 
@@ -978,7 +984,9 @@ No phased roadmap needed — all components are small enough to build as part of
 | `voices` | Yes | Array of loaded voice names |
 | `uptime_seconds` | Yes | Seconds since service start |
 | `memory_mb` | Yes | Current RSS memory in MB |
-| `workers` | Yes | Number of active worker processes |
+| `engines` | Yes | Per-engine status and voice assignments |
+| `queue_depth` | Yes | Current FIFO queue length |
+| `clone_configured` | Yes | Whether clone reference WAV is available |
 | `version` | Yes | Service version string |
 
 **Consistency rules:**
@@ -1034,9 +1042,9 @@ Phase 4: [Summary] Confirmation with proof
 
 | Configuration | Default | Override |
 |---|---|---|
-| Voice | `DEFAULT_VOICE` env var, first WAV in `/voices/` if unset | `voice` field in API request |
-| Audio format | `wav` | `response_format` field in API request |
-| Workers | `1` | `WORKERS` env var |
+| Voice | `santa` (default), engine-mapped | `voice` field in API request (santa/dora/alex → Kokoro, clone/qwen-* → Qwen3) |
+| Audio format | `ogg` (OGG Opus) | `response_format` field in API request |
+| Default Voice | `santa` | `DEFAULT_VOICE` env var |
 | Port | `8000` | `PORT` env var |
 | API key | None (required) | `API_KEY` env var |
 
@@ -1060,13 +1068,13 @@ CUMADRE must work correctly across different operational contexts without requir
 
 | Context | Adaptation | How |
 |---|---|---|
-| Low-spec VPS (2 vCPU, 4 GB RAM) | Single worker, reduced throughput | `WORKERS=1` default; health endpoint reports memory pressure |
-| Standard VPS (4 vCPU, 8 GB RAM) | Multiple workers, target throughput | `WORKERS=2`; resource limits in docker-compose.yml |
+| Low-spec VPS (2 vCPU, 4 GB RAM) | Single instance, reduced throughput | Kokoro-only recommended; Qwen3 may be too slow |
+| Standard VPS (4 vCPU, 8 GB RAM) | Single instance, dual-engine | Both engines loaded; 4-core sweet spot for Qwen3 |
 | Development/testing (local PC) | Same behavior as production | Same Docker image, same API contract; no "dev mode" |
 | Slow network (remote VPS) | Ansible output still readable | No ANSI colors that break over slow SSH; plain ASCII only |
 | Restricted network (post-deploy) | Full operation without internet | All models cached locally; zero outbound calls |
 
-**Key principle:** The service behaves identically regardless of where it runs. The only knobs are `WORKERS` (scale) and resource limits (safety). No environment-specific configuration, no "production vs. staging" modes.
+**Key principle:** The service behaves identically regardless of where it runs. The only knobs are voice selection (engine routing) and resource limits (safety). Horizontal scaling via Caddy load balancer for throughput. No environment-specific configuration, no "production vs. staging" modes.
 
 ### Interaction Accessibility
 

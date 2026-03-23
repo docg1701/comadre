@@ -158,7 +158,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 ```
 
-**httpx:** In 0.28+, the `app` parameter on `AsyncClient()` was removed. Tests must use `transport=httpx.ASGITransport(app=app)` instead. This affects conftest.py in Story 1.8.
+**httpx:** In 0.28+, the `app` parameter on `AsyncClient()` was removed. Tests must use `transport=httpx.ASGITransport(app=app)` instead. This affects conftest.py in Story 1.10.
 
 **hadolint:** Configure in `.hadolint.yaml`. Trust `DL3008` (apt version pinning) and `DL3013` (pip version pinning — not applicable since we use uv). Use `DL3059` trust for multiple consecutive RUN instructions if needed.
 

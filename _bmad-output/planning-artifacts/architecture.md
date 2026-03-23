@@ -27,11 +27,11 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 | Category | FRs | Architectural Implication |
 |---|---|---|
-| Audio Generation (FR1-FR5) | Text → TTS → voice cloning → audio output | Core pipeline: Kokoro TTS + Kanade voice conversion, espeak-ng for pt-BR phonemization |
+| Audio Generation (FR1-FR5b) | Text → engine routing → TTS → post-processing → audio output | Dual-engine pipeline: Kokoro fp32 (built-in voices, espeak-ng pt_extra) + Qwen3-TTS C++ Q8_0 (voice cloning), engine-specific post-processing |
 | API Interface (FR6-FR10) | OpenAI-compatible endpoint, bearer auth, error codes, 503 warm-up | FastAPI with middleware auth, structured error handlers, startup readiness gate |
 | Service Health & Monitoring (FR11-FR13) | Health endpoint with status, voices, uptime | Dedicated health route aggregating runtime state from multiple sources |
 | Voice Management (FR14-FR16) | Volume-mounted WAV files, discovery at startup, configurable default | Voice discovery module scanning /voices/ directory, validation at boot |
-| Container Lifecycle (FR17-FR21) | Auto model download, persistent cache, warm-up, configurable workers | Docker volumes for models and voices, multi-process via uvicorn workers, startup warm-up hook |
+| Container Lifecycle (FR17-FR21) | Auto model download, persistent cache, dual warm-up, single FIFO queue | Docker volumes for models/voices/noise, single process with asyncio.Lock queue, startup dual-engine warm-up, horizontal scaling via Caddy |
 | Deployment & Operations (FR22-FR26) | Four Ansible playbooks, daily restart cron | Ansible roles for bootstrap/update/cleanup/health, host-level cron for memory leak |
 | Security & Isolation (FR27-FR28) | Zero outbound network post-deploy, Docker resource limits | Network-isolated container, CPU/memory constraints in docker-compose.yml |
 
@@ -39,11 +39,13 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 | NFR | Target | Architectural Driver |
 |---|---|---|
-| Response latency | < 3s (~15 words, 4 vCPU) | CPU-bound inference — worker count and process isolation matter |
-| Cold start | < 120s (excl. model download) | Model loading + warm-up inference on startup |
-| Memory per worker | < 3 GB steady state | Each worker loads full model stack independently |
-| Memory stability | No growth beyond 4 GB over 24h | Upstream Kokoro leak — mitigated by daily restart cron, not code fix |
-| Throughput | 20-60 req/min | Linear scaling via WORKERS env var (independent processes) |
+| Response latency (Kokoro) | Typical 5-16s per request | CPU-bound inference, RTF 1.1x + post-processing ~2s |
+| Response latency (Qwen3) | Typical 12-37s per request | CPU-bound inference, RTF 2.5x + post-processing ~2s |
+| Cold start | < 120s (excl. model download) | Dual-engine model loading + warm-up on startup |
+| Memory total | < 6 GB steady state | Both engines loaded in single instance |
+| Memory stability | Stable over 24h | Kokoro leak fixed in phonemizer-fork >=3.3.2; daily restart as safety net |
+| Throughput (Kokoro) | ~10 req/min per instance | Sequential processing via asyncio.Lock |
+| Throughput (Qwen3) | ~4.8 req/min per instance | Sequential processing via asyncio.Lock |
 | Availability | 99%+ (excl. scheduled restarts) | Docker restart policy + health check + cron restart |
 | Data preservation | 100% on updates | Docker volumes for voices and model cache, not baked into image |
 
@@ -57,28 +59,34 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 | Constraint | Source | Impact |
 |---|---|---|
-| KokoClone is a bare Python library | Upstream project | Must wrap API, manage model lifecycle, handle memory leak |
-| Kokoro memory leak | Known upstream issue | Daily container restart cron required; health endpoint must report memory |
-| espeak-ng is the sole phonemizer for pt-BR | Kokoro/misaki has no native Portuguese G2P | Must build espeak-ng from source (PR #2344, Mar 2026) for quality pt-BR; bundled `espeakng-loader` data is outdated |
-| ffmpeg required for OGG encoding | Audio format conversion | Must be installed in Docker image (system package) |
-| HuggingFace model download on first run | Model distribution | Internet required once at bootstrap; models cached in Docker volume |
+| Dual-engine architecture | Feasibility study (10+ configs, 400+ samples) | Kokoro fp32 for speed + siglas, Qwen3-TTS C++ Q8_0 for cloning. Two preprocessing pipelines, two post-processing chains |
+| Kokoro uses espeak-ng via misaki | misaki has no native Portuguese G2P | Must build espeak-ng from source + compile custom pt_extra dictionary. Copy data to BOTH system path and misaki bundled path |
+| Qwen3-TTS is a C++ binary (qwen3-tts-cli) | Upstream qwen3-tts.cpp project | Subprocess calls, not Python API. Custom seed patch for deterministic generation |
+| Qwen3 sigla pronunciation | 7/10 quality with spaced format | expand_siglas() preprocessing required; seed library per sigla pattern for consistency |
+| ffmpeg required for post-processing + OGG | Post-processing pipelines (vibrato, EQ, compression, noise) + OGG Opus encoding | Must be installed in Docker image (system package) |
+| Model download on first run | Model distribution | Kokoro ONNX ~325 MB + voices ~27 MB (HuggingFace), Qwen3 GGUF ~1.3 GB + tokenizer ~341 MB. Cached in Docker volume |
 | uv for Python dependency management | Project policy | Dockerfile uses uv, not pip |
-| Single consumer (n8n) on local network | Deployment context | No TLS, no rate limiting, no multi-tenancy, plain HTTP |
-| CPU-only inference | Hardware target (4 vCPU / 8 GB RAM commodity VPS) | No CUDA/GPU dependencies; throughput bounded by CPU |
+| Single consumer (n8n) on local network | Deployment context | No TLS, no rate limiting, no multi-tenancy, plain HTTP. n8n-side failover pattern |
+| CPU-only inference | Hardware target (4 vCPU / 8 GB RAM commodity VPS) | No CUDA/GPU dependencies; 4-core thread scaling is sweet spot for Qwen3 |
+| Sequential request processing | Single FIFO queue (asyncio.Lock) | No concurrent generation — horizontal scaling via Caddy load balancer |
 
 ### Cross-Cutting Concerns Identified
 
-1. **Memory Leak Mitigation** — Touches container lifecycle (restart policy), health reporting (memory_mb field), deployment (cron setup in bootstrap), and operational monitoring (health playbook). Every component that interacts with the running service must account for degrading memory.
+1. **Dual-Engine Routing** — Voice name determines engine selection. Must be consistent across request processing, health reporting, voice listing, and error messages. Engine-specific preprocessing and post-processing must be dispatched correctly.
 
-2. **Model & Voice Persistence** — Docker volumes must survive container rebuilds, updates, and restarts. Affects Dockerfile design (cache in volume, not layer), docker-compose.yml (volume mounts), Ansible update playbook (must not delete volumes), and voice discovery (scan volume at startup).
+2. **Engine-Specific Post-Processing** — Two distinct ffmpeg pipelines: vibrato_warm (Kokoro: vibrato, bass boost, exciter, compressor, echo, noise) and whatsapp-subtle (Qwen3: EQ, compressor, atempo 1.15x, noise). Noise calibration differs per engine (Kokoro needs 3x more noise). Both output OGG Opus 24kbps 16kHz mono.
 
-3. **Startup Readiness** — Model loading + voice discovery + warm-up creates a multi-second startup window where the service exists but cannot serve requests. Health endpoint must return 503 during this window. Docker health check must accommodate it. Ansible bootstrap must wait for it.
+3. **Model & Asset Persistence** — Docker volumes must survive container rebuilds, updates, and restarts. Affects Dockerfile design (cache in volume, not layer), compose.yaml (volume mounts), Ansible update playbook (must not delete volumes). Assets include: Kokoro ONNX model + voices, Qwen3 GGUF models, noise WAV files, clone reference WAV.
 
-4. **Error Consistency** — The OpenAI-compatible error format with `hint` field must be uniform across all error paths (auth, validation, voice not found, model failure, encoding failure, warm-up). Centralized exception handling is required to prevent inconsistency.
+4. **Startup Readiness** — Dual-engine model loading + voice discovery + warm-up creates a multi-second startup window. Health endpoint must return 503 during this window. Docker health check must accommodate it. Ansible bootstrap must wait for it.
 
-5. **Structured Logging** — Pipe-delimited format with component tags must be configured application-wide. All modules (startup, request handling, voice discovery, health) log through the same formatter.
+5. **Error Consistency** — The OpenAI-compatible error format with `hint` field must be uniform across all error paths (auth, validation, voice not found, engine failure, post-processing failure, warm-up). Centralized exception handling is required to prevent inconsistency.
 
-6. **pt-BR Phonemization Quality** — espeak-ng is the sole phonemizer for Portuguese with known limitations (vowel confusion, stress errors). Mitigated by: building espeak-ng from source (PR #2344), text pre-processing (numbers, currency, dates, chunking), custom dictionary for domain words, and a quality validation listening test before production.
+6. **Structured Logging** — Pipe-delimited format with component tags must be configured application-wide. All modules (startup, request handling, voice discovery, health, engine routing) log through the same formatter.
+
+7. **pt-BR Pronunciation Quality** — Kokoro path: espeak-ng with custom pt_extra dictionary (67 entries, 34/34 verified). Qwen3 path: THINK mode with `-l pt`, expand_siglas() spaced format, seed reproducibility for consistency. Each engine has different pronunciation strengths and preprocessing requirements.
+
+8. **Queue Management** — Single FIFO queue with asyncio.Lock. Health endpoint reports queue depth. n8n-side failover pattern handles overload (alerting, text fallback, retry). No Redis, no Celery — minimal infrastructure.
 
 ## Starter Template Evaluation
 
@@ -105,178 +113,110 @@ API backend (Python/FastAPI) with Docker packaging and Ansible deployment. No st
 uv init --package cumadre
 ```
 
-### KokoClone Integration Discovery
+### Engine Integration Discovery
 
-KokoClone is **not on PyPI** — it's a GitHub-only project built on **kokoro-onnx** (not the official `kokoro` PyTorch package). Key findings from research:
+After evaluating 10+ engine configurations with 400+ audio samples (documented in `docs/feasibility-report-tts-engine.md`), a dual-engine architecture was selected.
 
-#### kokoro vs kokoro-onnx
+#### Engine Evaluation Results
 
-| | `kokoro` (official, hexgrad) | `kokoro-onnx` (thewh1teagle) |
-|---|---|---|
-| Runtime | PyTorch (~873 MB wheel) | **ONNX Runtime (~16 MB wheel)** |
-| Extra deps | transformers, spacy, huggingface_hub | Minimal (numpy, phonemizer-fork) |
-| Model format | `.pth` 325 MB | `.onnx` 310 MB / **int8: 88 MB** |
-| CPU quantization | No | **Yes (int8, 2-3x faster on CPU)** |
-| espeak-ng bundling | via espeakng-loader | via espeakng-loader |
+| Engine | Diction | Siglas | RTF (CPU) | Verdict |
+|---|---|---|---|---|
+| **Kokoro fp32 pm_santa** | 9/10 | 10/10 (pt_extra) | 1.1x | **SELECTED — FAST PATH** |
+| **Qwen3 C++ Q8_0** | 9/10 | 7/10 (spaced) | 2.4-3.6x | **SELECTED — CLONE PATH** |
+| Kokoro pf_dora | 8/10 | 10/10 | 1.1x | Alt female voice |
+| Kokoro pm_alex | 8/10 | 10/10 | 1.1x | Alt male voice |
+| KokoClone (Kokoro + Kanade) | 1/10 | N/A | 1.5x | **REJECTED** — Kanade voice conversion produces unusable diction on CPU |
+| Chatterbox ONNX FP32 | 9/10 | 2/10 | 1.8x | **REJECTED** — sigla pronunciation fundamentally broken (character-level tokenizer, no phoneme control) |
+| Qwen3 PyTorch | 9/10 | 7/10 | 6.5x | Too slow for CPU |
 
-KokoClone uses **kokoro-onnx** — the right choice for CPU-only deployment due to dramatically smaller footprint and int8 quantization support. Same Kokoro-82M model, same voices, same quality — only the inference runtime differs.
-
-#### KokoClone capabilities
+#### Kokoro fp32 (Fast Path)
 
 | Aspect | Detail |
 |---|---|
-| Installation | uv git dependency from GitHub |
-| Core API | `from core.cloner import KokoClone` → `cloner.generate(text, lang, reference_audio, output_path)` |
-| Voice cloning | Zero-shot: 3-10s reference WAV → speaker embedding → cloned speech |
-| Models | ~1 GB auto-downloaded from HuggingFace on first run (Kokoro ONNX + Kanade tokenizer + Vocos vocoder) |
+| Installation | `kokoro-onnx` from PyPI + `misaki` + `espeakng-loader` |
+| Core API | `kokoro_onnx.Kokoro(model_path)` → `kokoro.create(text, voice, lang='pt-br')` |
+| Voices | Built-in: pm_santa (M, default), pf_dora (F), pm_alex (M) — no reference WAV needed |
+| Models | `kokoro-v1.0.onnx` (325 MB) + `voices-v1.0.bin` (27 MB) from HuggingFace |
+| Sigla pronunciation | **10/10** via custom espeak-ng pt_extra dictionary (67 entries, 34/34 verified) |
+| Preprocessing | `normalize_text()` (numbers, currency, dates, times) → `chunk_text()` (max 200 tokens, sentence boundaries). Siglas handled natively by espeak-ng — no text preprocessing needed |
+| Post-processing | vibrato_warm: vibrato(4.5Hz, 6%) → highpass(80Hz) → bass(+3dB) → EQ → exciter(4.5kHz) → softclip → compressor(4:1) → lowpass(8kHz) → echo(40ms) → loudnorm(-18 LUFS) → noise(room=0.45, hiss=0.24) → loudnorm(-17 LUFS) → OGG Opus |
+| Memory leak | **Fixed** in phonemizer-fork >=3.3.2. Daily restart as safety net |
+| Char limit | 500 chars max per request |
 | Sample rate | 24kHz output |
-| Languages | en, pt (Brazilian), hi, fr, ja, zh, it, es |
-| Memory leak | **Fixed** in `phonemizer-fork>=3.3.2` (kokoro-onnx >=0.5.0). Daily restart cron is a safety net, not a hard requirement |
-| System deps | espeak-ng (phonemizer — **must build from source for pt-BR quality**), ffmpeg (OGG encoding), libsndfile |
-| Python deps | kokoro-onnx, misaki, kanade-tokenizer (git dep), soundfile, phonemizer-fork, espeakng-loader |
-| Device | Auto-detects CPU/GPU; CPU-only for this project |
 
-### pt-BR Phonemization: Research Findings & Mitigations
+**CRITICAL espeak-ng pt_extra setup:** The `misaki` library bundles its own `pt_dict` and **IGNORES `ESPEAK_DATA_PATH`**. Must copy ALL compiled data files (pt_dict + phondata + phonindex + phontab) to BOTH system path AND `espeakng_loader` bundled path inside the venv.
 
-#### The core problem
+#### Qwen3-TTS C++ Q8_0 (Clone Path)
 
-The `misaki` G2P library (Kokoro's phonemizer) has **no native Portuguese module**. Native G2P exists only for English, Japanese, Chinese, Korean, Vietnamese, and Hebrew. For Portuguese (and Spanish, French, Hindi, Italian), misaki falls back entirely to `espeak.EspeakG2P(language='pt-br')`.
+| Aspect | Detail |
+|---|---|
+| Installation | Pre-built `qwen3-tts-cli` binary (from qwen3-tts.cpp, ~600 KB) with custom seed patch |
+| Core API | Subprocess: `qwen3-tts-cli -m model.gguf -t tokenizer.gguf -l pt --seed N --temperature 0.7 -j 4 "text"` |
+| Voice cloning | Pre-configured reference WAV placed on server at deploy time (not per-request upload) |
+| Models | `qwen3-tts-0.6b-q8_0.gguf` (1.3 GB) + `qwen3-tts-tokenizer-f16.gguf` (341 MB) |
+| Sigla pronunciation | 7/10 with spaced format preprocessing (`C N P J`); word siglas (SUS, PIX, LOAS) kept as-is |
+| Preprocessing | `expand_siglas()` converts spelled siglas to spaced format. Word acronyms kept intact |
+| Post-processing | whatsapp-subtle: highpass(100Hz) → EQ → compressor(6:1) → lowpass(8kHz) → echo(40ms) → atempo(1.15x) → loudnorm(-18 LUFS) → noise(room=0.15, hiss=0.08) → loudnorm(-17 LUFS) → OGG Opus |
+| THINK mode | **ALWAYS use `-l pt`** — activates reasoning tokens for Portuguese pronunciation. Without it: random accent, inconsistent siglas |
+| Seed reproducibility | Custom C++ patch adds `--seed N` for deterministic generation. Same seed + same text = identical audio (MD5 match) |
+| Thread scaling | 4 cores = sweet spot (measured). Beyond 4: diminishing returns (1.5% gain at 6 cores) |
+| Char limit | 300 chars max per request |
+| Q8_0 vs F16 | Q8_0: 9% faster, 28% less RAM, quality ≈ F16 — **recommended** |
 
-This means pt-BR quality is **bounded by espeak-ng's phonemization quality**.
+#### Voice-to-Engine Routing (Fixed)
 
-#### Known espeak-ng limitations for pt-BR
-
-| Issue | Severity | Impact |
+| Voice Name | Engine | Description |
 |---|---|---|
-| Open/close vowel confusion (`é`/`ê`, `ó`/`ô`) | **High** | Phonemic in pt-BR — wrong vowel = wrong word |
-| Stress position errors | Medium | Rules work for most cases, fails on exceptions |
-| No text chunking in Kokoro for pt-BR | **High** | Texts >510 tokens silently truncated |
-| No pronunciation override syntax | Medium | The `[word](/phonemes/)` syntax only works for English |
-| Dates and times not normalized | Medium | Pronounced as digit sequences |
+| `santa` | Kokoro fp32 | Male, default voice (pm_santa) |
+| `dora` | Kokoro fp32 | Female (pf_dora) |
+| `alex` | Kokoro fp32 | Male alt (pm_alex) |
+| `clone` | Qwen3 C++ Q8_0 | Voice cloning with pre-configured reference WAV |
+| `qwen-female` | Qwen3 C++ Q8_0 | Default female (no cloning) |
+| `qwen-male` | Qwen3 C++ Q8_0 | Default male (no cloning) |
 
-#### Mitigation: Updated espeak-ng data (CRITICAL)
+### pt-BR Pronunciation: Dual-Engine Approach
 
-espeak-ng PR [#2344](https://github.com/espeak-ng/espeak-ng/pull/2344) (merged 2026-03-20, by fabiolimace — new official Portuguese maintainer) delivered massive pt-BR improvements:
+#### Kokoro Path — espeak-ng with custom pt_extra dictionary
 
-- **+5,618 lines** in pronunciation dictionary
-- 250+ pronunciation corrections
-- 900+ abbreviations and acronyms (tech, politics, etc.)
-- 3,500+ words and names
-- Improved phoneme definitions for pt-BR
-- Unicode Latin-1 Supplement normalization
-- New documentation at `docs/languages/roa/pt.md`
+The `misaki` G2P library (Kokoro's phonemizer) has **no native Portuguese module** — it falls back entirely to `espeak.EspeakG2P(language='pt-br')`. Quality is bounded by espeak-ng data quality.
 
-**Problem:** `espeakng-loader` v1.52 (Jan 2025) bundles espeak-ng data that is **over a year old** — none of these improvements are included.
+**espeak-ng PR #2344** (merged 2026-03-20) delivered massive pt-BR improvements: +5,618 lines, 250+ corrections, 900+ abbreviations, 3,500+ words. The bundled `espeakng-loader` v1.52 data is over a year old and does NOT include these improvements.
 
-**Solution:** Build espeak-ng from source and override the data path:
+**Custom pt_extra dictionary** (documented in `docs/espeak-ng-custom-dictionary.md`):
+- 67 custom entries for Brazilian siglas
+- Soletradas (spelled, `$abbrev` flag): CPF, CNPJ, RG, CNH, STF, STJ, TRT, CLT, FGTS, BPC... (53+ entries)
+- Pronunciadas como palavra (custom phonemes): SUS, PIX, DETRAN, LOAS, CRAS, ANVISA, SAMU, ENEM... (14+ entries)
+- **Verified 34/34 correct** in listening tests
 
-```bash
-# In Dockerfile: build espeak-ng from master
-RUN git clone --depth 1 https://github.com/espeak-ng/espeak-ng.git /tmp/espeak-ng && \
-    cd /tmp/espeak-ng && ./autogen.sh && ./configure && make && \
-    cp -r espeak-ng-data /usr/share/espeak-ng-data-custom && \
-    rm -rf /tmp/espeak-ng
-```
+**CRITICAL:** `misaki` bundles its own `pt_dict` and **IGNORES `ESPEAK_DATA_PATH`**. Must copy compiled data to BOTH:
+1. System espeak-ng path (`/usr/local/share/espeak-ng-data/`)
+2. `espeakng_loader` bundled path (`.venv/lib/.../espeakng_loader/espeak-ng-data/`)
 
-```python
-# In service startup, before loading models:
-import os
-os.environ["ESPEAK_DATA_PATH"] = "/usr/share/espeak-ng-data-custom"
-```
+**Text preprocessing for Kokoro:** `normalize_text()` (numbers, currency, dates, times via num2words) → `chunk_text()` (max 200 tokens, sentence boundaries). Siglas need NO text preprocessing — espeak-ng pt_extra handles them natively.
 
-New config field: `ESPEAK_DATA_PATH` (optional, defaults to bundled espeakng-loader path).
+#### Qwen3 Path — THINK mode with expand_siglas
 
-#### Mitigation: Text pre-processing module (REQUIRED)
+Qwen3-TTS uses a native BPE tokenizer with no espeak-ng dependency. Pronunciation quality depends on the THINK mode reasoning tokens.
 
-A new `preprocessing.py` module must normalize text before sending to the TTS pipeline. espeak-ng does NOT normalize dates or times for pt-BR, and numbers/currency are more reliable when pre-processed.
+**ALWAYS use `-l pt`** to activate THINK mode (Portuguese language ID 2071). Without it: random accent, inconsistent siglas, wrong intonation.
 
-**Required normalizations:**
+**Sigla preprocessing for Qwen3:** `expand_siglas()` converts spelled siglas to spaced format (`CNPJ` → `C N P J`). Word siglas (SUS, PIX, PIS, LOAS, CEP, DETRAN, ENEM, SAMU, ANVISA) are kept as-is. Result: 7/10 sigla quality — acceptable but inferior to Kokoro path.
 
-| Input | Output | Library |
-|---|---|---|
-| `R$ 1.500,00` | `mil e quinhentos reais` | `num2words` (lang='pt_BR', to='currency') |
-| `1500` | `mil e quinhentos` | `num2words` (lang='pt_BR') |
-| `3º` | `terceiro` | `num2words` (lang='pt_BR', to='ordinal') |
-| `21/03/2026` | `vinte e um de março de dois mil e vinte e seis` | Custom |
-| `14:30` | `quatorze e trinta` | Custom |
-| Domain-specific abbreviations | Expanded form | Custom dictionary |
+**Seed reproducibility** (custom C++ patch, `docs/qwen3-tts-cpp-seed-patch.diff`): Same seed + same text = identical audio. Production strategy: build seed library per sigla pattern; use known-good seed for each request with siglas.
 
-New dependency: `num2words>=0.5` (already supports pt_BR).
+#### Alternative TTS engines evaluated and rejected
 
-#### Mitigation: Text chunking (REQUIRED)
+Full evaluation in `docs/feasibility-report-tts-engine.md`. Key rejections:
 
-Kokoro has **no chunking logic for Portuguese** — long texts are silently truncated at ~510 tokens. The `preprocessing.py` module must split text at sentence boundaries, targeting 100-200 tokens per chunk.
-
-```python
-import re
-sentences = re.split(r'(?<=[.!?])\s+', text)
-```
-
-#### Mitigation: Custom espeak-ng dictionary
-
-For domain-specific words that espeak-ng mispronounces, create a `pt_extra` file:
-
-```
-// dictsource/pt_extra — compiled with: espeak-ng --compile=pt
-cumadre  kum'adR@
-```
-
-This file is compiled into `pt_dict` and applied after the main dictionary. Include it in the Docker build.
-
-#### Mitigation: Voice blending
-
-Kokoro supports mixing pt-BR voices for potentially better results:
-
-```python
-voice = 'pf_dora:60,pm_alex:40'  # Weighted blend
-```
-
-Available pt-BR voices: `pf_dora` (F), `pm_alex` (M), `pm_santa` (M). No quality grades are published for any of them — experimentation is needed.
-
-#### Mitigation: Direct phoneme input for critical phrases
-
-The `generate_from_tokens()` API bypasses espeak-ng entirely:
-
-```python
-# Inspect what espeak-ng generates
-for result in pipeline("Seu texto"):
-    print(result.phonemes)
-
-# Override with corrected phonemes
-for result in pipeline.generate_from_tokens(
-    tokens="corrected_phonemes",
-    voice='pf_dora'
-):
-    pass  # result.audio
-```
-
-This is a last-resort escape hatch for phrases where espeak-ng produces unacceptable results.
-
-#### Alternative TTS engines evaluated
-
-All alternatives were evaluated and **rejected** due to hardware constraints (4 vCPU / 8 GB RAM, CPU-only):
-
-| Engine | pt-BR | Voice Clone | CPU Feasible | Why Rejected |
-|---|---|---|---|---|
-| XTTS v2 (Coqui) | Good | Zero-shot | No (~250s/phrase) | CPU inference unusable |
-| Fish Speech S2 | Good | Zero-shot | No (needs 12GB+ VRAM) | Needs GPU |
-| F5-TTS pt-BR | Very good (dedicated fine-tune) | Zero-shot | No (7+ min/phrase) | CPU inference unusable |
-| Qwen3-TTS 0.6B | Good | Zero-shot | Marginal (10-15x RTF) | 6-8 GB RAM, too slow on 4 vCPU |
-| Qwen3-TTS 1.7B | Good | Zero-shot | No (needs 14-16 GB RAM) | OOM on 8 GB |
-| Bark | Fair | No real cloning | No (10-20x slow) | No voice cloning, too slow |
-| Piper | No pt-BR voices | None | Excellent | No pt-BR, no cloning |
-| Edge TTS | Excellent | None | Cloud-only | Not self-hosted |
-
-**Conclusion:** KokoClone (Kokoro-82M + Kanade) remains the only viable option for CPU-only, self-hosted, pt-BR voice cloning. Quality mitigation through the strategies above is the path forward.
-
-#### Quality validation gate
-
-Before production deployment, a **listening test** of 20+ typical customer service phrases is required:
-
-1. Generate audio for representative phrases (greetings, order status, scheduling, etc.)
-2. Evaluate: pronunciation accuracy, naturalness, voice cloning similarity
-3. If unacceptable, iterate on pre-processing rules, custom dictionary entries, or voice blending
-4. This is tracked as an acceptance criterion for Story 1.4 (Service Wrapper)
+| Engine | Why Rejected |
+|---|---|
+| KokoClone (Kokoro + Kanade) | Kanade voice conversion: 1/10 diction on CPU |
+| Chatterbox ONNX FP32 | Sigla pronunciation fundamentally broken (2/10); character-level tokenizer, no phoneme control, `[ipa]` token non-functional |
+| XTTS v2 (Coqui) | CPU inference unusable (~250s/phrase) |
+| Fish Speech S2 | Needs 12GB+ VRAM (GPU only) |
+| F5-TTS pt-BR | CPU inference unusable (7+ min/phrase) |
+| Qwen3-TTS PyTorch | Too slow for CPU (RTF 6.5x vs 2.5x with C++ Q8_0) |
+| Qwen3-TTS 1.7B | OOM on 8 GB RAM |
 
 ### Project Structure
 
@@ -288,7 +228,7 @@ cumadre/
 │       ├── main.py            # FastAPI app, startup lifecycle, health endpoint
 │       ├── api.py             # POST /v1/audio/speech route
 │       ├── schemas.py         # Pydantic request/response models
-│       ├── service.py         # KokoClone wrapper, audio generation logic
+│       ├── service.py         # Dual-engine wrapper, audio generation + post-processing
 │       ├── preprocessing.py   # pt-BR text normalization (numbers, currency, dates, chunking)
 │       ├── config.py          # Settings via pydantic-settings
 │       ├── exceptions.py      # Custom exceptions + error response builder
@@ -378,28 +318,31 @@ type-check = ["mypy>=1.14"]
 
 | # | Decision | Choice | Rationale |
 |---|---|---|---|
-| D1 | KokoClone integration | uv git dependency pinned in uv.lock | Standard dependency management, reproducible builds, no submodule complexity |
-| D2 | Model download strategy | Runtime + Docker volume cache | First start downloads from HuggingFace, cached in named volume. Survives rebuilds/updates |
-| D3 | Worker process model | Uvicorn --workers N | Independent processes, no shared state. WORKERS=1 default, scales with RAM |
-| D4 | Warm-up strategy | FastAPI lifespan + health endpoint gating | Lifespan runs dummy inference; health returns 503 until ready; Docker health check accommodates |
+| D1 | Engine integration | Kokoro via kokoro-onnx (PyPI) + Qwen3 via qwen3-tts-cli binary (subprocess) | Kokoro for speed + siglas, Qwen3 for cloning. Binary subprocess avoids Python dependency conflicts |
+| D2 | Model download strategy | Runtime + Docker volume cache | First start downloads from HuggingFace (Kokoro) and model repo (Qwen3). Cached in named volume |
+| D3 | Concurrency model | Single FIFO queue with asyncio.Lock | Sequential processing, no shared state. Horizontal scaling via Caddy load balancer |
+| D4 | Warm-up strategy | FastAPI lifespan + health endpoint gating | Lifespan warms up both engines; health returns 503 until ready; Docker health check accommodates |
 
 **Important Decisions (Shape Architecture):**
 
 | # | Decision | Choice | Rationale |
 |---|---|---|---|
-| D5 | Docker build | Single-stage python:3.12-slim | torch dominates image size; multi-stage adds complexity for marginal savings |
+| D5 | Docker build | Single-stage python:3.12-slim | espeak-ng from source + pt_extra compilation + qwen3-tts-cli binary in single stage |
 | D6 | Configuration | pydantic-settings | Type-safe env var loading, validates API_KEY at startup, FastAPI ecosystem standard |
-| D7 | OGG encoding | ffmpeg subprocess | ffmpeg already a system dep, ~5 lines, no extra Python deps |
+| D7 | Post-processing + encoding | ffmpeg subprocess pipelines | ffmpeg already a system dep. Two pipelines: vibrato_warm (Kokoro), whatsapp-subtle (Qwen3). Output: OGG Opus 24kbps 16kHz mono |
 | D8 | CI/CD | GitHub Actions | pre-commit + pytest + docker build. Free, good uv support |
+| D9 | Engine routing | Voice-name-based fixed routing | santa/dora/alex → Kokoro; clone/qwen-female/qwen-male → Qwen3. Simple, no dynamic routing logic |
+| D10 | Failover | n8n-side failover pattern | n8n workflow handles retry, text fallback, alerting. Not in Caddy — allows workflow control |
+| D11 | Seed reproducibility | Custom C++ patch for qwen3-tts-cli | `--seed N` parameter for deterministic Qwen3 generation. Seed library per sigla pattern |
 
 **Deferred Decisions (Post-MVP):**
 
 | Decision | Rationale for Deferral |
 |---|---|
 | Response caching | PRD: "measure demand first" — no evidence of repeated phrases yet |
-| GPU acceleration | CPU-only for MVP target hardware |
+| GPU acceleration | CPU-only for MVP target hardware; budget constraint is absolute |
 | Prometheus metrics | Health endpoint sufficient for single-consumer service |
-| Horizontal scaling | Single VPS is the deployment target |
+| Qwen3 seed library | Post-MVP: curate known-good seeds per sigla pattern for consistent pronunciation |
 
 ### Data Architecture
 
@@ -407,8 +350,12 @@ No database. No persistent data storage. Audio is generated and returned in the 
 
 | Data | Storage | Lifecycle |
 |---|---|---|
-| ML models (~1 GB) | Docker named volume `cumadre-models` | Downloaded once, cached indefinitely, survives rebuilds |
-| Voice reference WAVs | Docker named volume `cumadre-voices` | Operator-provisioned, mounted read-only by container |
+| Kokoro models (~352 MB) | Docker named volume `cumadre-models` | `kokoro-v1.0.onnx` (325 MB) + `voices-v1.0.bin` (27 MB). Downloaded once from HuggingFace |
+| Qwen3 models (~1.6 GB) | Docker named volume `cumadre-models` | `qwen3-tts-0.6b-q8_0.gguf` (1.3 GB) + `qwen3-tts-tokenizer-f16.gguf` (341 MB) |
+| Clone reference WAV | Docker named volume `cumadre-voices` | Operator-provisioned at deploy time for Qwen3 voice cloning |
+| Noise WAV files (~2 MB) | Baked into Docker image | Room ambience + hiss noise for post-processing realism |
+| espeak-ng pt_extra data | Baked into Docker image | Compiled custom dictionary (pt_dict ~141 KB + phoneme files) |
+| qwen3-tts-cli binary | Baked into Docker image | Pre-built binary with seed patch (~600 KB) |
 | API key | Environment variable | Set in compose.yaml or Ansible, never stored in image |
 
 ### Authentication & Security
@@ -443,28 +390,64 @@ Not applicable. No frontend. No UI.
 |---|---|
 | Container runtime | Docker with compose.yaml (Compose v2) |
 | Base image | python:3.12-slim |
-| System packages | espeak-ng (**built from source** for pt-BR quality — PR #2344), ffmpeg, libsndfile1-dev, autoconf, automake, libtool, pkg-config (espeak-ng build deps) |
-| Python packages | uv sync from uv.lock |
+| System packages | espeak-ng (**built from source** + pt_extra dictionary compiled), ffmpeg, libsndfile1-dev, build deps (autoconf, automake, libtool, pkg-config) |
+| Binary assets | qwen3-tts-cli (pre-built with seed patch), noise WAV files |
+| Python packages | uv sync from uv.lock (kokoro-onnx, misaki, espeakng-loader, num2words, fastapi, uvicorn, pydantic-settings) |
 | Deployment tool | Ansible (4 playbooks: bootstrap, update, cleanup, health) |
 | Ansible structure | Flat playbooks in deploy/ansible/playbooks/ (no roles — project too small) |
 | CI/CD | GitHub Actions (lint + test + build) |
-| Monitoring | Health endpoint + docker stats + Ansible health playbook |
-| Memory leak mitigation | Host-level cron (daily container restart) configured by bootstrap playbook |
+| Monitoring | Health endpoint (engine load, queue depth, clone config) + docker stats + Ansible health playbook |
+| Horizontal scaling | Caddy load balancer with round-robin, health checks per instance |
+| Failover | n8n-side pattern: allows alerting, text fallback, per-context retry logic |
+| Memory safety | Daily restart cron as safety net (Kokoro leak fixed in phonemizer-fork >=3.3.2) |
 | Restart policy | `restart: unless-stopped` in compose.yaml |
 | Log strategy | Structured pipe-delimited to stdout (Docker captures via `docker compose logs`) |
 
 ### Dependency Update Strategy
 
-KokoClone is actively developed on GitHub and not published on PyPI. The update workflow:
+### Audio File Cleanup Strategy
+
+Generated audio files are stored temporarily on the VPS SSD. Without periodic cleanup, disk space will be exhausted.
+
+**Strategy:** User-level cron job configured by the bootstrap playbook:
+- Clean up audio files older than 24 hours from the audio volume
+- Run every 6 hours via user-level crontab
+- Log cleanup actions for operational visibility
+- Health playbook reports disk usage and cleanup cron status
+
+```bash
+# User-level crontab entry (configured by bootstrap playbook)
+0 */6 * * * find ~/cumadre/audio -name '*.ogg' -o -name '*.wav' -mmin +1440 -delete 2>/dev/null
+```
+
+### Platform Audio Format Compatibility
+
+The `destination` request parameter allows platform-specific encoding optimization:
+
+| Platform | Format | Codec | Rate | Bitrate | Voice Note UX |
+|---|---|---|---|---|---|
+| WhatsApp | OGG Opus | Opus | 16kHz | 24kbps | Yes (OGG Opus only) |
+| Telegram | OGG Opus | Opus | 16kHz | 24kbps | Yes (OGG Opus only) |
+| Messenger | OGG Opus | Opus | 16kHz | 24kbps | No (audio player) |
+| Instagram | AAC (M4A) | AAC | 44.1kHz | 64kbps | No (audio player) |
+
+**Key decision:** OGG Opus (mono, 16kHz, 24kbps) is the default — works for WhatsApp (voice note waveform), Telegram (voice note waveform), and Messenger (audio player). Instagram Direct requires AAC/M4A format. The `destination` request parameter selects the correct ffmpeg encoding pipeline: OGG Opus for whatsapp/telegram/messenger (default), AAC M4A for instagram.
+
+**Note:** Post-processing pipelines currently output at 16kHz (speech/telephony standard). Opus accepts both 16kHz and 48kHz. 16kHz produces smaller files and is appropriate for voice messages.
+
+### Dependency Update Strategy
+
+**Python dependencies (kokoro-onnx, misaki, etc.):** Standard PyPI packages managed by uv. Update via `uv lock --upgrade`.
+
+**qwen3-tts-cli binary:** Pre-built from qwen3-tts.cpp with custom seed patch. Update requires rebuilding the binary from source and replacing in the Docker image.
+
+**espeak-ng pt_extra dictionary:** Custom entries in `deploy/espeak-ng/pt_extra`. Update by editing the file and rebuilding the Docker image (triggers recompilation).
 
 **Routine update cycle:**
 
 ```bash
-# Update all dependencies (PyPI + git)
+# Update all Python dependencies
 uv lock --upgrade
-
-# Or update only KokoClone
-uv lock --upgrade-package kokoclone
 
 # Verify locally
 uv sync && uv run pytest
@@ -474,10 +457,6 @@ git add uv.lock && git commit
 ansible-playbook deploy/ansible/playbooks/update.yml
 ```
 
-**How it works:** uv.lock pins git dependencies by exact commit hash. `uv lock --upgrade` fetches the latest commit from the default branch and updates the hash. Builds are reproducible — `uv sync --frozen` in Docker uses the exact pinned hash.
-
-**Post-MVP automation:** Renovate Bot can be configured to auto-open PRs when git dependencies have new commits, same as it does for PyPI packages.
-
 ### Decision Impact Analysis
 
 **Implementation Sequence:**
@@ -486,7 +465,7 @@ ansible-playbook deploy/ansible/playbooks/update.yml
 2. Configuration module (pydantic-settings)
 3. Structured logging
 4. Voice discovery module
-5. KokoClone service wrapper
+5. Kokoro engine wrapper + Qwen3 engine wrapper + engine router
 6. FastAPI app (health endpoint, speech endpoint, exception handlers, lifespan warm-up)
 7. Dockerfile + compose.yaml
 8. Ansible playbooks
@@ -499,7 +478,7 @@ ansible-playbook deploy/ansible/playbooks/update.yml
 |---|---|
 | API endpoint | Service wrapper, schemas, exceptions, config, voice discovery |
 | Health endpoint | Voice discovery, config, startup state |
-| Service wrapper | KokoClone (uv git dep), voice discovery, config |
+| Service wrapper | kokoro-onnx (PyPI), qwen3-tts-cli (binary), voice config, preprocessing |
 | Docker build | All Python code, system deps, uv.lock |
 | Ansible playbooks | Docker build, compose.yaml, voice files |
 | CI/CD | All of the above (validates the full chain) |
@@ -555,11 +534,11 @@ ansible-playbook deploy/ansible/playbooks/update.yml
 
 | Module | Responsibility | Must NOT contain |
 |---|---|---|
-| `main.py` | FastAPI app creation, lifespan, router mounting | Business logic, direct KokoClone calls |
+| `main.py` | FastAPI app creation, lifespan, router mounting | Business logic, direct engine calls |
 | `api.py` | Route handlers for `/v1/audio/speech` | Model loading, audio encoding |
 | `schemas.py` | Pydantic request/response models only | Logic, imports from other app modules |
-| `service.py` | KokoClone wrapper, TTS generation, OGG encoding | HTTP concerns, FastAPI dependencies |
-| `preprocessing.py` | pt-BR text normalization: numbers, currency, dates, times, chunking | HTTP concerns, TTS generation, voice discovery |
+| `service.py` | Dual-engine wrapper: voice routing, Kokoro/Qwen3 dispatch, post-processing pipelines, OGG encoding | HTTP concerns, FastAPI dependencies |
+| `preprocessing.py` | Engine-specific text preprocessing: normalize_text + chunk_text (Kokoro), expand_siglas (Qwen3) | HTTP concerns, TTS generation, voice discovery |
 | `config.py` | pydantic-settings class, env var definitions | Logic beyond defaults/validation |
 | `exceptions.py` | Exception classes + FastAPI exception handlers | Business logic |
 | `health.py` | Health endpoint, runtime state aggregation | Audio generation logic |
@@ -611,7 +590,7 @@ Content-Disposition: attachment; filename="speech.wav"
   "error": {
     "message": "Voice 'maria' not found",
     "type": "not_found_error",
-    "hint": "Available voices: ['carlos']. Place WAV files (3-10s) in the /voices/ directory."
+    "hint": "Available voices: ['santa', 'dora', 'alex', 'clone', 'qwen-female', 'qwen-male']. Kokoro voices: santa, dora, alex. Qwen3 voices: clone, qwen-female, qwen-male."
   }
 }
 ```
@@ -627,17 +606,25 @@ Rules:
 ```json
 {
   "status": "healthy",
-  "voices": ["carlos"],
+  "voices": ["santa", "dora", "alex", "clone", "qwen-female", "qwen-male"],
+  "engines": {
+    "kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]},
+    "qwen3": {"loaded": true, "model": "q8_0", "clone_reference": "configured"}
+  },
+  "queue_depth": 0,
+  "clone_configured": true,
   "uptime_seconds": 3600,
-  "memory_mb": 2048,
-  "workers": 2,
-  "version": "1.0.0"
+  "memory_mb": 4200,
+  "version": "0.2.0"
 }
 ```
 
 Rules:
 - `status` is an enum: `healthy`, `warming_up`, `degraded`
 - `voices` is always an array, never `null`
+- `engines` shows per-engine status and voice assignments
+- `queue_depth` shows current FIFO queue length
+- `clone_configured` indicates whether clone reference WAV is available
 - Field order is fixed — status first, version last
 - All numeric fields have unit suffix: `_seconds`, `_mb`
 
@@ -683,29 +670,40 @@ Rules:
 ```
 1. Load config (validate env vars — fail fast if API_KEY missing)
 2. Configure structured logging
-3. Override espeak-ng data path if ESPEAK_DATA_PATH is set (for updated pt-BR data)
-4. Discover voices (log found/skipped files)
-5. Load KokoClone model
-6. Run warm-up inference (short dummy pt-BR text through full pipeline including preprocessing)
-7. Set ready flag → health returns "healthy"
+3. Verify espeak-ng pt_extra data is in place (system + misaki bundled path)
+4. Detect clone reference WAV (optional — Qwen3 "clone" voice disabled if absent)
+5. Load Kokoro model (kokoro-onnx)
+6. Verify qwen3-tts-cli binary is available
+7. Warm up Kokoro (short dummy pt-BR text through full pipeline including preprocessing + post-processing)
+8. Warm up Qwen3 (short dummy text through full pipeline including expand_siglas + post-processing)
+9. Set ready flag → health returns "healthy"
 ```
 
 Rules:
 - Each phase logs when it starts
 - Failure at any phase = log CRIT + exit (don't start half-broken)
-- Health returns 503 / `warming_up` until step 6 completes
+- Health returns 503 / `warming_up` until step 8 completes
+- If clone reference WAV is absent, Qwen3 "clone" voice is disabled but service still starts
 
 **Request Processing:**
 
 ```
 1. Auth check (dependency injection)
-2. Validate request body (Pydantic — automatic)
-3. Resolve voice (voices module)
-4. Preprocess text for pt-BR (preprocessing module — numbers, currency, dates, chunking)
-5. Generate TTS for each chunk (service module — espeak-ng → Kokoro → Kanade)
-6. Concatenate audio chunks
-7. Encode to requested format (service module — WAV or OGG via ffmpeg)
-8. Return binary response
+2. Validate request body (Pydantic — automatic, enforce char limits per engine)
+3. Acquire asyncio.Lock (FIFO queue)
+4. Route voice to engine (santa/dora/alex → Kokoro; clone/qwen-* → Qwen3)
+5. Apply engine-specific preprocessing:
+   - Kokoro: normalize_text() + chunk_text() (max 200 tokens per chunk)
+   - Qwen3: expand_siglas() (spaced format for spelled siglas)
+6. Generate TTS:
+   - Kokoro: kokoro-onnx for each chunk → concatenate WAV chunks
+   - Qwen3: qwen3-tts-cli subprocess (-l pt, --seed N, --temperature 0.7)
+7. Apply engine-specific post-processing pipeline via ffmpeg:
+   - Kokoro: vibrato_warm (vibrato, EQ, exciter, compressor, echo, noise)
+   - Qwen3: whatsapp-subtle (EQ, compressor, atempo 1.15x, echo, noise)
+8. Encode to OGG Opus 24kbps 16kHz mono (or WAV if requested)
+9. Release asyncio.Lock
+10. Return binary response
 ```
 
 Rules:
@@ -755,10 +753,11 @@ async def generate_speech(...):
 # config.py — single source of truth
 class Settings(BaseSettings):
     api_key: SecretStr
-    default_voice: str = "default"
-    workers: int = 1
+    default_voice: str = "santa"
     port: int = 8000
     espeak_data_path: str | None = None  # Override bundled espeak-ng data for pt-BR quality
+    qwen3_cli_path: str = "/usr/local/bin/qwen3-tts-cli"
+    clone_reference_path: str | None = None  # Path to clone reference WAV for Qwen3
 ```
 
 **Anti-pattern:**
@@ -782,7 +781,7 @@ cumadre/
 │       ├── main.py                   # FastAPI app, lifespan, router mounting
 │       ├── api.py                    # POST /v1/audio/speech route handler
 │       ├── schemas.py                # SpeechRequest, HealthResponse, ErrorResponse
-│       ├── service.py                # KokoClone wrapper, TTS + voice cloning + OGG encoding
+│       ├── service.py                # Dual-engine wrapper: voice routing, Kokoro/Qwen3 dispatch, post-processing, OGG encoding
 │       ├── preprocessing.py          # pt-BR text normalization + sentence chunking
 │       ├── config.py                 # Settings(BaseSettings) — all env vars
 │       ├── exceptions.py             # CumadreError hierarchy + exception handlers
@@ -834,19 +833,23 @@ External (n8n / curl)
         ▼
 ┌─────────────────────────────┐
 │  FastAPI (main.py)          │
-│  ├── /v1/audio/speech (api) │ ◄── Bearer token auth (dependency)
+│  ├── /v1/audio/speech (api) │ ◄── Bearer token auth + asyncio.Lock queue
 │  └── /health (health)       │ ◄── No auth
 └──────────┬──────────────────┘
            │
-     ┌─────▼─────┐
-     │ service.py │ ◄── Business logic boundary
-     │  KokoClone │
-     │  ffmpeg    │
-     └─────┬─────┘
-           │
-    ┌──────▼──────┐
-    │  voices.py  │ ◄── Filesystem boundary (reads /voices/ volume)
-    └─────────────┘
+     ┌─────▼──────────────┐
+     │    service.py       │ ◄── Business logic boundary
+     │  ┌─ voice routing ─┐│
+     │  │ santa/dora/alex  ││ → Kokoro fp32 (kokoro-onnx) → vibrato_warm pipeline
+     │  │ clone/qwen-*     ││ → Qwen3-TTS C++ (subprocess) → whatsapp-subtle pipeline
+     │  └─────────────────┘│
+     │  preprocessing.py    │ ◄── Engine-specific text normalization
+     │  ffmpeg pipelines    │ ◄── Post-processing + OGG Opus encoding
+     └─────────┬───────────┘
+               │
+        ┌──────▼──────┐
+        │  voices.py  │ ◄── Voice config + clone reference detection
+        └─────────────┘
 ```
 
 Rules:
@@ -865,12 +868,14 @@ Rules:
 │  ┌─ Docker (user in docker group) ───────────┐  │
 │  │                                            │  │
 │  │  cumadre-service                          │  │
-│  │  ├── Uvicorn (N workers)                  │  │
+│  │  ├── Uvicorn (single worker)              │  │
+│  │  ├── asyncio.Lock FIFO queue              │  │
 │  │  ├── Port 8000 (mapped)                   │  │
 │  │  │                                        │  │
 │  │  │  Volumes:                              │  │
 │  │  │  ├── cumadre-voices:/voices (ro)       │  │
-│  │  │  └── cumadre-models:/models (rw)       │  │
+│  │  │  ├── cumadre-models:/models (rw)       │  │
+│  │  │  └── cumadre-audio:/audio (rw)         │  │
 │  │  │                                        │  │
 │  │  │  Resource limits:                      │  │
 │  │  │  ├── cpus: 4                           │  │
@@ -918,7 +923,7 @@ No files in /opt, /tmp, /src, /bin, or any system directory.
 
 | FR Category | Primary File(s) | Supporting Files |
 |---|---|---|
-| Audio Generation (FR1-FR5) | `service.py`, `preprocessing.py` | `voices.py`, `config.py` |
+| Audio Generation (FR1-FR5b) | `service.py`, `preprocessing.py` | `voices.py`, `config.py` |
 | API Interface (FR6-FR10) | `api.py`, `schemas.py` | `exceptions.py`, `main.py` |
 | Health & Monitoring (FR11-FR13) | `health.py` | `voices.py`, `config.py` |
 | Voice Management (FR14-FR16) | `voices.py` | `config.py` |
@@ -933,8 +938,11 @@ No files in /opt, /tmp, /src, /bin, or any system directory.
 | Structured logging | `logging.py` (config), all modules (usage) |
 | Error consistency | `exceptions.py` (classes + handlers), `main.py` (handler registration) |
 | Configuration | `config.py` (definition), `compose.yaml` (env vars), `.env.example` (template) |
-| Memory leak mitigation | `compose.yaml` (resource limits), `health.py` (memory reporting), `bootstrap.yml` (user crontab setup) |
-| Startup readiness | `main.py` (lifespan), `health.py` (503 gating), `compose.yaml` (healthcheck start_period) |
+| Engine routing | `service.py` (voice-to-engine dispatch), `preprocessing.py` (engine-specific text processing), `config.py` (voice config) |
+| Post-processing | `service.py` (ffmpeg pipeline dispatch), noise WAV files (baked into image) |
+| Queue management | `api.py` (asyncio.Lock acquire/release), `health.py` (queue_depth reporting) |
+| Memory safety | `compose.yaml` (resource limits), `health.py` (memory reporting), `bootstrap.yml` (user crontab safety net) |
+| Startup readiness | `main.py` (lifespan — dual-engine warm-up), `health.py` (503 gating), `compose.yaml` (healthcheck start_period) |
 
 ### Data Flow
 
@@ -942,40 +950,41 @@ No files in /opt, /tmp, /src, /bin, or any system directory.
 n8n POST /v1/audio/speech
     │
     ▼
-api.py: validate request (Pydantic) → verify auth (dependency)
+api.py: validate request (Pydantic) → verify auth (dependency) → acquire asyncio.Lock
     │
     ▼
-service.py: resolve voice
+service.py: route voice to engine
+    │
+    ├─── Kokoro voices (santa/dora/alex) ──────────────────────────────┐
+    │    ▼                                                              │
+    │    preprocessing.py: normalize_text() + chunk_text()             │
+    │    ├── num2words: numbers, currency (R$), ordinals               │
+    │    ├── custom: dates, times                                       │
+    │    └── chunking: split into sentences (100-200 tokens, max 500c) │
+    │    ▼ (for each chunk)                                             │
+    │    kokoro-onnx: espeak-ng (pt_extra) → Kokoro fp32 → WAV 24kHz  │
+    │    ▼                                                              │
+    │    service.py: concatenate chunks → vibrato_warm pipeline         │
+    │    (vibrato → highpass → bass → EQ → exciter → softclip →         │
+    │     compressor → lowpass → echo → loudnorm → noise → loudnorm)   │
+    │                                                                   │
+    ├─── Qwen3 voices (clone/qwen-female/qwen-male) ──────────────────┐
+    │    ▼                                                              │
+    │    preprocessing.py: expand_siglas() (spaced format)             │
+    │    ▼                                                              │
+    │    subprocess: qwen3-tts-cli -l pt --seed N --temperature 0.7    │
+    │    → WAV (with optional clone reference)                          │
+    │    ▼                                                              │
+    │    service.py: whatsapp-subtle pipeline                           │
+    │    (EQ → compressor → atempo 1.15x → echo → noise)               │
+    │                                                                   │
+    └── Both paths ──► loudnorm → OGG Opus 24kbps 16kHz mono ─────────┘
     │
     ▼
-preprocessing.py: normalize text for pt-BR
-    ├── num2words: numbers, currency (R$), ordinals
-    ├── custom: dates, times, domain abbreviations
-    └── chunking: split into sentences (100-200 tokens each)
-    │
-    ▼ (for each chunk)
-service.py: KokoClone.generate(normalized_text, lang, ref_wav)
-    │                              │
-    │                    ┌─────────▼──────────────────┐
-    │                    │ espeak-ng (updated PR #2344) │
-    │                    │ → pt-BR phonemes (IPA)       │
-    │                    │                              │
-    │                    │ Kokoro TTS (ONNX, int8)      │
-    │                    │ → raw speech audio            │
-    │                    │                              │
-    │                    │ Kanade voice clone            │
-    │                    │ → cloned audio (24kHz)        │
-    │                    └─────────┬────────────────────┘
-    │                              │
-    ▼                              ▼
-service.py: concatenate chunks → if ogg → ffmpeg subprocess → OGG bytes
-                                : if wav → raw WAV bytes
+api.py: release Lock → return Response(content=audio_bytes, media_type="audio/ogg")
     │
     ▼
-api.py: return Response(content=audio_bytes, media_type="audio/wav|ogg")
-    │
-    ▼
-n8n receives binary audio → sends to WhatsApp/Telegram
+n8n receives OGG Opus → sends to WhatsApp/Instagram/Telegram/Messenger
 ```
 
 ### Development Workflow Integration
@@ -1015,7 +1024,7 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 
 ### Requirements Coverage
 
-- **28/28 functional requirements** have explicit architectural support
+- **All functional requirements** (including new FR5a, FR5b) have explicit architectural support
 - **All non-functional requirements** addressed (latency, memory, uptime, security, data preservation)
 - **All cross-cutting concerns** mapped to specific files and patterns
 
@@ -1026,23 +1035,23 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 - Error handling, startup, and request processing patterns fully specified with examples
 - Test strategy proportional to codebase size
 - Quality tooling covers Python, Dockerfile, YAML, Ansible, shell, and Markdown
-- Dependency update workflow documented (including KokoClone git dependency)
+- Dependency update workflow documented (PyPI packages via uv, qwen3-tts-cli binary, espeak-ng pt_extra dictionary)
 
 ### Architecture Completeness Checklist
 
 **Requirements Analysis**
 
-- [x] Project context analyzed — 28 FRs across 7 categories
+- [x] Project context analyzed — 30 FRs across 8 categories (including FR5a, FR5b, FR29)
 - [x] Scale assessed — Low complexity, single-purpose API backend
-- [x] Technical constraints identified — KokoClone not on PyPI, memory leak (fixed upstream), espeak-ng/ffmpeg deps
+- [x] Technical constraints identified — Dual-engine (Kokoro + Qwen3), espeak-ng pt_extra, qwen3-tts-cli binary, ffmpeg post-processing
 - [x] Cross-cutting concerns mapped — memory, persistence, readiness, errors, logging
 
 **Architectural Decisions**
 
-- [x] 8 critical/important decisions documented with rationale
-- [x] Technology stack fully specified — Python 3.12, FastAPI, uv, Docker, Ansible
-- [x] Integration approach defined — uv git dependency for KokoClone
-- [x] Performance approach defined — Uvicorn workers, warm-up, resource limits
+- [x] 11 critical/important decisions documented with rationale
+- [x] Technology stack fully specified — Python 3.12, FastAPI, uv, Docker, Ansible, Kokoro-ONNX, Qwen3-TTS C++
+- [x] Integration approach defined — kokoro-onnx (PyPI) + qwen3-tts-cli (binary subprocess)
+- [x] Performance approach defined — Single FIFO queue, horizontal scaling via Caddy, dual-engine warm-up
 
 **Implementation Patterns**
 
@@ -1067,7 +1076,7 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 **Key Strengths:**
 
 - Extremely focused scope — single endpoint, single consumer, ~150 lines of core code
-- All ML complexity delegated to KokoClone — architecture only manages the wrapper
+- ML inference delegated to Kokoro (kokoro-onnx) and Qwen3 (qwen3-tts-cli) — architecture manages routing, preprocessing, and post-processing
 - Quality tooling is comprehensive — 8 linters covering every file format
 - Deployment model is simple and safe — Ansible with clear privilege boundaries
 

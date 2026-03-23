@@ -18,15 +18,15 @@ classification:
 
 ## Executive Summary
 
-CUMADRE (Cumadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with zero-shot voice cloning, purpose-built for automated customer service audio in Brazilian Portuguese. It wraps KokoClone (Kokoro TTS + Kanade voice conversion) behind a FastAPI endpoint compatible with the OpenAI audio API, packaged as a Docker service and deployed via Ansible to commodity hardware. The sole consumer is n8n workflow automation on the same local network — no human interacts with the service directly.
+CUMADRE (Cumadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with optional voice cloning, purpose-built for automated customer service audio in Brazilian Portuguese. It uses a dual-engine architecture — Kokoro fp32 for fast built-in voices with perfect sigla pronunciation, and Qwen3-TTS C++ Q8_0 for voice cloning — behind a FastAPI endpoint compatible with the OpenAI audio API, packaged as a Docker service and deployed via Ansible to commodity hardware. The sole consumer is n8n workflow automation on the same local network — no human interacts with the service directly.
 
 After initial deployment, CUMADRE requires zero internet access, zero per-request cost, and sends zero customer data externally. A DevOps operator manages the full lifecycle (bootstrap, update, cleanup, health) through Ansible playbooks.
 
 ### What Makes This Special
 
-KokoClone solves the hard ML problem — high-quality TTS with zero-shot voice cloning from a single 3-10s reference WAV — but ships as a bare Python library with no API, no Docker image, and no deployment story. Cloud alternatives (ElevenLabs, Google, Azure) require internet on every request, introduce per-character cost, and expose customer data. Kokoro-FastAPI provides a REST layer but lacks voice cloning entirely.
+No single open-source TTS engine provides both fast built-in voices and voice cloning at acceptable quality on CPU-only hardware. After evaluating 10+ engine configurations (400+ audio samples), CUMADRE combines two complementary engines: Kokoro fp32 (RTF 1.1x, 10/10 sigla pronunciation via custom espeak-ng dictionary) for speed, and Qwen3-TTS C++ Q8_0 (RTF 2.5x, native voice cloning) for personalization. Cloud alternatives (ElevenLabs, Google, Azure) require internet on every request, introduce per-character cost, and expose customer data. KokoClone was evaluated and rejected (Kanade produces 1/10 diction quality on CPU). Chatterbox Multilingual was rejected (sigla pronunciation fundamentally broken).
 
-CUMADRE is the productization layer: ~80 lines of FastAPI wrapping KokoClone's API, a Dockerfile, docker-compose.yml, and four Ansible playbooks. It turns a research-grade Python library into a deploy-once, zero-maintenance production service. The core insight is that the AI capability already exists — the gap is operational usability.
+CUMADRE is the productization layer: a FastAPI server with voice-based engine routing, engine-specific post-processing pipelines (vibrato_warm for Kokoro, whatsapp-subtle for Qwen3), a Dockerfile, compose.yaml, and four Ansible playbooks. It turns two research-grade inference engines into a deploy-once, zero-maintenance production service optimized for WhatsApp audio delivery (OGG Opus 24kbps 16kHz mono).
 
 ## Project Classification
 
@@ -40,9 +40,9 @@ CUMADRE is the productization layer: ~80 lines of FastAPI wrapping KokoClone's A
 ### User Success
 
 **n8n Workflow Engine (primary consumer):**
-- Receives playable audio (WAV or OGG) from every valid API call
-- Response latency < 3s for short phrases (~15 words)
-- Consistent cloned voice quality across requests
+- Receives playable OGG Opus audio from every valid API call
+- Response latency: Kokoro typical 5-16s, Qwen3 typical 12-37s (acceptable for async WhatsApp)
+- Consistent voice quality across requests (Qwen3 seed reproducibility for cloned voice)
 - Drop-in integration via OpenAI-compatible endpoint — no custom client code
 
 **DevOps Operator:**
@@ -64,20 +64,23 @@ CUMADRE is the productization layer: ~80 lines of FastAPI wrapping KokoClone's A
 
 | Metric | Target | Measurement |
 |---|---|---|
-| Response latency | < 3s per request (~15 words) | `time curl` against endpoint |
+| Response latency (Kokoro) | Typical 5-16s per request | `time curl` with Kokoro voice |
+| Response latency (Qwen3) | Typical 12-37s per request | `time curl` with clone voice |
 | Service availability | 99%+ uptime (excluding scheduled restarts) | Health endpoint monitoring |
-| Throughput | 20-60 req/min on 4 vCPU | Load test with concurrent requests |
-| RAM usage | < 3 GB steady state | `docker stats tts-service` |
+| Throughput (Kokoro) | ~10 req/min per instance on 4 vCPU | Load test |
+| Throughput (Qwen3) | ~4.8 req/min per instance on 4 vCPU | Load test |
+| RAM usage | < 6 GB total (both engines) | `docker stats tts-service` |
 | Cold start time | < 120s (model download excluded) | Time from `docker compose up` to healthy |
-| Memory stability | No growth beyond 4 GB over 24h | Mitigated by daily restart cron |
+| Sigla pronunciation | 34/34 correct via Kokoro+pt_extra | Listening test |
 
 ### Measurable Outcomes
 
 - Deploy success rate: Bootstrap completes on clean VPS without manual intervention
 - Safe update rate: `update.yml` preserves voices and model cache 100% of the time
-- OGG compatibility: `response_format: ogg` produces valid Telegram-compatible voice notes
+- OGG Opus compatibility: output produces valid WhatsApp-compatible voice notes (24kbps 16kHz mono)
 - Auth enforcement: Requests without valid API key return 401
-- Multiple workers: `WORKERS=2` handles concurrent requests correctly
+- Dual engine routing: voice name correctly routes to Kokoro or Qwen3
+- Sigla pronunciation: CPF, CNPJ, FGTS, SUS, LOAS etc. pronounce correctly via Kokoro+pt_extra
 - Cleanup completeness: `cleanup.yml` leaves zero CUMADRE artifacts on VPS
 
 
@@ -89,9 +92,9 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 
 **Opening Scene:** Carlos has a clean Ubuntu 22.04 VPS with 4 vCPU and 8 GB RAM. He clones the CUMADRE repo and reviews the deployment docs.
 
-**Rising Action:** He configures the Ansible inventory with his VPS IP, sets an `API_KEY`, and copies a 5-second WAV recording of the employee whose voice will be cloned to the local voices directory. He runs `ansible-playbook bootstrap.yml`.
+**Rising Action:** He configures the Ansible inventory with his VPS IP, sets an `API_KEY`, and optionally places a 5-second WAV recording of the employee for voice cloning. He runs `ansible-playbook bootstrap.yml`.
 
-**Climax:** Ansible installs Docker, clones the repo to the VPS, builds the container, downloads models from HuggingFace, and starts the service. The health check goes green. Carlos runs `curl -X POST` against `/v1/audio/speech` with a test phrase — and hears the cloned employee voice speaking naturally in Brazilian Portuguese.
+**Climax:** Ansible installs Docker, clones the repo to the VPS, builds the container, downloads models (Kokoro ~325 MB, Qwen3 ~1.6 GB), compiles the espeak-ng pt_extra dictionary, and starts the service. The health check goes green. Carlos tests with voice "santa" — and hears natural Brazilian Portuguese with perfect sigla pronunciation. He tests with voice "clone" — and hears the employee's cloned voice.
 
 **Resolution:** Carlos configures the n8n HTTP Request node to point at the CUMADRE endpoint. The chatbot now responds with natural voice audio. No cloud API key, no per-request billing, no data leaving the network.
 
@@ -101,9 +104,9 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 
 **Rising Action:** n8n processes the message through STT (if voice) and the LLM, which generates a response: "Seu pedido foi enviado ontem e deve chegar até sexta-feira." The workflow POSTs this text to CUMADRE's `/v1/audio/speech` endpoint with `response_format: ogg` and the bearer token.
 
-**Climax:** CUMADRE generates speech with Kokoro, converts it to the cloned employee voice with Kanade, encodes to OGG, and returns the binary in under 3 seconds.
+**Climax:** CUMADRE routes to the Kokoro engine (voice "santa"), preprocesses the text (normalize numbers, chunk sentences), generates speech, applies the vibrato_warm post-processing pipeline, and returns OGG Opus audio in ~10 seconds.
 
-**Resolution:** n8n sends the OGG audio as a voice note back to the customer on WhatsApp. The customer hears a natural, familiar voice — not a robot. The entire exchange happened on the local network.
+**Resolution:** n8n sends the OGG Opus audio as a voice note back to the customer on WhatsApp. The customer hears a natural voice with correct sigla pronunciation — not a robot. The entire exchange happened on the local network. WhatsApp conversations are async, so the latency is imperceptible.
 
 ### Journey 3: Update Cycle — Carlos Keeps CUMADRE Current
 
@@ -121,9 +124,9 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 
 **Rising Action:** Carlos runs `ansible-playbook health.yml` from his laptop. It reports: container running, health endpoint returning 200, but `docker stats` shows RAM at 3.8 GB and climbing — the known Kokoro memory leak.
 
-**Climax:** Carlos confirms the daily restart cron is set. For immediate relief, he restarts the container manually: `docker compose restart tts-service`. RAM drops back to ~2 GB.
+**Climax:** Carlos confirms the daily restart cron is set. For immediate relief, he restarts the container manually: `docker compose restart tts-service`. RAM drops back to normal levels.
 
-**Resolution:** The service recovers. Carlos verifies the cron job schedule and adjusts it to run more frequently if needed. He logs the incident for future reference.
+**Resolution:** The service recovers. The Kokoro memory leak is fixed in phonemizer-fork >=3.3.2, so the daily restart is a safety net. Carlos verifies the cron job schedule and logs the incident.
 
 ### Journey 5: Full Decommission — End of Life
 
@@ -138,9 +141,9 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 | Journey | Capabilities Revealed |
 |---|---|
 | First Deployment | Bootstrap playbook, model auto-download, health endpoint, voice mounting, warm-up |
-| Routine Operation | `/v1/audio/speech` endpoint, WAV/OGG output, bearer auth, < 3s latency, OpenAI-compatible API |
-| Update Cycle | Update playbook, data preservation (voices, cache, config), container rebuild |
-| Troubleshooting | Health playbook, `docker stats` visibility, container restart, memory leak mitigation via cron |
+| Routine Operation | `/v1/audio/speech` endpoint, OGG Opus output, bearer auth, dual-engine routing, OpenAI-compatible API |
+| Update Cycle | Update playbook, data preservation (voices, models, config), container rebuild |
+| Troubleshooting | Health playbook, `docker stats` visibility, container restart, queue depth monitoring |
 | Decommission | Cleanup playbook, complete artifact removal |
 
 ## API Backend Specific Requirements
@@ -153,18 +156,20 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 
 | Endpoint | Method | Purpose | Request | Response |
 |---|---|---|---|---|
-| `/v1/audio/speech` | POST | Generate speech audio | JSON body | WAV or OGG binary |
-| `/health` | GET | Service status + available voices | None | JSON |
+| `/v1/audio/speech` | POST | Generate speech audio | JSON body | OGG Opus binary (or WAV) |
+| `/health` | GET | Service status, voices, engine load, queue | None | JSON |
 
 #### `POST /v1/audio/speech`
 
-- **Request body:** JSON with `input` (text), `voice` (voice name), `response_format` (`wav` or `ogg`)
-- **Response:** Binary audio file with appropriate `Content-Type` header
+- **Request body:** JSON with `input` (text, max 500 chars Kokoro / 300 chars Qwen3), `voice` (voice name — routes to engine), `response_format` (`ogg` default or `wav`), `destination` (optional: `whatsapp`, `telegram`, `messenger` — determines optimal encoding parameters)
+- **Voice routing:** `santa`, `dora`, `alex` → Kokoro fp32; `clone` → Qwen3 with reference; `qwen-female`, `qwen-male` → Qwen3 without cloning
+- **Response:** Binary audio file with appropriate `Content-Type` header (default OGG Opus 24kbps 16kHz mono)
 - **Auth:** `Authorization: Bearer <API_KEY>` required on every request
+- **Timeout:** 120s per request, 240s total with n8n-side failover
 
 #### `GET /health`
 
-- **Response:** JSON with service status, available voices, uptime
+- **Response:** JSON with service status, available voices, engine load, queue depth, clone configuration, uptime, memory
 - **Auth:** No authentication required (monitoring-friendly)
 
 ### Authentication Model
@@ -182,19 +187,47 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 ```json
 {
   "input": "Text to synthesize in pt-BR",
-  "voice": "employee-name",
-  "response_format": "wav|ogg"
+  "voice": "santa",
+  "response_format": "ogg",
+  "destination": "whatsapp"
 }
 ```
 
-**Response:** Binary audio stream (`audio/wav` or `audio/ogg`)
+**Response:** Binary audio stream (`audio/ogg` or `audio/wav`)
+
+### Platform Audio Format Requirements
+
+The `destination` parameter (optional) allows the API to optimize the output encoding for each messaging platform. When omitted, defaults to OGG Opus with standard settings (works for all platforms).
+
+| Platform | Voice Note Format | Also Accepts | Max Size | Voice Note UX? | API |
+|---|---|---|---|---|---|
+| **WhatsApp** | OGG Opus (required for waveform) | AAC, MP3, AMR, MP4 | 16 MB | Yes (OGG Opus only) | Cloud API `POST /messages` |
+| **Telegram** | OGG Opus (required for waveform) | MP3, M4A (render as audio file) | 50 MB | Yes (OGG Opus only) | Bot API `sendVoice` |
+| **Messenger** | OGG Opus or MP3 | WAV, OGG | 25 MB | No (audio player) | Send API `POST /me/messages` |
+| **Instagram Direct** | AAC / M4A | WAV, MP4 | 25 MB | No (audio player) | Messenger Platform API |
+
+**Key insights:**
+- **WhatsApp + Telegram**: OGG Opus required for native voice note waveform UX. Other formats render as generic audio attachments.
+- **Messenger**: Accepts OGG Opus and MP3 — renders as audio player regardless (no voice note UX via API).
+- **Instagram Direct**: Requires AAC/M4A format (does not accept OGG Opus). Renders as audio player.
+- **Default encoding**: OGG Opus mono 16kHz 24kbps — works for WhatsApp, Telegram, and Messenger.
+- **Instagram encoding**: AAC M4A mono 44.1kHz 64kbps — required for Instagram Direct compatibility.
+- The `destination` parameter selects the correct ffmpeg encoding pipeline. Default is `whatsapp` (OGG Opus).
 
 **Health Response (GET /health):**
 ```json
 {
   "status": "healthy",
-  "voices": ["employee-name"],
-  "uptime": 3600
+  "voices": ["santa", "dora", "alex", "clone", "qwen-female", "qwen-male"],
+  "engines": {
+    "kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]},
+    "qwen3": {"loaded": true, "model": "q8_0", "clone_reference": "configured"}
+  },
+  "queue_depth": 0,
+  "clone_configured": true,
+  "uptime_seconds": 3600,
+  "memory_mb": 4200,
+  "version": "0.2.0"
 }
 ```
 
@@ -212,9 +245,10 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 ### Rate Limits & Throughput
 
 - No explicit rate limiting — single consumer (n8n) on local network
-- Throughput target: 20-60 req/min on 4 vCPU depending on worker count
-- Concurrency managed via `WORKERS` env var (default 1)
-- Each worker holds models in memory (~2-3 GB RAM)
+- Throughput per instance: Kokoro ~10 req/min, Qwen3 ~4.8 req/min on 4 vCPU
+- Single FIFO queue per instance with asyncio.Lock — requests processed sequentially
+- Horizontal scaling via Caddy load balancer with round-robin and health checks
+- Both engines loaded in memory (~4-6 GB total)
 
 ### API Versioning
 
@@ -225,10 +259,12 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 
 - OpenAI-compatible contract means n8n HTTP Request nodes work with zero custom config
 - `uv` for all Python dependency management in Docker build
-- espeak-ng required as phonemizer backend for pt-BR
-- ffmpeg required for OGG encoding
-- Model warm-up on startup prevents slow first request
-- Workers are independent processes — no shared state between them
+- Kokoro: espeak-ng with custom pt_extra dictionary for phonemization (sigla pronunciation)
+- Qwen3: native BPE tokenizer with THINK mode for Portuguese; expand_siglas() text preprocessing
+- ffmpeg required for post-processing pipelines and OGG Opus encoding
+- Dual-engine warm-up on startup prevents slow first request
+- Single process — no shared state concerns, scaling is horizontal via Caddy
+- n8n-side failover pattern: allows alerting, text fallback, per-context retry logic
 
 ## Project Scoping & Phased Development
 
@@ -236,7 +272,7 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 
 **MVP Approach:** Problem-solving MVP — deliver the minimum that makes n8n voice responses work without cloud dependencies. The product either generates cloned-voice audio on the local network or it doesn't. There's no partial value.
 
-**Resource Requirements:** Solo developer. The FastAPI wrapper is ~80 lines. Docker and Ansible are configuration, not code. The hardest part is already solved by KokoClone.
+**Resource Requirements:** Solo developer. The FastAPI server with dual-engine routing, post-processing pipelines, and engine-specific preprocessing is the core complexity. Docker and Ansible are configuration. The hard ML inference is solved by Kokoro and Qwen3-TTS C++.
 
 ### MVP Feature Set (Phase 1)
 
@@ -248,35 +284,42 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 - Journey 5 (Decommission) — complete cleanup
 
 **Must-Have Capabilities:**
-- `POST /v1/audio/speech` — text in, WAV/OGG out, cloned voice
-- `GET /health` — service status and available voices
+- `POST /v1/audio/speech` — text in, OGG Opus out, voice-based engine routing
+- `GET /health` — service status, voices, engine load, queue depth, clone config
+- Dual-engine architecture: Kokoro fp32 (built-in voices) + Qwen3-TTS C++ Q8_0 (voice cloning)
+- Engine-specific post-processing: vibrato_warm (Kokoro), whatsapp-subtle (Qwen3)
+- Engine-specific preprocessing: normalize+chunk (Kokoro), expand_siglas (Qwen3)
+- espeak-ng custom pt_extra dictionary for perfect sigla pronunciation (Kokoro)
 - Bearer token authentication
-- Docker packaging with volume mounts (voices, model cache)
-- Configurable workers via `WORKERS` env var
-- Auto model download from HuggingFace on first run
-- Warm-up on startup
+- Docker packaging with volume mounts (voices, models, noise files)
+- Single FIFO queue per instance; horizontal scaling via Caddy load balancer
+- Auto model download on first run (Kokoro ONNX ~325 MB, Qwen3 GGUF ~1.6 GB)
+- Dual-engine warm-up on startup
+- n8n-side failover pattern with alerting and text fallback
 - Four Ansible playbooks: bootstrap, update, cleanup, health
-- Daily restart cron (memory leak mitigation)
+- Daily restart cron (safety net)
 - Documentation in English + README.md in pt-BR
 
 ### Post-MVP Features
 
 **Phase 2 (Growth):**
 - Response caching for repeated phrases (measure demand first)
-- Multiple voice profiles per deployment
 - Prometheus metrics endpoint
-- GPU acceleration for higher throughput
+- Qwen3 seed library management (known-good seeds per sigla pattern)
+- Additional Kokoro voice blending (e.g., pf_dora:60,pm_alex:40)
 
 **Phase 3 (Expansion):**
 - Multi-language TTS beyond pt-BR
-- Voice training from longer samples
 - Streaming audio response
-- Horizontal scaling across containers
+- Multiple Caddy instances for high-availability load balancing
+- GPU acceleration for higher throughput (if hardware budget changes)
 
 ### Risk Mitigation Strategy
 
 **Technical Risks:**
-- *Kokoro memory leak* — mitigated by daily restart cron on host. If frequency increases, adjust cron schedule. Long-term: monitor KokoClone upstream for fixes.
+- *Memory growth* — Kokoro memory leak fixed in phonemizer-fork >=3.3.2. Daily restart cron as safety net.
+- *Qwen3 sigla inconsistency* — 7/10 quality with spaced format preprocessing. Mitigated by seed reproducibility (custom C++ patch) and per-sigla seed library.
+- *Dual-engine complexity* — two engines, two preprocessing pipelines, two post-processing chains. Mitigated by clear module boundaries and voice-based routing.
 - *Model download fails on first run* — HuggingFace dependency only at initial deploy. Models are cached in a Docker volume and survive restarts/updates.
 - *OGG encoding quality* — depends on ffmpeg. Validate Telegram voice note compatibility during development.
 
@@ -290,11 +333,13 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 
 ### Audio Generation
 
-- FR1: n8n workflow can submit text and receive synthesized speech audio with a cloned voice
-- FR2: n8n workflow can specify the output audio format (WAV or OGG)
-- FR3: n8n workflow can specify which voice profile to use for generation
-- FR4: The service can generate Brazilian Portuguese speech using espeak-ng phonemization
-- FR5: The service can convert generated speech to a cloned voice using a reference WAV file
+- FR1: n8n workflow can submit text and receive synthesized speech audio via a dual-engine architecture with voice-based routing
+- FR2: n8n workflow can specify the output audio format (OGG Opus default, WAV optional)
+- FR3: n8n workflow can specify which voice to use, which determines the engine (santa/dora/alex → Kokoro; clone/qwen-female/qwen-male → Qwen3)
+- FR4: The Kokoro engine can generate Brazilian Portuguese speech using espeak-ng phonemization with custom pt_extra dictionary for sigla pronunciation
+- FR5: The Qwen3 engine can generate speech with a pre-configured cloned voice using a reference WAV placed on the server at deploy time
+- FR5a: The service can apply engine-specific post-processing pipelines (vibrato_warm for Kokoro, whatsapp-subtle for Qwen3) to produce WhatsApp-optimized OGG Opus 24kbps 16kHz mono
+- FR5b: The service can apply engine-specific text preprocessing (normalize_text + chunk_text for Kokoro; expand_siglas for Qwen3)
 
 ### API Interface
 
@@ -307,22 +352,22 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 ### Service Health & Monitoring
 
 - FR11: Any HTTP client can query a health endpoint to check service status
-- FR12: The health endpoint can report available voice profiles
-- FR13: The health endpoint can report service uptime
+- FR12: The health endpoint can report available voice profiles and their engine assignments
+- FR13: The health endpoint can report service uptime, queue depth, engine load status, and clone configuration
 
 ### Voice Management
 
-- FR14: DevOps operator can provision a voice by placing a reference WAV file (3-10s) in the voices directory
-- FR15: DevOps operator can configure the default voice via environment variable
-- FR16: The service can discover and load voice files from the mounted volume at startup
+- FR14: DevOps operator can configure voice cloning by placing a reference WAV file (3-10s) on the server at deploy time for Qwen3
+- FR15: DevOps operator can configure the default voice via environment variable (default: santa)
+- FR16: The service can discover built-in Kokoro voices and detect clone reference configuration at startup
 
 ### Container Lifecycle
 
-- FR17: The service can automatically download required models from HuggingFace on first run
+- FR17: The service can automatically download required models on first run (Kokoro ONNX ~325 MB + voices ~27 MB from HuggingFace; Qwen3 GGUF ~1.3 GB + tokenizer ~341 MB)
 - FR18: The service can cache downloaded models in a persistent volume
-- FR19: The service can warm up models on startup to prevent slow first requests
-- FR20: DevOps operator can configure the number of worker processes via environment variable
-- FR21: The service can run multiple independent worker processes for concurrent request handling
+- FR19: The service can warm up both engines on startup to prevent slow first requests
+- FR20: The service uses a single FIFO queue per instance with asyncio.Lock for sequential request processing
+- FR21: Horizontal scaling is achieved by deploying multiple instances behind a Caddy load balancer with round-robin and health checks
 
 ### Deployment & Operations
 
@@ -330,7 +375,11 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 - FR23: DevOps operator can update the service from the latest repo without losing voices, model cache, or configuration
 - FR24: DevOps operator can fully decommission the service leaving zero artifacts on the VPS
 - FR25: DevOps operator can check service health, container state, and disk usage via Ansible
-- FR26: The host can automatically restart the service on a daily schedule to mitigate memory leaks
+- FR26: The host can automatically restart the service on a daily schedule as a safety net (Kokoro memory leak fixed in phonemizer-fork >=3.3.2)
+
+### Audio File Lifecycle
+
+- FR29: The service can periodically clean up generated audio files to prevent disk space exhaustion on the VPS SSD
 
 ### Security & Isolation
 
@@ -341,11 +390,12 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 
 ### Performance
 
-- Response latency < 3 seconds for short phrases (~15 words) on 4 vCPU hardware
+- Kokoro response latency: typical 5-16s per request on 4 vCPU (RTF 1.1x, post-processing adds ~2s)
+- Qwen3 response latency: typical 12-37s per request on 4 vCPU (RTF 2.5x, post-processing adds ~2s)
 - Cold start (container up to healthy) < 120 seconds, excluding initial model download
-- First request after restart completes within 5 seconds (warm-up requirement)
-- Throughput: 20-60 requests/minute depending on worker count
-- Memory usage: < 3 GB steady state per worker
+- First request after restart completes within 10 seconds (dual-engine warm-up requirement)
+- Throughput per instance: Kokoro ~10 req/min, Qwen3 ~4.8 req/min on 4 vCPU
+- Memory usage: < 6 GB total (both engines loaded in single instance)
 
 ### Security
 
@@ -357,7 +407,7 @@ CUMADRE is a single-purpose API backend: one generation endpoint, one health end
 ### Reliability
 
 - Service availability: 99%+ uptime excluding scheduled daily restarts
-- Daily automatic restart mitigates memory leak — RAM must not exceed 4 GB over 24 hours of continuous operation
+- Daily automatic restart as safety net — RAM should remain stable (Kokoro leak fixed in phonemizer-fork >=3.3.2)
 - Model cache persists across container restarts and updates via Docker volume
 - Voice files and configuration survive update operations 100% of the time
 - Health endpoint accurately reflects actual service state (not just container running)
