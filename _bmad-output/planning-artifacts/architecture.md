@@ -152,7 +152,7 @@ After evaluating 10+ engine configurations with 400+ audio samples (documented i
 |---|---|
 | Installation | Pre-built `qwen3-tts-cli` binary (from qwen3-tts.cpp, ~600 KB) with custom seed patch |
 | Core API | Subprocess: `qwen3-tts-cli -m model.gguf -t tokenizer.gguf -l pt --seed N --temperature 0.7 -j 4 "text"` |
-| Voice cloning | Pre-configured reference WAV placed on server at deploy time (not per-request upload) |
+| Voice selection | **All Qwen3 voices use x-vector cloning** from reference WAVs. The 0.6B-Base model has no built-in voice presets — voice identity is determined entirely by the reference audio's speaker embedding. Bundled pt-BR references (female/male) ship in `voices/`, operator can add custom clone reference at deploy time |
 | Models | `qwen3-tts-0.6b-q8_0.gguf` (1.3 GB) + `qwen3-tts-tokenizer-f16.gguf` (341 MB) |
 | Sigla pronunciation | 7/10 with spaced format preprocessing (`C N P J`); word siglas (SUS, PIX, LOAS) kept as-is |
 | Preprocessing | `expand_siglas()` converts spelled siglas to spaced format. Word acronyms kept intact |
@@ -165,14 +165,16 @@ After evaluating 10+ engine configurations with 400+ audio samples (documented i
 
 #### Voice-to-Engine Routing (Fixed)
 
-| Voice Name | Engine | Description |
-|---|---|---|
-| `santa` | Kokoro fp32 | Male, default voice (pm_santa) |
-| `dora` | Kokoro fp32 | Female (pf_dora) |
-| `alex` | Kokoro fp32 | Male alt (pm_alex) |
-| `clone` | Qwen3 C++ Q8_0 | Voice cloning with pre-configured reference WAV |
-| `qwen-female` | Qwen3 C++ Q8_0 | Default female (no cloning) |
-| `qwen-male` | Qwen3 C++ Q8_0 | Default male (no cloning) |
+| Voice Name | Engine | Reference WAV | Description |
+|---|---|---|---|
+| `santa` | Kokoro fp32 | — (built-in pm_santa) | Male, default voice |
+| `dora` | Kokoro fp32 | — (built-in pf_dora) | Female voice |
+| `alex` | Kokoro fp32 | — (built-in pm_alex) | Male alt |
+| `clone` | Qwen3 C++ Q8_0 | Operator-provided at deploy time | Custom voice cloning |
+| `qwen-female` | Qwen3 C++ Q8_0 | `voices/female-reference.wav` (bundled) | Female voice via x-vector cloning from pt-BR reference |
+| `qwen-male` | Qwen3 C++ Q8_0 | `voices/male-reference.wav` (bundled) | Male voice via x-vector cloning from pt-BR reference |
+
+**Qwen3 voice mechanism:** The 0.6B-Base model uses x-vector speaker embeddings extracted from reference audio (`-r` flag). Without `-r`, it produces a fixed default voice (zero embedding). All three Qwen3 voices pass `-r` with different reference WAVs. The bundled references are sourced from [LibriVox - Coleção de Contos Brasileiros 001](https://librivox.org/colecao-librivox-de-contos-brasileiros-001/) (public domain): female = Leni (track 02), male = Lucas M. (track 04).
 
 ### pt-BR Pronunciation: Dual-Engine Approach
 
@@ -251,7 +253,9 @@ cumadre/
 │       └── ansible.cfg
 ├── scripts/
 │   └── entrypoint.sh
-├── voices/                    # Reference WAV files (gitignored, volume-mounted)
+├── voices/                    # Reference WAV files (tracked in git for bundled, volume-mounted for clone)
+│   ├── female-reference.wav   # Bundled pt-BR female reference (public domain, LibriVox)
+│   └── male-reference.wav     # Bundled pt-BR male reference (public domain, LibriVox)
 ├── Dockerfile
 ├── compose.yaml               # Docker Compose v2 standard filename
 ├── pyproject.toml

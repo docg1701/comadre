@@ -1,9 +1,11 @@
-"""Kokoro TTS engine — kokoro-onnx fp32 integration."""
+"""TTS engine service — Kokoro fp32 + Qwen3 C++ Q8_0 integration."""
 
 from __future__ import annotations
 
 import io
+import os
 import subprocess
+import tempfile
 import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -12,7 +14,7 @@ import numpy as np
 
 from cumadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
 from cumadre.logging import get_logger
-from cumadre.preprocessing import chunk_text, normalize_text
+from cumadre.preprocessing import chunk_text, expand_siglas, normalize_text
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -249,6 +251,8 @@ def _apply_vibrato_warm(
         raise GenerationError("Audio post-processing failed (stage 1)") from exc
 
     processed_wav = stage1.stdout
+    if not processed_wav:
+        raise GenerationError("ffmpeg stage 1 produced empty output")
 
     # Stage 2: Noise mixing + final encoding
     room_noise = _find_noise_file(noise_dir, "room")
@@ -256,7 +260,12 @@ def _apply_vibrato_warm(
 
     if room_noise is not None and hiss_noise is not None:
         return _apply_noise_and_encode(
-            processed_wav, room_noise, hiss_noise, response_format
+            processed_wav,
+            room_noise,
+            hiss_noise,
+            response_format,
+            room_volume=0.45,
+            hiss_volume=0.24,
         )
 
     if noise_dir is not None:
@@ -294,6 +303,8 @@ def _apply_noise_and_encode(
     room_noise: Path,
     hiss_noise: Path,
     response_format: str,
+    room_volume: float = 0.45,
+    hiss_volume: float = 0.24,
 ) -> bytes:
     """Mix noise and encode to final format (OGG Opus or WAV)."""
     if response_format == "ogg":
@@ -304,8 +315,8 @@ def _apply_noise_and_encode(
         fmt = "wav"
 
     filter_complex = (
-        "[1:a]volume=0.45[room];"
-        "[2:a]volume=0.24[hiss];"
+        f"[1:a]volume={room_volume}[room];"
+        f"[2:a]volume={hiss_volume}[hiss];"
         "[0:a][room][hiss]amix=inputs=3:duration=shortest,"
         "loudnorm=I=-17:TP=-1.5:LRA=7"
     )
@@ -343,6 +354,9 @@ def _apply_noise_and_encode(
     except subprocess.CalledProcessError as exc:
         logger.error("ffmpeg stage 2 failed: %s", exc.stderr.decode(errors="replace"))
         raise GenerationError("Audio post-processing failed (stage 2)") from exc
+
+    if not result.stdout:
+        raise GenerationError("ffmpeg stage 2 produced empty output")
 
     return result.stdout
 
@@ -397,4 +411,368 @@ def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
         logger.error("ffmpeg encoding failed: %s", exc.stderr.decode(errors="replace"))
         raise GenerationError("Audio encoding failed") from exc
 
+    if not result.stdout:
+        raise GenerationError("ffmpeg encoding produced empty output")
+
     return result.stdout
+
+
+# --- Qwen3 TTS Engine ---
+
+# All Qwen3 voices use x-vector cloning via -r flag with different reference WAVs.
+# The 0.6B-Base model has no built-in voice presets.
+QWEN_VOICES: dict[str, str] = {
+    "clone": "clone",
+    "qwen-female": "female",
+    "qwen-male": "male",
+}
+
+QWEN_CHAR_LIMIT = 300
+
+
+class QwenEngine:
+    """Wraps qwen3-tts-cli C++ binary for TTS generation with voice cloning."""
+
+    def __init__(self) -> None:
+        self._cli_path: str | None = None
+        self._model_path: str | None = None
+        self._tokenizer_path: str | None = None
+        self._voice_references: dict[str, str] = {}
+        self._threads: int = 4
+        self._loaded: bool = False
+
+    @property
+    def is_loaded(self) -> bool:
+        """Return True if the Qwen3 engine is loaded."""
+        return self._loaded
+
+    @property
+    def is_clone_configured(self) -> bool:
+        """Return True if a clone reference WAV is configured."""
+        return "clone" in self._voice_references
+
+    def _validate_reference_wav(self, path: str, label: str) -> None:
+        """Validate a reference WAV file exists and is readable."""
+        if not Path(path).is_file():
+            msg = f"{label} WAV not found: {path}"
+            raise FileNotFoundError(msg)
+        try:
+            with wave.open(path, "rb") as wf:
+                duration = wf.getnframes() / wf.getframerate()
+                if not (3.0 <= duration <= 10.0):
+                    startup_logger.warning(
+                        "%s WAV duration %.1fs outside 3-10s range",
+                        label,
+                        duration,
+                    )
+        except wave.Error as exc:
+            msg = f"{label} is not a valid WAV: {path}"
+            raise ValueError(msg) from exc
+
+    def load_model(
+        self,
+        cli_path: str,
+        model_path: str,
+        tokenizer_path: str,
+        female_reference_path: str,
+        male_reference_path: str,
+        clone_reference_path: str | None = None,
+        threads: int = 4,
+    ) -> None:
+        """Verify Qwen3 binary, model files, and reference WAVs exist."""
+        if not Path(cli_path).is_file():
+            msg = f"qwen3-tts-cli binary not found: {cli_path}"
+            raise FileNotFoundError(msg)
+        if not os.access(cli_path, os.X_OK):
+            msg = f"qwen3-tts-cli binary is not executable: {cli_path}"
+            raise PermissionError(msg)
+        if not Path(model_path).is_file():
+            msg = f"Qwen3 model file not found: {model_path}"
+            raise FileNotFoundError(msg)
+        if not Path(tokenizer_path).is_file():
+            msg = f"Qwen3 tokenizer file not found: {tokenizer_path}"
+            raise FileNotFoundError(msg)
+
+        # Validate all reference WAVs before assigning any state
+        self._validate_reference_wav(female_reference_path, "Female reference")
+        self._validate_reference_wav(male_reference_path, "Male reference")
+
+        validated_refs: dict[str, str] = {
+            "qwen-female": female_reference_path,
+            "qwen-male": male_reference_path,
+        }
+
+        if clone_reference_path is not None:
+            self._validate_reference_wav(clone_reference_path, "Clone reference")
+            validated_refs["clone"] = clone_reference_path
+
+        # All validation passed — assign state atomically
+        self._cli_path = cli_path
+        self._model_path = model_path
+        self._tokenizer_path = tokenizer_path
+        self._threads = threads
+        self._voice_references = validated_refs
+
+        startup_logger.info(
+            "Qwen3 voices configured: %s",
+            list(validated_refs.keys()),
+        )
+        if "clone" not in validated_refs:
+            startup_logger.info("No clone reference — clone voice disabled")
+
+        self._loaded = True
+        startup_logger.info("Qwen3 engine loaded (threads=%d)", threads)
+
+    def warm_up(self) -> None:
+        """Run a dummy subprocess invocation to verify binary works."""
+        if not self._loaded:
+            msg = "Engine not loaded — call load_model() first"
+            raise RuntimeError(msg)
+        startup_logger.info("Running Qwen3 warm-up...")
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            cmd = self._build_command("Teste.", "qwen-female", tmp_path, seed=42)
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                check=True,
+                timeout=60,
+            )
+            startup_logger.info("Qwen3 warm-up complete")
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.CalledProcessError,
+            OSError,
+        ) as exc:
+            startup_logger.warning("Qwen3 warm-up failed: %s", exc)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def generate_speech(
+        self,
+        text: str,
+        voice_name: str,
+        response_format: str,
+        noise_dir: Path | None = None,
+        seed: int = -1,
+    ) -> bytes:
+        """Generate speech via Qwen3 C++ engine.
+
+        Args:
+            text: Input text to synthesize.
+            voice_name: User-facing voice name (clone/qwen-female/qwen-male).
+            response_format: Output format — "wav" or "ogg".
+            noise_dir: Directory containing room/hiss noise WAV files.
+            seed: Random seed (-1 = random, N = deterministic).
+
+        Returns:
+            Audio bytes in the requested format.
+
+        Raises:
+            VoiceNotFoundError: If voice_name is not a Qwen3 voice.
+            InvalidRequestError: If text exceeds the character limit.
+            GenerationError: If TTS generation fails.
+        """
+        if response_format not in ("wav", "ogg"):
+            raise InvalidRequestError(
+                message=f"Unsupported response format: '{response_format}'",
+                hint="Supported formats: 'wav', 'ogg'.",
+            )
+
+        if voice_name not in QWEN_VOICES:
+            raise VoiceNotFoundError(
+                voice=voice_name, available=list(QWEN_VOICES.keys())
+            )
+
+        if voice_name == "clone" and not self.is_clone_configured:
+            raise VoiceNotFoundError(
+                voice=voice_name,
+                available=[v for v in QWEN_VOICES if v != "clone"],
+            )
+
+        if not text.strip():
+            raise InvalidRequestError(
+                message="Text must not be empty",
+                hint="Provide non-empty text for speech synthesis.",
+            )
+
+        if len(text) > QWEN_CHAR_LIMIT:
+            raise InvalidRequestError(
+                message=(
+                    f"Text exceeds {QWEN_CHAR_LIMIT} character limit"
+                    f" ({len(text)} chars)"
+                ),
+                hint=f"Shorten your text to {QWEN_CHAR_LIMIT} characters or fewer.",
+            )
+
+        if not self._loaded:
+            msg = "Engine not loaded — call load_model() first"
+            raise RuntimeError(msg)
+
+        preprocessed = expand_siglas(text)
+        max_tokens = min(4096, max(100, len(text) * 8))
+        logger.info("Generating Qwen3 speech for %d characters", len(text))
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cmd = self._build_command(
+                preprocessed, voice_name, tmp_path, seed, max_tokens
+            )
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                check=True,
+                timeout=60,
+            )
+            wav_bytes = Path(tmp_path).read_bytes()
+            return _apply_whatsapp_subtle(wav_bytes, response_format, noise_dir)
+        except (VoiceNotFoundError, InvalidRequestError, GenerationError):
+            raise
+        except subprocess.TimeoutExpired as exc:
+            logger.error("qwen3-tts-cli timed out after 60s")
+            raise GenerationError("Qwen3 TTS generation timed out") from exc
+        except subprocess.CalledProcessError as exc:
+            logger.error(
+                "qwen3-tts-cli failed: %s", exc.stderr.decode(errors="replace")
+            )
+            raise GenerationError("Qwen3 TTS generation failed") from exc
+        except Exception as exc:
+            logger.error("Qwen3 TTS generation failed: %s", exc, exc_info=True)
+            raise GenerationError(f"Qwen3 TTS generation failed: {exc}") from exc
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def _build_command(
+        self,
+        text: str,
+        voice_name: str,
+        output_path: str,
+        seed: int,
+        max_tokens: int = 100,
+    ) -> list[str]:
+        """Build the qwen3-tts-cli command arguments."""
+        cmd = [
+            str(self._cli_path),
+            "-m",
+            str(self._model_path),
+            "-t",
+            str(self._tokenizer_path),
+            "-l",
+            "pt",
+            "--temperature",
+            "0.7",
+            "--top-p",
+            "0.95",
+            "--repetition-penalty",
+            "1.05",
+            "--max-tokens",
+            str(max_tokens),
+            "--seed",
+            str(seed),
+            "-j",
+            str(self._threads),
+        ]
+        ref_path = self._voice_references.get(voice_name)
+        if ref_path is not None:
+            cmd.extend(["-r", ref_path])
+        cmd.extend(["-o", output_path, "--", text])
+        return cmd
+
+
+def _apply_whatsapp_subtle(
+    wav_bytes: bytes,
+    response_format: str,
+    noise_dir: Path | None = None,
+) -> bytes:
+    """Apply whatsapp-subtle post-processing pipeline via ffmpeg.
+
+    Stage 1: Audio effects (EQ, compression, echo, atempo, loudnorm)
+    Stage 2: Noise mixing + final encoding (OGG Opus or WAV)
+    """
+    # Stage 1: Audio effects
+    stage1_filter = (
+        "highpass=f=100,"
+        "equalizer=f=200:width_type=o:width=1.5:g=1.5,"
+        "equalizer=f=700:width_type=o:width=1.5:g=-2,"
+        "equalizer=f=3000:width_type=o:width=1.5:g=3,"
+        "equalizer=f=7000:width_type=o:width=1.5:g=-4,"
+        "acompressor=threshold=0.15:ratio=6:attack=15:release=200:makeup=5,"
+        "lowpass=f=8000,"
+        "aecho=0.8:0.85:40:0.12,"
+        "atempo=1.15,"
+        "loudnorm=I=-18:TP=-2:LRA=7"
+    )
+
+    stage1_cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "wav",
+        "-i",
+        "pipe:0",
+        "-af",
+        stage1_filter,
+        "-ar",
+        "24000",
+        "-f",
+        "wav",
+        "pipe:1",
+    ]
+
+    try:
+        stage1 = subprocess.run(
+            stage1_cmd,
+            input=wav_bytes,
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error("ffmpeg whatsapp-subtle stage 1 timed out after 30s")
+        raise GenerationError(
+            "Audio post-processing timed out (whatsapp-subtle stage 1)"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        logger.error(
+            "ffmpeg whatsapp-subtle stage 1 failed: %s",
+            exc.stderr.decode(errors="replace"),
+        )
+        raise GenerationError(
+            "Audio post-processing failed (whatsapp-subtle stage 1)"
+        ) from exc
+
+    processed_wav = stage1.stdout
+    if not processed_wav:
+        raise GenerationError("ffmpeg whatsapp-subtle stage 1 produced empty output")
+
+    # Stage 2: Noise mixing + final encoding
+    room_noise = _find_noise_file(noise_dir, "room")
+    hiss_noise = _find_noise_file(noise_dir, "hiss")
+
+    if room_noise is not None and hiss_noise is not None:
+        return _apply_noise_and_encode(
+            processed_wav,
+            room_noise,
+            hiss_noise,
+            response_format,
+            room_volume=0.15,
+            hiss_volume=0.08,
+        )
+
+    if noise_dir is not None:
+        missing = []
+        if room_noise is None:
+            missing.append("room")
+        if hiss_noise is None:
+            missing.append("hiss")
+        logger.warning(
+            "Missing noise file(s) in %s: %s — skipping noise mixing",
+            noise_dir,
+            missing,
+        )
+
+    # No noise mixing — just encode to final format
+    return _encode_final(processed_wav, response_format)

@@ -46,9 +46,9 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 | `santa` | Kokoro fp32 + pm_santa | Fast (RTF 1.1x), perfect siglas via espeak-ng pt_extra |
 | `dora` | Kokoro fp32 + pf_dora | Female voice, fast |
 | `alex` | Kokoro fp32 + pm_alex | Male alternative, fast |
-| `clone` | Qwen3 C++ Q8_0 + pre-configured reference audio | Voice cloning (RTF 2.5x) |
-| `qwen-female` | Qwen3 C++ Q8_0, no reference | Natural female voice |
-| `qwen-male` | Qwen3 C++ Q8_0, no reference | Natural male voice |
+| `clone` | Qwen3 C++ Q8_0 + operator-provided reference WAV | Custom voice cloning (RTF 2.5x) |
+| `qwen-female` | Qwen3 C++ Q8_0 + bundled `voices/female-reference.wav` | Female voice via x-vector cloning (RTF 2.5x) |
+| `qwen-male` | Qwen3 C++ Q8_0 + bundled `voices/male-reference.wav` | Male voice via x-vector cloning (RTF 2.5x) |
 
 #### Preprocessing (automatic, not configurable)
 
@@ -265,14 +265,21 @@ n8n workflow:
 | Normal volume with occasional spikes | n8n failover to backup instance |
 | Mixed: high volume + need for alerting | Both: Caddy for primary pool + n8n failover to separate backup |
 
-## Voice Cloning Configuration
+## Qwen3 Voice Configuration
 
-Voice cloning reference audio is **pre-configured on the server**, not uploaded per request.
+All Qwen3 voices use x-vector cloning from reference WAV files. The 0.6B-Base model has no built-in voice presets — voice identity is determined entirely by the reference audio's speaker embedding.
 
-### Setup (done by DevOps at deploy time)
+### Bundled references (ship with the project)
 
-1. Place reference WAV in `/app/voices/clone-reference.wav`
-2. Set `CLONE_REFERENCE=/app/voices/clone-reference.wav` in environment
+| Voice | File | Source | License |
+|---|---|---|---|
+| `qwen-female` | `voices/female-reference.wav` | LibriVox pt-BR — Leni (Contos Brasileiros, track 02) | Public domain |
+| `qwen-male` | `voices/male-reference.wav` | LibriVox pt-BR — Lucas M. (Contos Brasileiros, track 04) | Public domain |
+
+### Custom clone reference (operator-provided at deploy time)
+
+1. Place reference WAV in `/app/voices/clone-reference.wav` (3-10s, clean speech, mono, 24kHz)
+2. Set `CLONE_REFERENCE_PATH=/app/voices/clone-reference.wav` in environment
 3. When `voice=clone` is requested, Qwen3 uses this reference
 
 ### Consistency

@@ -130,6 +130,105 @@ class TestSettings:
         settings = Settings()
         assert settings.kokoro_voices_path == "/opt/models/voices.bin"
 
+    def test_qwen3_cli_path_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_cli_path == "/usr/local/bin/qwen3-tts-cli"
+
+    def test_qwen3_cli_path_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_CLI_PATH", "/opt/bin/qwen3-tts-cli")
+        settings = Settings()
+        assert settings.qwen3_cli_path == "/opt/bin/qwen3-tts-cli"
+
+    def test_qwen3_model_path_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_model_path == "models/qwen3-tts-0.6b-q8_0.gguf"
+
+    def test_qwen3_model_path_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_MODEL_PATH", "/opt/models/qwen3.gguf")
+        settings = Settings()
+        assert settings.qwen3_model_path == "/opt/models/qwen3.gguf"
+
+    def test_qwen3_tokenizer_path_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_tokenizer_path == "models/qwen3-tts-tokenizer-f16.gguf"
+
+    def test_qwen3_tokenizer_path_from_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_TOKENIZER_PATH", "/opt/models/tokenizer.gguf")
+        settings = Settings()
+        assert settings.qwen3_tokenizer_path == "/opt/models/tokenizer.gguf"
+
+    def test_clone_reference_path_defaults_to_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.clone_reference_path is None
+
+    def test_clone_reference_path_from_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("CLONE_REFERENCE_PATH", "/voices/clone-ref.wav")
+        settings = Settings()
+        assert settings.clone_reference_path == "/voices/clone-ref.wav"
+
+    def test_qwen3_threads_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_threads == 4
+
+    def test_qwen3_threads_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_THREADS", "8")
+        settings = Settings()
+        assert settings.qwen3_threads == 8
+
+    def test_qwen3_threads_rejects_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_THREADS", "0")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_qwen3_female_reference_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_female_reference_path == "voices/female-reference.wav"
+
+    def test_qwen3_female_reference_from_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_FEMALE_REFERENCE_PATH", "/custom/f.wav")
+        settings = Settings()
+        assert settings.qwen3_female_reference_path == "/custom/f.wav"
+
+    def test_qwen3_male_reference_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_male_reference_path == "voices/male-reference.wav"
+
+    def test_qwen3_male_reference_from_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_MALE_REFERENCE_PATH", "/custom/m.wav")
+        settings = Settings()
+        assert settings.qwen3_male_reference_path == "/custom/m.wav"
+
 
 class TestGetSettings:
     """Tests for the get_settings cached function."""

@@ -1,13 +1,89 @@
 """Tests for the pt-BR text preprocessing module."""
 
 from cumadre.preprocessing import (
+    WORD_SIGLAS,
     chunk_text,
+    expand_siglas,
     normalize_currency,
     normalize_dates,
     normalize_numbers,
     normalize_text,
     normalize_times,
 )
+
+
+class TestExpandSiglas:
+    def test_spelled_sigla_cnpj(self) -> None:
+        assert expand_siglas("Seu CNPJ está") == "Seu C N P J está"
+
+    def test_spelled_sigla_cpf(self) -> None:
+        assert expand_siglas("Informe o CPF") == "Informe o C P F"
+
+    def test_spelled_sigla_fgts(self) -> None:
+        assert expand_siglas("Saque FGTS") == "Saque F G T S"
+
+    def test_word_sigla_sus_kept(self) -> None:
+        assert expand_siglas("Consulta no SUS") == "Consulta no SUS"
+
+    def test_word_sigla_pix_kept(self) -> None:
+        assert expand_siglas("Pague via PIX") == "Pague via PIX"
+
+    def test_word_sigla_loas_kept(self) -> None:
+        assert expand_siglas("Benefício LOAS") == "Benefício LOAS"
+
+    def test_word_sigla_detran_kept(self) -> None:
+        assert expand_siglas("Vá ao DETRAN") == "Vá ao DETRAN"
+
+    def test_all_word_siglas_preserved(self) -> None:
+        for sigla in WORD_SIGLAS:
+            result = expand_siglas(f"Teste {sigla} aqui")
+            assert sigla in result, f"{sigla} should be preserved"
+
+    def test_mixed_siglas(self) -> None:
+        result = expand_siglas("O CPF e o SUS são diferentes do FGTS")
+        assert "C P F" in result
+        assert "SUS" in result
+        assert "F G T S" in result
+
+    def test_no_siglas(self) -> None:
+        text = "Texto sem siglas aqui"
+        assert expand_siglas(text) == text
+
+    def test_empty_string(self) -> None:
+        assert expand_siglas("") == ""
+
+    def test_single_uppercase_letter_not_matched(self) -> None:
+        assert expand_siglas("Use a letra A") == "Use a letra A"
+
+    def test_lowercase_not_matched(self) -> None:
+        assert expand_siglas("cpf cnpj") == "cpf cnpj"
+
+    def test_multiple_spelled_siglas(self) -> None:
+        result = expand_siglas("CNPJ e CPF e INSS")
+        assert "C N P J" in result
+        assert "C P F" in result
+        assert "I N S S" in result
+
+    def test_word_sigla_tv_kept(self) -> None:
+        assert expand_siglas("Assista na TV") == "Assista na TV"
+
+    def test_word_sigla_ok_kept(self) -> None:
+        assert expand_siglas("Tudo OK aqui") == "Tudo OK aqui"
+
+    def test_word_sigla_covid_kept(self) -> None:
+        assert expand_siglas("Vacina COVID") == "Vacina COVID"
+
+    def test_word_sigla_pasep_kept(self) -> None:
+        assert expand_siglas("PIS/PASEP") == "PIS/PASEP"
+
+    def test_word_sigla_mei_kept(self) -> None:
+        assert expand_siglas("Cadastro MEI") == "Cadastro MEI"
+
+    def test_word_sigla_prouni_kept(self) -> None:
+        assert expand_siglas("Inscrição PROUNI") == "Inscrição PROUNI"
+
+    def test_word_sigla_sebrae_kept(self) -> None:
+        assert expand_siglas("Curso no SEBRAE") == "Curso no SEBRAE"
 
 
 class TestNormalizeNumbers:
