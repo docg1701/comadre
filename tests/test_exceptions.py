@@ -1,10 +1,19 @@
 """Tests for the custom exception hierarchy."""
 
+import json
+
+from starlette.requests import Request
+
 from cumadre.exceptions import (
+    AuthenticationError,
     CumadreError,
     GenerationError,
     InvalidRequestError,
+    ServiceUnavailableError,
     VoiceNotFoundError,
+    cumadre_error_handler,
+    register_exception_handlers,
+    unhandled_error_handler,
 )
 
 
@@ -111,3 +120,163 @@ class TestGenerationError:
     def test_is_cumadre_error(self) -> None:
         err = GenerationError("x")
         assert isinstance(err, CumadreError)
+
+
+class TestAuthenticationError:
+    def test_status_code(self) -> None:
+        err = AuthenticationError()
+        assert err.status_code == 401
+
+    def test_error_type(self) -> None:
+        err = AuthenticationError()
+        assert err.error_type == "authentication_error"
+
+    def test_default_message(self) -> None:
+        err = AuthenticationError()
+        assert err.message == "Invalid or missing API key"
+
+    def test_custom_message(self) -> None:
+        err = AuthenticationError("Token expired")
+        assert err.message == "Token expired"
+
+    def test_hint_mentions_api_key(self) -> None:
+        err = AuthenticationError()
+        assert "API_KEY" in err.hint
+        assert "Bearer" in err.hint
+
+    def test_is_cumadre_error(self) -> None:
+        err = AuthenticationError()
+        assert isinstance(err, CumadreError)
+
+
+class TestServiceUnavailableError:
+    def test_status_code(self) -> None:
+        err = ServiceUnavailableError()
+        assert err.status_code == 503
+
+    def test_error_type(self) -> None:
+        err = ServiceUnavailableError()
+        assert err.error_type == "service_unavailable"
+
+    def test_default_message(self) -> None:
+        err = ServiceUnavailableError()
+        assert err.message == "Service is warming up"
+
+    def test_custom_message(self) -> None:
+        err = ServiceUnavailableError("Models loading")
+        assert err.message == "Models loading"
+
+    def test_default_retry_seconds(self) -> None:
+        err = ServiceUnavailableError()
+        assert err.retry_seconds == 30
+        assert "30" in err.hint
+
+    def test_custom_retry_seconds(self) -> None:
+        err = ServiceUnavailableError(retry_seconds=60)
+        assert err.retry_seconds == 60
+        assert "60" in err.hint
+
+    def test_hint_mentions_loading(self) -> None:
+        err = ServiceUnavailableError()
+        assert "loading models" in err.hint.lower()
+
+    def test_is_cumadre_error(self) -> None:
+        err = ServiceUnavailableError()
+        assert isinstance(err, CumadreError)
+
+
+def _mock_request() -> Request:
+    """Create a minimal mock Request for handler tests."""
+    scope = {"type": "http", "method": "POST", "path": "/v1/audio/speech"}
+    return Request(scope)
+
+
+def _response_json(resp: object) -> dict[str, object]:
+    """Extract JSON body from a JSONResponse."""
+    body = getattr(resp, "body", b"")
+    result: dict[str, object] = json.loads(
+        body if isinstance(body, bytes) else bytes(body)
+    )
+    return result
+
+
+class TestCumadreErrorHandler:
+    async def test_returns_correct_status_code(self) -> None:
+        exc = VoiceNotFoundError(voice="ghost", available=["santa"])
+        resp = await cumadre_error_handler(_mock_request(), exc)
+        assert resp.status_code == 404
+
+    async def test_returns_json_with_error_key(self) -> None:
+        exc = InvalidRequestError(message="too long", hint="shorten it")
+        resp = await cumadre_error_handler(_mock_request(), exc)
+        body = _response_json(resp)
+        assert "error" in body
+
+    async def test_json_has_all_three_fields(self) -> None:
+        exc = AuthenticationError()
+        resp = await cumadre_error_handler(_mock_request(), exc)
+        error = _response_json(resp)["error"]
+        assert isinstance(error, dict)
+        assert "message" in error
+        assert "type" in error
+        assert "hint" in error
+
+    async def test_json_values_match_exception(self) -> None:
+        exc = GenerationError("model crashed")
+        resp = await cumadre_error_handler(_mock_request(), exc)
+        error = _response_json(resp)["error"]
+        assert isinstance(error, dict)
+        assert error["message"] == "model crashed"
+        assert error["type"] == "server_error"
+        assert "server logs" in error["hint"].lower()
+
+    async def test_service_unavailable_status(self) -> None:
+        exc = ServiceUnavailableError()
+        resp = await cumadre_error_handler(_mock_request(), exc)
+        assert resp.status_code == 503
+
+
+class TestUnhandledErrorHandler:
+    async def test_returns_500(self) -> None:
+        exc = RuntimeError("unexpected boom")
+        resp = await unhandled_error_handler(_mock_request(), exc)
+        assert resp.status_code == 500
+
+    async def test_returns_generic_message(self) -> None:
+        exc = RuntimeError("secret internal detail")
+        resp = await unhandled_error_handler(_mock_request(), exc)
+        error = _response_json(resp)["error"]
+        assert isinstance(error, dict)
+        assert error["type"] == "server_error"
+        assert "secret" not in error["message"]
+        assert "secret" not in error["hint"]
+
+    async def test_does_not_leak_traceback(self) -> None:
+        exc = ValueError("sensitive data")
+        resp = await unhandled_error_handler(_mock_request(), exc)
+        body = _response_json(resp)
+        assert "sensitive data" not in json.dumps(body)
+        assert "Traceback" not in json.dumps(body)
+
+    async def test_hint_references_logs(self) -> None:
+        exc = RuntimeError("oops")
+        resp = await unhandled_error_handler(_mock_request(), exc)
+        error = _response_json(resp)["error"]
+        assert isinstance(error, dict)
+        assert "log" in str(error["hint"]).lower()
+
+
+class TestRegisterExceptionHandlers:
+    def test_registers_cumadre_error_handler(self) -> None:
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        register_exception_handlers(app)
+        assert CumadreError in app.exception_handlers
+
+    def test_registers_unhandled_error_handler(self) -> None:
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        register_exception_handlers(app)
+        assert Exception in app.exception_handlers
