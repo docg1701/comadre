@@ -108,6 +108,28 @@ class TestSettings:
         settings = Settings()
         assert settings.espeak_data_path == "/custom/espeak-ng-data"
 
+    def test_kokoro_model_path_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.kokoro_model_path == "models/kokoro-v1.0.onnx"
+
+    def test_kokoro_model_path_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KOKORO_MODEL_PATH", "/opt/models/kokoro.onnx")
+        settings = Settings()
+        assert settings.kokoro_model_path == "/opt/models/kokoro.onnx"
+
+    def test_kokoro_voices_path_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.kokoro_voices_path == "models/voices-v1.0.bin"
+
+    def test_kokoro_voices_path_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KOKORO_VOICES_PATH", "/opt/models/voices.bin")
+        settings = Settings()
+        assert settings.kokoro_voices_path == "/opt/models/voices.bin"
+
 
 class TestGetSettings:
     """Tests for the get_settings cached function."""

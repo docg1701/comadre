@@ -1,6 +1,11 @@
 """Tests for the custom exception hierarchy."""
 
-from cumadre.exceptions import CumadreError, GenerationError, VoiceNotFoundError
+from cumadre.exceptions import (
+    CumadreError,
+    GenerationError,
+    InvalidRequestError,
+    VoiceNotFoundError,
+)
 
 
 class TestCumadreError:
@@ -61,6 +66,28 @@ class TestVoiceNotFoundError:
 
     def test_is_cumadre_error(self) -> None:
         err = VoiceNotFoundError(voice="x", available=[])
+        assert isinstance(err, CumadreError)
+
+
+class TestInvalidRequestError:
+    def test_status_code(self) -> None:
+        err = InvalidRequestError(message="too long", hint="shorten it")
+        assert err.status_code == 400
+
+    def test_error_type(self) -> None:
+        err = InvalidRequestError(message="too long", hint="shorten it")
+        assert err.error_type == "invalid_request_error"
+
+    def test_message(self) -> None:
+        err = InvalidRequestError(message="text too long", hint="shorten")
+        assert err.message == "text too long"
+
+    def test_hint(self) -> None:
+        err = InvalidRequestError(message="bad", hint="fix this")
+        assert err.hint == "fix this"
+
+    def test_is_cumadre_error(self) -> None:
+        err = InvalidRequestError(message="x", hint="h")
         assert isinstance(err, CumadreError)
 
 

@@ -21,6 +21,14 @@ class Settings(BaseSettings):
         default=None,
         description="Override bundled espeak-ng data path",
     )
+    kokoro_model_path: str = Field(
+        default="models/kokoro-v1.0.onnx",
+        description="Path to the Kokoro ONNX model file",
+    )
+    kokoro_voices_path: str = Field(
+        default="models/voices-v1.0.bin",
+        description="Path to the Kokoro voices binary file",
+    )
 
 
 @lru_cache(maxsize=1)

@@ -12,9 +12,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.7",
-    "soundfile>=0.13",
-    # LEGACY: will be replaced by kokoro-onnx in Story 1.4
-    "kokoclone",
+    "kokoro-onnx>=0.5.0",
     "num2words>=0.5",
 ]
 
@@ -46,11 +44,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = [
-    "core.*",
-    "torch.*",
-    "torchaudio.*",
     "kokoro_onnx.*",
-    "soundfile.*",
     "num2words.*",
 ]
 ignore_missing_imports = true
@@ -58,6 +52,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["slow: integration tests requiring model files"]
 
-[tool.uv.sources]
-kokoclone = { git = "https://github.com/Ashish-Patnaik/kokoclone" }

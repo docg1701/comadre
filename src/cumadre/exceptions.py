@@ -36,6 +36,18 @@ class VoiceNotFoundError(CumadreError):
         self.available = available
 
 
+class InvalidRequestError(CumadreError):
+    """Raised when request parameters are invalid."""
+
+    def __init__(self, message: str, hint: str) -> None:
+        super().__init__(
+            message=message,
+            status_code=400,
+            error_type="invalid_request_error",
+            hint=hint,
+        )
+
+
 class GenerationError(CumadreError):
     """Raised when TTS generation fails."""
 
