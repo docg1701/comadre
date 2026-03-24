@@ -57,7 +57,7 @@ development_status:
   1-5-qwen3-tts-engine-integration: done
   1-6-engine-router-unified-service-api: done
   1-7-exception-handling-request-schemas: done
-  1-8-health-endpoint: backlog
+  1-8-health-endpoint: done
   1-9-speech-endpoint-with-auth-queue-warmup: backlog
   1-10-api-health-tests: backlog
   epic-1-retrospective: optional
