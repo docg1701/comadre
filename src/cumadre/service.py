@@ -69,8 +69,7 @@ class KokoroEngine:
     def warm_up(self) -> None:
         """Run dummy inference to preload model internals."""
         if self._kokoro is None:
-            msg = "Model not loaded — call load_model() first"
-            raise RuntimeError(msg)
+            raise GenerationError("Model not loaded — call load_model() first")
         startup_logger.info("Running warm-up inference...")
         self._kokoro.create(
             text="Teste de aquecimento.",
@@ -131,8 +130,7 @@ class KokoroEngine:
             )
 
         if self._kokoro is None:
-            msg = "Model not loaded — call load_model() first"
-            raise RuntimeError(msg)
+            raise GenerationError("Model not loaded — call load_model() first")
 
         normalized = normalize_text(text)
         chunks = chunk_text(normalized)
@@ -526,8 +524,7 @@ class QwenEngine:
     def warm_up(self) -> None:
         """Run a dummy subprocess invocation to verify binary works."""
         if not self._loaded:
-            msg = "Engine not loaded — call load_model() first"
-            raise RuntimeError(msg)
+            raise GenerationError("Engine not loaded — call load_model() first")
         startup_logger.info("Running Qwen3 warm-up...")
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
@@ -607,8 +604,7 @@ class QwenEngine:
             )
 
         if not self._loaded:
-            msg = "Engine not loaded — call load_model() first"
-            raise RuntimeError(msg)
+            raise GenerationError("Engine not loaded — call load_model() first")
 
         preprocessed = expand_siglas(text)
         max_tokens = min(4096, max(100, len(text) * 8))
@@ -680,6 +676,79 @@ class QwenEngine:
             cmd.extend(["-r", ref_path])
         cmd.extend(["-o", output_path, "--", text])
         return cmd
+
+
+class EngineRouter:
+    """Routes voice requests to the correct TTS engine."""
+
+    def __init__(self, kokoro: KokoroEngine, qwen: QwenEngine) -> None:
+        self._kokoro = kokoro
+        self._qwen = qwen
+
+    def _resolve_engine(self, voice_name: str) -> KokoroEngine | QwenEngine:
+        """Return the engine instance that handles the given voice."""
+        if voice_name in KOKORO_VOICES:
+            return self._kokoro
+        if voice_name in QWEN_VOICES:
+            if voice_name == "clone" and not self._qwen.is_clone_configured:
+                raise VoiceNotFoundError(
+                    voice=voice_name, available=self.available_voices()
+                )
+            return self._qwen
+        raise VoiceNotFoundError(voice=voice_name, available=self.available_voices())
+
+    def generate_speech(
+        self,
+        text: str,
+        voice_name: str,
+        response_format: str = "ogg",
+        noise_dir: Path | None = None,
+        seed: int = -1,
+    ) -> bytes:
+        """Generate speech by dispatching to the correct engine.
+
+        Args:
+            text: Input text to synthesize.
+            voice_name: User-facing voice name.
+            response_format: Output format — "wav" or "ogg".
+            noise_dir: Directory containing room/hiss noise WAV files.
+            seed: Random seed (forwarded to Qwen3 only).
+
+        Returns:
+            Audio bytes in the requested format.
+        """
+        engine = self._resolve_engine(voice_name)
+        if isinstance(engine, QwenEngine):
+            return engine.generate_speech(
+                text, voice_name, response_format, noise_dir, seed
+            )
+        return engine.generate_speech(text, voice_name, response_format, noise_dir)
+
+    def _active_qwen_voices(self) -> list[str]:
+        """Return sorted Qwen3 voice names, excluding clone if not configured."""
+        return sorted(
+            name
+            for name in QWEN_VOICES
+            if name != "clone" or self._qwen.is_clone_configured
+        )
+
+    def available_voices(self) -> list[str]:
+        """Return sorted combined voice list from both engines."""
+        return sorted(list(KOKORO_VOICES.keys()) + self._active_qwen_voices())
+
+    def engine_status(self) -> dict[str, dict[str, object]]:
+        """Return per-engine status for health endpoint."""
+        return {
+            "kokoro": {
+                "loaded": self._kokoro.is_loaded,
+                "voices": sorted(KOKORO_VOICES.keys()),
+            },
+            "qwen3": {
+                "loaded": self._qwen.is_loaded,
+                "clone_configured": self._qwen.is_clone_configured,
+                "voices": self._active_qwen_voices(),
+            },
+        }
 
 
 def _apply_whatsapp_subtle(

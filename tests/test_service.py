@@ -206,15 +206,15 @@ class TestVoiceNotFound:
 
 
 class TestModelNotLoaded:
-    def test_raises_runtime_error_when_not_loaded(self) -> None:
+    def test_raises_generation_error_when_not_loaded(self) -> None:
         svc = KokoroEngine()
         assert not svc.is_loaded
-        with pytest.raises(RuntimeError, match="Model not loaded"):
+        with pytest.raises(GenerationError, match="Model not loaded"):
             svc.generate_speech("hello", "santa", "wav")
 
     def test_warm_up_raises_when_not_loaded(self) -> None:
         svc = KokoroEngine()
-        with pytest.raises(RuntimeError, match="Model not loaded"):
+        with pytest.raises(GenerationError, match="Model not loaded"):
             svc.warm_up()
 
 
@@ -1052,15 +1052,15 @@ class TestQwenSubprocessErrors:
 
 
 class TestQwenModelNotLoaded:
-    def test_raises_runtime_error_when_not_loaded(self) -> None:
+    def test_raises_generation_error_when_not_loaded(self) -> None:
         engine = QwenEngine()
         assert not engine.is_loaded
-        with pytest.raises(RuntimeError, match="Engine not loaded"):
+        with pytest.raises(GenerationError, match="Engine not loaded"):
             engine.generate_speech("hello", "qwen-female", "wav")
 
     def test_warm_up_raises_when_not_loaded(self) -> None:
         engine = QwenEngine()
-        with pytest.raises(RuntimeError, match="Engine not loaded"):
+        with pytest.raises(GenerationError, match="Engine not loaded"):
             engine.warm_up()
 
 
