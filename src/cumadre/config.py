@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     api_key: SecretStr = Field(min_length=1)
-    default_voice: str = "default"
+    default_voice: str = "santa"
     workers: int = Field(default=1, ge=1)
     port: int = Field(default=8000, ge=1, le=65535)
     espeak_data_path: str | None = Field(

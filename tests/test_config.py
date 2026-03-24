@@ -42,7 +42,7 @@ class TestSettings:
 
         settings = Settings()
 
-        assert settings.default_voice == "default"
+        assert settings.default_voice == "santa"
         assert settings.workers == 1
         assert settings.port == 8000
 

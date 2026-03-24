@@ -45,15 +45,15 @@ class TestSpeechRequestKokoroCharLimit:
         assert len(req.input) == 500
 
     def test_kokoro_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="500 character limit"):
+        with pytest.raises(ValidationError, match="500 characters"):
             SpeechRequest(input="a" * 501, voice="santa")
 
     def test_kokoro_dora_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="Kokoro"):
+        with pytest.raises(ValidationError, match="500 characters"):
             SpeechRequest(input="a" * 501, voice="dora")
 
     def test_kokoro_alex_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="Kokoro"):
+        with pytest.raises(ValidationError, match="500 characters"):
             SpeechRequest(input="a" * 501, voice="alex")
 
 
@@ -76,13 +76,21 @@ class TestSpeechRequestQwenCharLimit:
 
 
 class TestSpeechRequestUnknownVoice:
-    def test_unknown_voice_passes_no_char_limit(self) -> None:
-        req = SpeechRequest(input="a" * 600, voice="future-voice")
-        assert len(req.input) == 600
+    def test_unknown_voice_at_global_limit_passes(self) -> None:
+        req = SpeechRequest(input="a" * 500, voice="future-voice")
+        assert len(req.input) == 500
 
-    def test_none_voice_passes_no_char_limit(self) -> None:
-        req = SpeechRequest(input="a" * 600)
+    def test_unknown_voice_over_global_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="500 characters"):
+            SpeechRequest(input="a" * 501, voice="future-voice")
+
+    def test_none_voice_at_global_limit_passes(self) -> None:
+        req = SpeechRequest(input="a" * 500)
         assert req.voice is None
+
+    def test_none_voice_over_global_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="500 characters"):
+            SpeechRequest(input="a" * 501)
 
 
 class TestSpeechRequestEnumValidation:

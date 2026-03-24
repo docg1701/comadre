@@ -30,7 +30,7 @@ _QWEN_CHAR_LIMIT = 300
 class SpeechRequest(BaseModel):
     """Request body for the /v1/audio/speech endpoint."""
 
-    input: str = Field(min_length=1)
+    input: str = Field(min_length=1, max_length=_KOKORO_CHAR_LIMIT)
     voice: str | None = None
     response_format: ResponseFormat = ResponseFormat.ogg
     speed: float = Field(default=1.0, ge=0.25, le=4.0)

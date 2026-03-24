@@ -1,0 +1,112 @@
+"""Speech endpoint route handler for CUMADRE."""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import time
+
+from fastapi import APIRouter, Depends, Header, Request, Response
+
+from cumadre.exceptions import (
+    AuthenticationError,
+    GenerationError,
+    ServiceUnavailableError,
+)
+from cumadre.logging import get_logger
+from cumadre.schemas import ResponseFormat, SpeechRequest
+
+logger = get_logger("request")
+
+api_router = APIRouter()
+
+
+async def verify_ready(request: Request) -> None:
+    """Reject requests during startup warm-up."""
+    if not getattr(request.app.state, "ready", False):
+        raise ServiceUnavailableError(
+            message="Service is warming up, engines not yet loaded",
+            retry_seconds=30,
+        )
+
+
+async def verify_api_key(
+    request: Request,
+    authorization: str = Header(default=""),
+) -> None:
+    """Validate bearer token against configured API key."""
+    settings = request.app.state.settings
+    if not authorization.startswith("Bearer "):
+        raise AuthenticationError("Missing or malformed Authorization header")
+    token = authorization.removeprefix("Bearer ")
+    if not hmac.compare_digest(token, settings.api_key.get_secret_value()):
+        raise AuthenticationError()
+
+
+@api_router.post(
+    "/v1/audio/speech",
+    dependencies=[Depends(verify_ready), Depends(verify_api_key)],
+)
+async def generate_speech(
+    request: Request,
+    body: SpeechRequest,
+) -> Response:
+    """Generate speech audio from text input."""
+    settings = request.app.state.settings
+    router = request.app.state.router
+    queue_lock = request.app.state.queue_lock
+
+    # Resolve default voice (AC #4)
+    voice = body.voice or settings.default_voice
+
+    # Determine media type
+    media_type = (
+        "audio/ogg" if body.response_format == ResponseFormat.ogg else "audio/wav"
+    )
+    extension = body.response_format.value
+
+    start = time.monotonic()
+
+    # Acquire FIFO queue (AC #7)
+    request.app.state.queue_depth += 1
+    try:
+        async with queue_lock:
+            # Generate with timeout (AC #8)
+            try:
+                audio_bytes = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        router.generate_speech,
+                        text=body.input,
+                        voice_name=voice,
+                        response_format=body.response_format.value,
+                    ),
+                    timeout=120.0,
+                )
+            except TimeoutError as exc:
+                logger.warning(
+                    "Generation timed out for voice=%s — orphaned thread"
+                    " may still be running in the background",
+                    voice,
+                )
+                raise GenerationError(
+                    f"Speech generation timed out after 120 seconds for voice '{voice}'"
+                ) from exc
+    finally:
+        request.app.state.queue_depth -= 1
+
+    duration = time.monotonic() - start
+    logger.info(
+        "POST /v1/audio/speech voice=%s format=%s chars=%d duration=%.1fs",
+        voice,
+        extension,
+        len(body.input),
+        duration,
+    )
+
+    return Response(
+        content=audio_bytes,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="speech.{extension}"',
+        },
+    )

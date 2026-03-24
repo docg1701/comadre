@@ -112,6 +112,9 @@ class ServiceUnavailableError(CumadreError):
 
 async def cumadre_error_handler(request: Request, exc: CumadreError) -> JSONResponse:
     """Handle CumadreError subclasses with structured JSON response."""
+    headers: dict[str, str] | None = None
+    if isinstance(exc, ServiceUnavailableError):
+        headers = {"Retry-After": str(exc.retry_seconds)}
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -121,6 +124,7 @@ async def cumadre_error_handler(request: Request, exc: CumadreError) -> JSONResp
                 "hint": exc.hint,
             }
         },
+        headers=headers,
     )
 
 
