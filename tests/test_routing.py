@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from cumadre.exceptions import VoiceNotFoundError
@@ -244,3 +245,113 @@ def test_noise_dir_forwarded_to_qwen(router: EngineRouter, qwen: QwenEngine) -> 
     with patch.object(qwen, "generate_speech", return_value=b"data") as mock_gen:
         router.generate_speech("text", "qwen-female", "ogg", noise_dir=noise)
         mock_gen.assert_called_once_with("text", "qwen-female", "ogg", noise, -1)
+
+
+# --- Story 1.10: Preprocessing/post-processing pipeline tests ---
+
+
+class TestKokoroPreprocessingPipeline:
+    """Verify Kokoro engine calls normalize_text() then chunk_text()."""
+
+    @patch("cumadre.service._apply_vibrato_warm", return_value=b"processed")
+    @patch("cumadre.service._concatenate_wavs", return_value=b"concat-wav")
+    @patch("cumadre.service._samples_to_wav", return_value=b"wav-data")
+    def test_kokoro_calls_normalize_then_chunk(
+        self,
+        mock_wav: MagicMock,
+        mock_concat: MagicMock,
+        mock_vibrato: MagicMock,
+        kokoro: KokoroEngine,
+    ) -> None:
+        """KokoroEngine.generate_speech() calls normalize_text then chunk_text."""
+        kokoro._kokoro.create.return_value = (np.zeros(100), 24000)
+        with (
+            patch(
+                "cumadre.service.normalize_text", return_value="normalized"
+            ) as mock_normalize,
+            patch("cumadre.service.chunk_text", return_value=["chunk1"]) as mock_chunk,
+        ):
+            kokoro.generate_speech("raw text", "santa", "ogg")
+            mock_normalize.assert_called_once_with("raw text")
+            mock_chunk.assert_called_once_with("normalized")
+
+
+class TestKokoroPostProcessingPipeline:
+    """Verify Kokoro engine calls _apply_vibrato_warm()."""
+
+    @patch("cumadre.service._apply_vibrato_warm", return_value=b"processed")
+    @patch("cumadre.service._concatenate_wavs", return_value=b"concat-wav")
+    @patch("cumadre.service._samples_to_wav", return_value=b"wav-data")
+    def test_kokoro_uses_vibrato_warm_pipeline(
+        self,
+        mock_wav: MagicMock,
+        mock_concat: MagicMock,
+        mock_vibrato: MagicMock,
+        kokoro: KokoroEngine,
+    ) -> None:
+        """KokoroEngine.generate_speech() calls _apply_vibrato_warm on output."""
+        kokoro._kokoro.create.return_value = (np.zeros(100), 24000)
+        kokoro.generate_speech("test", "santa", "ogg")
+        mock_vibrato.assert_called_once()
+
+
+class TestQwenPreprocessingPipeline:
+    """Verify Qwen3 engine calls expand_siglas()."""
+
+    @patch("cumadre.service._apply_whatsapp_subtle", return_value=b"processed")
+    @patch("cumadre.service.subprocess")
+    def test_qwen_calls_expand_siglas(
+        self,
+        mock_subprocess: MagicMock,
+        mock_whatsapp: MagicMock,
+        qwen: QwenEngine,
+    ) -> None:
+        """QwenEngine.generate_speech() calls expand_siglas on input."""
+        mock_subprocess.run.return_value = MagicMock(returncode=0)
+        with (
+            patch(
+                "cumadre.service.expand_siglas", return_value="expanded"
+            ) as mock_expand,
+            patch("cumadre.service.Path") as mock_path,
+            patch("cumadre.service.tempfile") as mock_tempfile,
+        ):
+            mock_tempfile.NamedTemporaryFile.return_value.__enter__ = MagicMock(
+                return_value=MagicMock(name="/tmp/fake.wav")
+            )
+            mock_tempfile.NamedTemporaryFile.return_value.__exit__ = MagicMock(
+                return_value=False
+            )
+            mock_path.return_value.read_bytes.return_value = b"wav-data"
+            mock_path.return_value.unlink = MagicMock()
+            qwen.generate_speech("CNPJ test", "qwen-female", "ogg")
+            mock_expand.assert_called_once_with("CNPJ test")
+
+
+class TestQwenPostProcessingPipeline:
+    """Verify Qwen3 engine calls _apply_whatsapp_subtle()."""
+
+    @patch("cumadre.service._apply_whatsapp_subtle", return_value=b"processed")
+    @patch("cumadre.service.subprocess")
+    def test_qwen_uses_whatsapp_subtle_pipeline(
+        self,
+        mock_subprocess: MagicMock,
+        mock_whatsapp: MagicMock,
+        qwen: QwenEngine,
+    ) -> None:
+        """QwenEngine.generate_speech() calls _apply_whatsapp_subtle on output."""
+        mock_subprocess.run.return_value = MagicMock(returncode=0)
+        with (
+            patch("cumadre.service.expand_siglas", return_value="expanded"),
+            patch("cumadre.service.Path") as mock_path,
+            patch("cumadre.service.tempfile") as mock_tempfile,
+        ):
+            mock_tempfile.NamedTemporaryFile.return_value.__enter__ = MagicMock(
+                return_value=MagicMock(name="/tmp/fake.wav")
+            )
+            mock_tempfile.NamedTemporaryFile.return_value.__exit__ = MagicMock(
+                return_value=False
+            )
+            mock_path.return_value.read_bytes.return_value = b"wav-data"
+            mock_path.return_value.unlink = MagicMock()
+            qwen.generate_speech("test", "qwen-female", "ogg")
+            mock_whatsapp.assert_called_once()

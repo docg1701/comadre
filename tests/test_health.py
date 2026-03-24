@@ -1,12 +1,17 @@
 """Tests for health response assembler."""
 
+from __future__ import annotations
+
+import asyncio
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from cumadre import __version__
 from cumadre.health import HealthStatus, build_health_response
+from cumadre.main import create_app
 
 
 @pytest.fixture()
@@ -247,3 +252,92 @@ class TestHealthStatusEnum:
 
     def test_degraded_value(self) -> None:
         assert HealthStatus.degraded == "degraded"
+
+
+# --- Story 1.10: HTTP-level health endpoint tests ---
+
+
+class TestHealthHTTPEndpoint:
+    """Tests for GET /health via HTTP using AsyncClient."""
+
+    async def test_health_returns_200_when_ready(self, client: AsyncClient) -> None:
+        response = await client.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "healthy"
+        expected_keys = {
+            "status",
+            "voices",
+            "engines",
+            "queue_depth",
+            "clone_configured",
+            "uptime_seconds",
+            "memory_mb",
+            "version",
+        }
+        assert set(body.keys()) == expected_keys
+
+    async def test_health_returns_503_when_not_ready(self) -> None:
+        app = create_app()
+        app.state.ready = False
+        app.state.router = None
+        app.state.queue_lock = asyncio.Lock()
+        app.state.queue_depth = 0
+        app.state.start_time = time.monotonic()
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as c:
+            response = await c.get("/health")
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "warming_up"
+
+    async def test_health_requires_no_authentication(self, client: AsyncClient) -> None:
+        # No Authorization header — should still return 200
+        response = await client.get("/health")
+        assert response.status_code == 200
+
+    async def test_health_voices_reflect_router(self, client: AsyncClient) -> None:
+        response = await client.get("/health")
+        body = response.json()
+        assert body["voices"] == [
+            "alex",
+            "dora",
+            "qwen-female",
+            "qwen-male",
+            "santa",
+        ]
+
+    async def test_health_clone_configured_reflects_state(self) -> None:
+        app = create_app()
+        mock_router = MagicMock()
+        mock_router.available_voices.return_value = [
+            "alex",
+            "clone",
+            "dora",
+            "qwen-female",
+            "qwen-male",
+            "santa",
+        ]
+        mock_router.engine_status.return_value = {
+            "kokoro": {"loaded": True, "voices": ["alex", "dora", "santa"]},
+            "qwen3": {
+                "loaded": True,
+                "clone_configured": True,
+                "voices": ["clone", "qwen-female", "qwen-male"],
+            },
+        }
+        app.state.ready = True
+        app.state.router = mock_router
+        app.state.queue_lock = asyncio.Lock()
+        app.state.queue_depth = 0
+        app.state.start_time = time.monotonic()
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as c:
+            response = await c.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["clone_configured"] is True
