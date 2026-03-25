@@ -201,7 +201,7 @@ Returns service health status. No authentication required.
   "clone_configured": true,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
-  "version": "0.1.0"
+  "version": "1.0.0"
 }
 ```
 
@@ -218,7 +218,7 @@ Returned while models are still loading after startup:
   "clone_configured": false,
   "uptime_seconds": 15,
   "memory_mb": 800,
-  "version": "0.1.0"
+  "version": "1.0.0"
 }
 ```
 
