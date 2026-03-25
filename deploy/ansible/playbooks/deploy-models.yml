@@ -1,0 +1,150 @@
+---
+# CUMADRE Model Deployment Playbook
+# Pre-deploys Qwen3 GGUF model files into the cumadre-models Docker volume:
+#   ansible-playbook playbooks/deploy-models.yml -i inventory/production.yml
+#
+# Requires qwen3_model_local and qwen3_tokenizer_local inventory variables
+# pointing to locally converted GGUF files. See docs/quantizing-qwen3-models.md.
+#
+# Can be run independently of bootstrap/update: initial deploy, re-deploy after
+# volume loss, or deploy updated quantizations.
+# Entirely unprivileged — no become: true.
+
+- name: Deploy Qwen3 GGUF Models
+  hosts: cumadre_vps
+  gather_facts: true
+
+  tasks:
+    # =========================================================================
+    # Prerequisites
+    # =========================================================================
+
+    - name: "[Prereq] Check CUMADRE directory exists"
+      ansible.builtin.stat:
+        path: "~/cumadre"
+      register: cumadre_dir
+
+    - name: "[Prereq] Verify CUMADRE is deployed"
+      ansible.builtin.assert:
+        that:
+          - cumadre_dir.stat.exists
+          - cumadre_dir.stat.isdir
+        fail_msg: >-
+          ~/cumadre directory does not exist.
+          Run bootstrap.yml first to deploy the service.
+        success_msg: "CUMADRE directory found."
+
+    - name: "[Prereq] Validate TTS model path is set"
+      ansible.builtin.assert:
+        that:
+          - qwen3_model_local | default('') | length > 0
+        fail_msg: >-
+          qwen3_model_local is not configured.
+          Set it in inventory/production.yml to the local path of your
+          qwen3-tts-0.6b-q8_0.gguf file.
+          See docs/quantizing-qwen3-models.md for conversion procedure.
+        success_msg: "TTS model path: {{ qwen3_model_local }}"
+
+    - name: "[Prereq] Validate tokenizer path is set"
+      ansible.builtin.assert:
+        that:
+          - qwen3_tokenizer_local | default('') | length > 0
+        fail_msg: >-
+          qwen3_tokenizer_local is not configured.
+          Set it in inventory/production.yml to the local path of your
+          qwen3-tts-tokenizer-f16.gguf file.
+          See docs/quantizing-qwen3-models.md for conversion procedure.
+        success_msg: "Tokenizer path: {{ qwen3_tokenizer_local }}"
+
+    # =========================================================================
+    # Stage Model Files on VPS
+    # =========================================================================
+
+    - name: "[Models] Create staging directory"
+      ansible.builtin.file:
+        path: "~/cumadre/deploy/staging"
+        state: directory
+        mode: "0755"
+
+    - name: "[Models] Stage TTS model on VPS"
+      ansible.builtin.copy:
+        src: "{{ qwen3_model_local }}"
+        dest: "~/cumadre/deploy/staging/qwen3-tts-0.6b-q8_0.gguf"
+        mode: "0644"
+
+    - name: "[Models] Stage tokenizer on VPS"
+      ansible.builtin.copy:
+        src: "{{ qwen3_tokenizer_local }}"
+        dest: "~/cumadre/deploy/staging/qwen3-tts-tokenizer-f16.gguf"
+        mode: "0644"
+
+    # =========================================================================
+    # Deploy into Docker Volume
+    # =========================================================================
+
+    - name: "[Models] Deploy GGUF files into volume"
+      block:
+        - name: "[Models] Create helper container for volume access"
+          community.docker.docker_container:
+            name: cumadre-volume-helper
+            image: alpine:3.21
+            volumes:
+              - "cumadre-models:/models"
+            state: present
+            auto_remove: false
+
+        - name: "[Models] Copy TTS model into models volume"
+          community.docker.docker_container_copy_into:
+            container: cumadre-volume-helper
+            path: "{{ ansible_env.HOME }}/cumadre/deploy/staging/qwen3-tts-0.6b-q8_0.gguf"
+            container_path: "/models/qwen3-tts-0.6b-q8_0.gguf"
+            owner_id: 0
+            group_id: 0
+            mode: "0644"
+
+        - name: "[Models] Copy tokenizer into models volume"
+          community.docker.docker_container_copy_into:
+            container: cumadre-volume-helper
+            path: "{{ ansible_env.HOME }}/cumadre/deploy/staging/qwen3-tts-tokenizer-f16.gguf"
+            container_path: "/models/qwen3-tts-tokenizer-f16.gguf"
+            owner_id: 0
+            group_id: 0
+            mode: "0644"
+
+      always:
+        - name: "[Models] Remove helper container"
+          community.docker.docker_container:
+            name: cumadre-volume-helper
+            state: absent
+
+        - name: "[Models] Clean up staging directory"
+          ansible.builtin.file:
+            path: "~/cumadre/deploy/staging"
+            state: absent
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+
+    - name: "[Summary] Report model deployment status"
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          CUMADRE — Qwen3 Model Deployment Complete
+          ============================================
+
+          Models deployed to cumadre-models volume:
+
+            ✓ qwen3-tts-0.6b-q8_0.gguf     (~1.3 GB)
+            ✓ qwen3-tts-tokenizer-f16.gguf  (~325 MB)
+
+          Volume paths (matching compose.yaml):
+            /models/qwen3-tts-0.6b-q8_0.gguf
+            /models/qwen3-tts-tokenizer-f16.gguf
+
+          The download.py script will detect pre-deployed models
+          and skip auto-download on next container start.
+
+          To apply: cd ~/cumadre && docker compose restart
+
+          ============================================

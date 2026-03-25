@@ -1,0 +1,185 @@
+---
+# CUMADRE Health Diagnostic Playbook
+# Read-only diagnostic tool for troubleshooting CUMADRE deployments:
+#   ansible-playbook playbooks/health.yml -i inventory/production.yml
+#
+# This playbook NEVER modifies anything. It checks container state, queries
+# the health endpoint, inspects disk usage and cron jobs, and reports warnings.
+# Entirely unprivileged — no become: true.
+
+- name: Diagnose CUMADRE TTS Service
+  hosts: cumadre_vps
+  gather_facts: false
+
+  tasks:
+    # =========================================================================
+    # Prerequisites
+    # =========================================================================
+
+    - name: "[Prereq] Check CUMADRE directory exists"
+      ansible.builtin.stat:
+        path: "~/cumadre"
+      register: cumadre_dir
+
+    - name: "[Prereq] Verify CUMADRE is deployed"
+      ansible.builtin.assert:
+        that:
+          - cumadre_dir.stat.exists
+          - cumadre_dir.stat.isdir
+        fail_msg: >-
+          ~/cumadre directory does not exist.
+          Run bootstrap.yml first to deploy the service.
+        success_msg: "CUMADRE directory found."
+
+    # =========================================================================
+    # Container State
+    # =========================================================================
+
+    - name: "[Docker] Check container state"
+      community.docker.docker_container_info:
+        name: tts-service
+      register: tts_container
+
+    - name: "[Docker] Report container not running"
+      when: not (tts_container.exists and (tts_container.container.State.Running | default(false)))
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: CUMADRE container is not running.
+          Check logs with: cd ~/cumadre && docker compose logs
+          Restart with: cd ~/cumadre && docker compose up -d
+
+    # =========================================================================
+    # Health Endpoint
+    # =========================================================================
+
+    - name: "[Health] Query health endpoint"
+      when: tts_container.exists and (tts_container.container.State.Running | default(false))
+      ansible.builtin.uri:
+        url: "http://localhost:{{ port }}/health"
+        return_content: true
+        status_code: [200, 503]
+      register: health_check
+      ignore_errors: true
+
+    - name: "[Health] Warn on high memory usage"
+      when:
+        - health_check is defined
+        - health_check.json is defined
+        - (health_check.json.memory_mb | default(0) | int) > 5120
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Memory usage is {{ health_check.json.memory_mb }} MB (threshold: 5 GB).
+          Consider restarting the container: cd ~/cumadre && docker compose restart
+          Verify daily restart cron is active: crontab -l | grep cumadre-daily-restart
+
+    - name: "[Health] Explain Qwen3 disabled status"
+      when:
+        - health_check is defined
+        - health_check.json is defined
+        - not (health_check.json.engines.qwen3.loaded | default(false))
+      ansible.builtin.debug:
+        msg: >-
+          INFO: Qwen3 engine is not loaded. Clone voice functionality is unavailable.
+          This usually means the clone reference WAV is missing.
+          Verify CLONE_REFERENCE configuration in .env and ensure the WAV file
+          exists in the cumadre-voices volume.
+
+    # =========================================================================
+    # Disk Usage
+    # =========================================================================
+
+    - name: "[Disk] Check root filesystem usage"
+      ansible.builtin.command:
+        cmd: df -h /
+      register: disk_usage
+      changed_when: false
+
+    - name: "[Disk] Check audio volume size"
+      when: tts_container.exists and (tts_container.container.State.Running | default(false))
+      ansible.builtin.command:
+        cmd: docker exec tts-service du -sh /audio
+      register: audio_volume_size
+      changed_when: false
+      ignore_errors: true
+
+    - name: "[Disk] Warn on high disk usage"
+      when:
+        - disk_usage.stdout is defined
+        - >-
+          (disk_usage.stdout_lines[1] | default('')
+          | regex_search('([0-9]+)%', '\\1')
+          | default(['0']) | first | int) > 80
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Root filesystem usage is
+          {{ disk_usage.stdout | regex_search('([0-9]+%)', '\\1') | default(['unknown']) | first }}
+          (threshold: 80%).
+          Verify audio cleanup cron is active: crontab -l | grep cumadre-audio-cleanup
+          Expected: every 6h, deleting audio files older than 24h.
+
+    # =========================================================================
+    # Cron Jobs
+    # =========================================================================
+
+    - name: "[Cron] Check crontab entries"
+      ansible.builtin.command:
+        cmd: crontab -l
+      register: crontab_check
+      changed_when: false
+      ignore_errors: true
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+
+    - name: "[Summary] Full diagnostic report"
+      vars:
+        container_running: "{{ tts_container.exists and (tts_container.container.State.Running | default(false)) }}"
+        hc: "{{ health_check.json | default({}) }}"
+        has_health: >-
+          {{ health_check is defined
+          and health_check.json is defined
+          and health_check is not failed }}
+        daily_restart_cron: >-
+          {{ 'Active'
+          if (crontab_check.stdout | default(''))
+          is search('cumadre-daily-restart')
+          else 'NOT FOUND' }}
+        audio_cleanup_cron: >-
+          {{ 'Active'
+          if (crontab_check.stdout | default(''))
+          is search('cumadre-audio-cleanup')
+          else 'NOT FOUND' }}
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          CUMADRE TTS Service — Health Diagnostic
+          ============================================
+
+          Container State: {{ 'Running' if (container_running | bool) else 'NOT RUNNING' }}
+          {% if has_health | bool %}
+          Service Status:  {{ hc.status | default('unknown') }}
+          Loaded Voices:   {{ hc.voices | default([]) | join(', ') }}
+          Kokoro Engine:   {{ 'Loaded' if (hc.engines.kokoro.loaded | default(false)) else 'Not loaded' }}
+          Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
+          Clone Configured:{{ 'Yes' if (hc.clone_configured | default(false)) else 'No' }}
+          Queue Depth:     {{ hc.queue_depth | default('N/A') }}
+          Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
+          Memory Usage:    {{ hc.memory_mb | default('N/A') }} MB
+          {%- if (hc.memory_mb | default(0) | int) > 5120 %} *** HIGH ***{% endif %}
+          Version:         {{ hc.version | default('N/A') }}
+          {% else %}
+          Service Status:  Unable to query health endpoint
+          {% if not container_running | bool %}
+          Suggestion:      Check docker compose logs and restart the container
+          {% endif %}
+          {% endif %}
+
+          Disk Usage:      {{ disk_usage.stdout_lines[1] | default('Unable to check') }}
+          Audio Volume:    {{ audio_volume_size.stdout | default('Unable to check (container not running)') }}
+
+          Cron Jobs:
+            Daily Restart:   {{ daily_restart_cron }}
+            Audio Cleanup:   {{ audio_cleanup_cron }}
+
+          ============================================

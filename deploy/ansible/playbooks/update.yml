@@ -1,0 +1,137 @@
+---
+# CUMADRE Update Playbook
+# Updates a running CUMADRE deployment from the latest repo:
+#   ansible-playbook playbooks/update.yml -i inventory/production.yml
+#
+# Assumes bootstrap.yml has already been run. Entirely unprivileged — no become: true.
+# Data in Docker volumes (models, voices, audio) is preserved across rebuilds.
+
+- name: Update CUMADRE TTS Service
+  hosts: cumadre_vps
+  gather_facts: false
+
+  tasks:
+    # =========================================================================
+    # Prerequisites
+    # =========================================================================
+
+    - name: "[Prereq] Verify CUMADRE directory exists"
+      ansible.builtin.stat:
+        path: "~/cumadre"
+      register: cumadre_dir
+
+    - name: "[Prereq] Fail if not bootstrapped"
+      ansible.builtin.assert:
+        that:
+          - cumadre_dir.stat.exists
+          - cumadre_dir.stat.isdir
+        fail_msg: >-
+          ~/cumadre directory does not exist.
+          Run bootstrap.yml first to deploy the service.
+        success_msg: "CUMADRE directory found."
+
+    - name: "[Prereq] Validate API key is configured"
+      ansible.builtin.assert:
+        that:
+          - api_key_value | length > 0
+        fail_msg: >-
+          CUMADRE_API_KEY environment variable is not set or is empty.
+          Set it before running the playbook: export CUMADRE_API_KEY="your-secret-key"
+        success_msg: "API key is configured."
+
+    - name: "[Prereq] Verify service is running"
+      community.docker.docker_container_info:
+        name: tts-service
+      register: tts_container
+
+    - name: "[Prereq] Fail if service is not running"
+      ansible.builtin.assert:
+        that:
+          - tts_container.exists
+          - tts_container.container.State.Running
+        fail_msg: >-
+          CUMADRE service is not running.
+          Investigate why the service is down before attempting an update.
+          Check logs with: docker compose logs
+        success_msg: "CUMADRE service is running."
+
+    # =========================================================================
+    # Git Pull
+    # =========================================================================
+
+    - name: "[Git] Pull latest changes"
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "~/cumadre"
+        version: "{{ repo_branch }}"
+        force: false
+        update: true
+
+    # =========================================================================
+    # TTS Service Rebuild & Restart
+    # =========================================================================
+
+    - name: "[TTS] Rebuild image and restart service"
+      community.docker.docker_compose_v2:
+        project_src: "~/cumadre"
+        state: present
+        build: always
+        remove_orphans: true
+
+    # =========================================================================
+    # Health Check
+    # =========================================================================
+
+    - name: "[Health] Wait for service to become healthy"
+      ansible.builtin.uri:
+        url: "http://localhost:{{ port }}/health"
+        return_content: true
+      register: health_check
+      until: >-
+        health_check.status == 200
+        and (health_check.json.status | default('')) == "healthy"
+      retries: 60
+      delay: 10
+
+    - name: "[Health] Report failure with actionable next steps"
+      when: >-
+        health_check is failed
+        or (health_check.json.status | default('')) != "healthy"
+      ansible.builtin.fail:
+        msg: |
+          Health check failed after rebuild. Service may be in a broken state.
+
+          Immediate actions:
+            1. Check logs:   docker compose -f ~/cumadre/compose.yaml logs --tail=50
+            2. Check status: docker compose -f ~/cumadre/compose.yaml ps
+            3. Try restart:  docker compose -f ~/cumadre/compose.yaml restart
+
+          If the issue persists, consider rolling back by checking out the
+          previous git commit and rebuilding:
+            cd ~/cumadre && git log --oneline -5
+            git checkout <previous-commit> && docker compose up -d --build
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+
+    - name: "[Summary] Report update status"
+      vars:
+        hc: "{{ health_check.json }}"
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          CUMADRE TTS Service — Update Complete
+          ============================================
+
+          Service Status:  {{ hc.status }}
+          Loaded Voices:   {{ hc.voices | join(', ') }}
+          Kokoro Engine:   {{ hc.engines.kokoro | default('unknown') }}
+          Qwen3 Engine:    {{ hc.engines.qwen3 | default('unknown') }}
+          Clone Config:    {{ 'Yes' if hc.clone_configured | default(false) else 'No' }}
+          Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
+
+          Data preserved:  Volumes (models, voices, audio) intact
+          API Key:         Unchanged (.env not modified)
+
+          ============================================

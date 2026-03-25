@@ -1,0 +1,95 @@
+---
+# CUMADRE Cleanup Playbook
+# Fully decommissions CUMADRE from a VPS — removes all artifacts:
+#   ansible-playbook playbooks/cleanup.yml -i inventory/production.yml
+#
+# WARNING: This is destructive. It removes containers, images, volumes,
+# cron jobs, and the ~/cumadre directory. Data cannot be recovered.
+# Entirely unprivileged — no become: true.
+
+- name: Cleanup CUMADRE TTS Service
+  hosts: cumadre_vps
+  gather_facts: false
+
+  tasks:
+    # =========================================================================
+    # Prerequisites
+    # =========================================================================
+
+    - name: "[Prereq] Check CUMADRE directory exists"
+      ansible.builtin.stat:
+        path: "~/cumadre"
+      register: cumadre_dir
+
+    - name: "[Prereq] Skip cleanup if not deployed"
+      when: not (cumadre_dir.stat.exists and cumadre_dir.stat.isdir)
+      ansible.builtin.debug:
+        msg: >-
+          ~/cumadre directory does not exist. Nothing to clean up.
+          If CUMADRE was previously deployed, it may have already been removed.
+
+    - name: "[Prereq] Confirm deployment exists"
+      when: not (cumadre_dir.stat.exists and cumadre_dir.stat.isdir)
+      ansible.builtin.meta:
+        end_play
+
+    # =========================================================================
+    # Stop and Remove Containers + Volumes
+    # =========================================================================
+
+    - name: "[TTS] Stop and remove containers, volumes, and images"
+      community.docker.docker_compose_v2:
+        project_src: "~/cumadre"
+        state: absent
+        remove_volumes: true
+        remove_images: all
+        remove_orphans: true
+
+    # =========================================================================
+    # Remove Cron Jobs
+    # =========================================================================
+
+    - name: "[Cron] Remove daily restart cron"
+      ansible.builtin.cron:
+        name: "cumadre-daily-restart"
+        state: absent
+
+    - name: "[Cron] Remove audio cleanup cron"
+      ansible.builtin.cron:
+        name: "cumadre-audio-cleanup"
+        state: absent
+
+    # =========================================================================
+    # Remove Project Directory
+    # =========================================================================
+
+    - name: "[Cleanup] Remove CUMADRE directory"
+      ansible.builtin.file:
+        path: "~/cumadre"
+        state: absent
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+
+    - name: "[Summary] Confirm complete removal"
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          CUMADRE TTS Service — Cleanup Complete
+          ============================================
+
+          All CUMADRE artifacts have been removed:
+
+            ✓ Containers stopped and removed
+            ✓ Docker volumes removed (models, voices, audio)
+            ✓ Docker images removed
+            ✓ Cron jobs removed (daily-restart, audio-cleanup)
+            ✓ ~/cumadre directory removed
+
+          The VPS has zero CUMADRE artifacts remaining.
+
+          To redeploy, run:
+            ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
+
+          ============================================
