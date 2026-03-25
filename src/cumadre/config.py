@@ -1,8 +1,10 @@
 """Application configuration via environment variables."""
 
+from __future__ import annotations
+
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,6 +86,23 @@ class Settings(BaseSettings):
         default="",
         description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
     )
+
+    @field_validator(
+        "kokoro_model_url",
+        "kokoro_voices_url",
+        "qwen3_model_url",
+        "qwen3_tokenizer_url",
+    )
+    @classmethod
+    def validate_url_format(cls, v: str) -> str:
+        """Validate URL format at config load time.
+
+        Empty string is allowed for optional URLs (skip download).
+        """
+        if v == "":
+            return v
+        HttpUrl(v)
+        return v
 
 
 @lru_cache(maxsize=1)

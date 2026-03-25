@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import ssl
 import urllib.request
 from pathlib import Path
 
@@ -27,12 +28,26 @@ def _download_file(url: str, dest: Path) -> None:
             urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT) as resp,
             tmp.open("wb") as f,
         ):
+            content_length = resp.headers.get("Content-Length")
+            if content_length:
+                logger.info(
+                    "Expected size: %.1f MB", int(content_length) / (1024 * 1024)
+                )
             shutil.copyfileobj(resp, f)
-        tmp.rename(dest)
+        shutil.move(str(tmp), str(dest))
         size_mb = dest.stat().st_size / (1024 * 1024)
         logger.info("Downloaded %s (%.1f MB)", dest.name, size_mb)
-    except Exception:
+    except ssl.SSLCertVerificationError:
         tmp.unlink(missing_ok=True)
+        logger.critical(
+            "SSL certificate verification failed for %s. "
+            "Check system CA certificates or set SSL_CERT_FILE / SSL_CERT_DIR env var.",
+            url,
+        )
+        raise
+    except Exception as err:
+        tmp.unlink(missing_ok=True)
+        logger.critical("Failed to download %s: %s", url, err)
         raise
 
 

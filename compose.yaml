@@ -10,9 +10,9 @@ services:
       - cumadre-voices:/voices:ro
       - cumadre-audio:/audio:rw
     environment:
-      API_KEY: ${API_KEY}
+      API_KEY: ${API_KEY:?API_KEY must be set}
       DEFAULT_VOICE: santa
-      PORT: "8000"
+      PORT: "${PORT:-8000}"
       ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
       NOISE_DIR: /app/noise
       KOKORO_MODEL_PATH: /models/kokoro-v1.0.onnx
@@ -38,5 +38,8 @@ services:
 
 volumes:
   cumadre-models:
+    name: cumadre-models
   cumadre-voices:
+    name: cumadre-voices
   cumadre-audio:
+    name: cumadre-audio

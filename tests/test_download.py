@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ssl
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,9 +19,12 @@ from cumadre.download import (
 class _FakeResponse:
     """Minimal file-like object for mocking urlopen responses."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, content_length: str | None = None) -> None:
         self._data = data
         self._pos = 0
+        self.headers = Message()
+        if content_length is not None:
+            self.headers["Content-Length"] = content_length
 
     def read(self, size: int = -1) -> bytes:
         if size == -1:
@@ -57,6 +62,22 @@ class TestDownloadFile:
 
         assert dest.is_file()
 
+    def test_uses_shutil_move_for_cross_filesystem_safety(self, tmp_path: Path) -> None:
+        dest = tmp_path / "model.onnx"
+
+        def fake_move(src: str, dst: str) -> None:
+            Path(src).rename(dst)
+
+        with (
+            patch("cumadre.download.urllib.request.urlopen") as mock_open,
+            patch("cumadre.download.shutil.move", side_effect=fake_move) as mock_move,
+        ):
+            mock_open.return_value = _FakeResponse(b"model-data")
+            _download_file("https://example.com/model.onnx", dest)
+
+        tmp_file = dest.with_suffix(".onnx.tmp")
+        mock_move.assert_called_once_with(str(tmp_file), str(dest))
+
     def test_cleans_up_tmp_on_failure(self, tmp_path: Path) -> None:
         dest = tmp_path / "model.onnx"
         with (
@@ -68,6 +89,33 @@ class TestDownloadFile:
 
         assert not dest.is_file()
         assert not dest.with_suffix(".onnx.tmp").is_file()
+
+    def test_logs_critical_on_download_failure(self, tmp_path: Path) -> None:
+        dest = tmp_path / "model.onnx"
+        with (
+            patch("cumadre.download.urllib.request.urlopen") as mock_open,
+            patch("cumadre.download.logger") as mock_logger,
+            pytest.raises(ConnectionError),
+        ):
+            mock_open.side_effect = ConnectionError("network error")
+            _download_file("https://example.com/model.onnx", dest)
+
+        mock_logger.critical.assert_called_once()
+        assert "Failed to download" in mock_logger.critical.call_args[0][0]
+
+    def test_logs_critical_on_ssl_error(self, tmp_path: Path) -> None:
+        dest = tmp_path / "model.onnx"
+        ssl_err = ssl.SSLCertVerificationError("certificate verify failed")
+        with (
+            patch("cumadre.download.urllib.request.urlopen") as mock_open,
+            patch("cumadre.download.logger") as mock_logger,
+            pytest.raises(ssl.SSLCertVerificationError),
+        ):
+            mock_open.side_effect = ssl_err
+            _download_file("https://example.com/model.onnx", dest)
+
+        mock_logger.critical.assert_called_once()
+        assert "SSL certificate" in mock_logger.critical.call_args[0][0]
 
 
 class TestEnsureKokoroModels:

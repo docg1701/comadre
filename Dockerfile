@@ -4,7 +4,7 @@ FROM python:3.12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
-        libsndfile1-dev \
+        libsndfile1 \
         git \
         autoconf \
         automake \
@@ -15,10 +15,12 @@ RUN apt-get update && \
         make \
     && rm -rf /var/lib/apt/lists/*
 
-# Build espeak-ng from source (git master includes PR #2344 pt-BR improvements)
-RUN git clone --depth 1 https://github.com/espeak-ng/espeak-ng.git /tmp/espeak-ng
+# Build espeak-ng from source — pinned 2026-03-24, includes PR #2344 pt-BR improvements
+RUN git init /tmp/espeak-ng
 
 WORKDIR /tmp/espeak-ng
+RUN git fetch --depth 1 https://github.com/espeak-ng/espeak-ng.git 675d77226b16105e96382d38ee27c0ad9660fa1e && \
+    git checkout FETCH_HEAD
 RUN ./autogen.sh && \
     ./configure --prefix=/usr/local && \
     make -j"$(nproc)" && \
@@ -30,7 +32,7 @@ COPY deploy/espeak-ng/pt_extra /tmp/espeak-ng/dictsource/pt_extra
 RUN espeak-ng --compile=pt
 
 # Install uv for Python dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.3 /uv /usr/local/bin/uv
 
 # Copy project files for dependency installation
 WORKDIR /app
@@ -49,7 +51,9 @@ RUN LOADER_DATA=$(python -c "import sys; sys.path.insert(0, '.venv/lib/python3.1
     cp /usr/local/share/espeak-ng-data/phontab "$LOADER_DATA/"
 
 # Clean up espeak-ng source and build dependencies
+# Protect libstdc++6 from autoremove (required by onnxruntime at runtime)
 RUN rm -rf /tmp/espeak-ng && \
+    apt-mark manual libstdc++6 && \
     apt-get purge -y \
         autoconf \
         automake \

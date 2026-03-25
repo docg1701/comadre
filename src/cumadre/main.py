@@ -44,15 +44,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     logger.info("Structured logging configured")
 
-    # Phase 2.5: Ensure models are downloaded
+    # Phase 2.5: Ensure models are downloaded (non-blocking)
     logger.info("Checking model files...")
-    ensure_kokoro_models(
+    await asyncio.to_thread(
+        ensure_kokoro_models,
         model_path=settings.kokoro_model_path,
         voices_path=settings.kokoro_voices_path,
         model_url=settings.kokoro_model_url,
         voices_url=settings.kokoro_voices_url,
     )
-    ensure_qwen3_models(
+    await asyncio.to_thread(
+        ensure_qwen3_models,
         model_path=settings.qwen3_model_path,
         tokenizer_path=settings.qwen3_tokenizer_path,
         model_url=settings.qwen3_model_url,

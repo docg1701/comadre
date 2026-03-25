@@ -255,6 +255,28 @@ class TestSettings:
         settings = Settings()
         assert settings.qwen3_model_url == "https://hf.co/model.gguf"
 
+    def test_invalid_kokoro_model_url_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KOKORO_MODEL_URL", "not-a-url")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_invalid_qwen3_model_url_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_MODEL_URL", "ftp://bad-scheme")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_empty_qwen3_url_allowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_MODEL_URL", "")
+        settings = Settings()
+        assert settings.qwen3_model_url == ""
+
 
 class TestGetSettings:
     """Tests for the get_settings cached function."""

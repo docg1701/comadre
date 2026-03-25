@@ -299,19 +299,22 @@ class TestQwenPreprocessingPipeline:
     """Verify Qwen3 engine calls expand_siglas()."""
 
     @patch("cumadre.service._apply_whatsapp_subtle", return_value=b"processed")
-    @patch("cumadre.service.subprocess")
+    @patch("cumadre.service.subprocess.run")
     def test_qwen_calls_expand_siglas(
         self,
-        mock_subprocess: MagicMock,
+        mock_run: MagicMock,
         mock_whatsapp: MagicMock,
         qwen: QwenEngine,
     ) -> None:
         """QwenEngine.generate_speech() calls expand_siglas on input."""
-        mock_subprocess.run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0)
         with (
             patch(
                 "cumadre.service.expand_siglas", return_value="expanded"
             ) as mock_expand,
+            patch.object(
+                qwen, "_build_command", return_value=["fake-cli", "-t", "expanded"]
+            ),
             patch("cumadre.service.Path") as mock_path,
             patch("cumadre.service.tempfile") as mock_tempfile,
         ):
@@ -331,17 +334,20 @@ class TestQwenPostProcessingPipeline:
     """Verify Qwen3 engine calls _apply_whatsapp_subtle()."""
 
     @patch("cumadre.service._apply_whatsapp_subtle", return_value=b"processed")
-    @patch("cumadre.service.subprocess")
+    @patch("cumadre.service.subprocess.run")
     def test_qwen_uses_whatsapp_subtle_pipeline(
         self,
-        mock_subprocess: MagicMock,
+        mock_run: MagicMock,
         mock_whatsapp: MagicMock,
         qwen: QwenEngine,
     ) -> None:
         """QwenEngine.generate_speech() calls _apply_whatsapp_subtle on output."""
-        mock_subprocess.run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0)
         with (
             patch("cumadre.service.expand_siglas", return_value="expanded"),
+            patch.object(
+                qwen, "_build_command", return_value=["fake-cli", "-t", "expanded"]
+            ),
             patch("cumadre.service.Path") as mock_path,
             patch("cumadre.service.tempfile") as mock_tempfile,
         ):
