@@ -12,29 +12,29 @@ so that I can programmatically handle errors and the operator can diagnose issue
 
 ## Acceptance Criteria
 
-1. **Given** the exceptions module **When** I inspect the error hierarchy **Then** `CumadreError` is the base class with `status_code`, `error_type`, and `hint` attributes, and subclasses exist for: `AuthenticationError` (401), `InvalidRequestError` (400), `VoiceNotFoundError` (404), `GenerationError` (500), `ServiceUnavailableError` (503)
+1. **Given** the exceptions module **When** I inspect the error hierarchy **Then** `ComadreError` is the base class with `status_code`, `error_type`, and `hint` attributes, and subclasses exist for: `AuthenticationError` (401), `InvalidRequestError` (400), `VoiceNotFoundError` (404), `GenerationError` (500), `ServiceUnavailableError` (503)
 
-2. **Given** any `CumadreError` is raised during request processing **When** the centralized exception handler catches it **Then** it returns JSON with all three fields always present: `error.message`, `error.type`, `error.hint` **And** the `hint` field contains an actionable instruction, never a restatement of the message
+2. **Given** any `ComadreError` is raised during request processing **When** the centralized exception handler catches it **Then** it returns JSON with all three fields always present: `error.message`, `error.type`, `error.hint` **And** the `hint` field contains an actionable instruction, never a restatement of the message
 
-3. **Given** an unexpected exception (not a CumadreError subclass) **When** the fallback handler catches it **Then** it returns a 500 response with `error.type: "server_error"` and a generic hint referencing log inspection **And** the full traceback is logged server-side at ERROR level but never returned to the client
+3. **Given** an unexpected exception (not a ComadreError subclass) **When** the fallback handler catches it **Then** it returns a 500 response with `error.type: "server_error"` and a generic hint referencing log inspection **And** the full traceback is logged server-side at ERROR level but never returned to the client
 
 4. **Given** the schemas module **When** I inspect `SpeechRequest` **Then** it validates `input` (required string), `voice` (optional string, default from config), `response_format` (optional, default "ogg", enum: "ogg"/"wav"), `speed` (optional float, default 1.0, range 0.25-4.0), `destination` (optional string, default "whatsapp", enum: "whatsapp"/"telegram"/"messenger"/"instagram") **And** char limits are validated per engine: 500 for Kokoro voices (santa/dora/alex), 300 for Qwen3 voices (clone/qwen-female/qwen-male)
 
 ## Tasks / Subtasks
 
 - [x] Task 1: Add `AuthenticationError` and `ServiceUnavailableError` to exceptions.py (AC: #1)
-  - [x] 1.1 Add `AuthenticationError(CumadreError)` with status_code=401, error_type="authentication_error"
-  - [x] 1.2 Add `ServiceUnavailableError(CumadreError)` with status_code=503, error_type="service_unavailable"
+  - [x] 1.1 Add `AuthenticationError(ComadreError)` with status_code=401, error_type="authentication_error"
+  - [x] 1.2 Add `ServiceUnavailableError(ComadreError)` with status_code=503, error_type="service_unavailable"
   - [x] 1.3 Add tests for both new exceptions in test_exceptions.py
 
 - [x] Task 2: Add centralized exception handlers to exceptions.py (AC: #2, #3)
-  - [x] 2.1 Add `cumadre_error_handler(request, exc)` async function returning JSONResponse with `{"error": {"message": ..., "type": ..., "hint": ...}}`
+  - [x] 2.1 Add `comadre_error_handler(request, exc)` async function returning JSONResponse with `{"error": {"message": ..., "type": ..., "hint": ...}}`
   - [x] 2.2 Add `unhandled_error_handler(request, exc)` async function returning 500 JSONResponse with generic error and logging full traceback at ERROR level
   - [x] 2.3 Add `register_exception_handlers(app)` function that registers both handlers on a FastAPI app instance
   - [x] 2.4 Add tests for both handlers (mock FastAPI Request, verify JSON structure, verify traceback logging for unhandled errors)
 
 - [x] Task 3: Create schemas.py with SpeechRequest model (AC: #4)
-  - [x] 3.1 Create `src/cumadre/schemas.py` with `SpeechRequest(BaseModel)` and all fields
+  - [x] 3.1 Create `src/comadre/schemas.py` with `SpeechRequest(BaseModel)` and all fields
   - [x] 3.2 Add `ResponseFormat` enum ("ogg", "wav") and `Destination` enum ("whatsapp", "telegram", "messenger", "instagram")
   - [x] 3.3 Add `model_validator` for per-engine char limit validation (500 Kokoro, 300 Qwen3)
   - [x] 3.4 Create `tests/test_schemas.py` with tests for all validations
@@ -43,11 +43,11 @@ so that I can programmatically handle errors and the operator can diagnose issue
 
 ### What Already Exists (DO NOT recreate)
 
-**`src/cumadre/exceptions.py`** already has:
-- `CumadreError` base class with `message`, `status_code`, `error_type`, `hint` attributes
-- `VoiceNotFoundError(CumadreError)` — 404, "not_found_error"
-- `InvalidRequestError(CumadreError)` — 400, "invalid_request_error"
-- `GenerationError(CumadreError)` — 500, "server_error"
+**`src/comadre/exceptions.py`** already has:
+- `ComadreError` base class with `message`, `status_code`, `error_type`, `hint` attributes
+- `VoiceNotFoundError(ComadreError)` — 404, "not_found_error"
+- `InvalidRequestError(ComadreError)` — 400, "invalid_request_error"
+- `GenerationError(ComadreError)` — 500, "server_error"
 
 **`tests/test_exceptions.py`** already has 14 tests for the above 4 classes.
 
@@ -58,7 +58,7 @@ so that I can programmatically handle errors and the operator can diagnose issue
    - `ServiceUnavailableError` (503, "service_unavailable")
 
 2. **Centralized FastAPI exception handlers** in `exceptions.py`:
-   - `cumadre_error_handler` — catches any `CumadreError`, returns structured JSON
+   - `comadre_error_handler` — catches any `ComadreError`, returns structured JSON
    - `unhandled_error_handler` — catches `Exception`, returns generic 500, logs traceback
    - `register_exception_handlers(app)` — registers both handlers on the app
 
@@ -69,7 +69,7 @@ so that I can programmatically handle errors and the operator can diagnose issue
 #### AuthenticationError (Task 1.1)
 
 ```python
-class AuthenticationError(CumadreError):
+class AuthenticationError(ComadreError):
     """Raised when authentication fails."""
 
     def __init__(self, message: str = "Invalid or missing API key") -> None:
@@ -84,7 +84,7 @@ class AuthenticationError(CumadreError):
 #### ServiceUnavailableError (Task 1.2)
 
 ```python
-class ServiceUnavailableError(CumadreError):
+class ServiceUnavailableError(ComadreError):
     """Raised when the service is not ready to handle requests."""
 
     def __init__(self, message: str = "Service is warming up", *, retry_seconds: int = 30) -> None:
@@ -124,7 +124,7 @@ Use starlette imports (not fastapi) since these are the actual types FastAPI use
 **`register_exception_handlers(app)`** — called from `main.py` during app creation:
 ```python
 def register_exception_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(CumadreError, cumadre_error_handler)
+    app.add_exception_handler(ComadreError, comadre_error_handler)
     app.add_exception_handler(Exception, unhandled_error_handler)
 ```
 
@@ -132,7 +132,7 @@ Note: The `app` parameter type hint should use `from __future__ import annotatio
 
 #### SpeechRequest Schema (Task 3)
 
-Create `src/cumadre/schemas.py` — this file has **no app imports** per architecture rules.
+Create `src/comadre/schemas.py` — this file has **no app imports** per architecture rules.
 
 ```python
 class ResponseFormat(str, Enum):
@@ -211,7 +211,7 @@ When char limit is exceeded, raise `ValueError` with a clear message including t
 
 ### Project Structure Notes
 
-- `schemas.py` is a NEW file at `src/cumadre/schemas.py` — matches architecture spec
+- `schemas.py` is a NEW file at `src/comadre/schemas.py` — matches architecture spec
 - Exception handlers added to EXISTING `exceptions.py` — not a new file
 - Import graph: `exceptions.py` imports from `logging.py` (for `get_logger`) and starlette (for Request/JSONResponse). No upward imports.
 - `schemas.py` imports only from pydantic and stdlib. No app imports.
@@ -221,9 +221,9 @@ When char limit is exceeded, raise `ValueError` with a clear message including t
 - [Source: _bmad-output/planning-artifacts/epics.md — Story 1.7 acceptance criteria]
 - [Source: _bmad-output/planning-artifacts/architecture.md — Error Handling Pattern, Code Structure, Import Dependency Graph, Enforcement Guidelines]
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md — Error Response Trinity (What/Why/Do), Error Communication Pattern]
-- [Source: src/cumadre/exceptions.py — Existing CumadreError hierarchy (4 classes)]
-- [Source: src/cumadre/config.py — Settings class with default_voice field]
-- [Source: src/cumadre/service.py — KOKORO_VOICES, QWEN_VOICES mappings, char limits]
+- [Source: src/comadre/exceptions.py — Existing ComadreError hierarchy (4 classes)]
+- [Source: src/comadre/config.py — Settings class with default_voice field]
+- [Source: src/comadre/service.py — KOKORO_VOICES, QWEN_VOICES mappings, char limits]
 - [Source: tests/test_exceptions.py — Existing test patterns (14 tests)]
 
 ### Previous Story Intelligence
@@ -260,8 +260,8 @@ None — clean implementation, no debugging required.
 ### Completion Notes List
 
 - Task 1: Added `AuthenticationError` (401) and `ServiceUnavailableError` (503) exception subclasses to `exceptions.py`. ServiceUnavailableError includes configurable `retry_seconds` attribute. 14 new tests added (6 for AuthenticationError, 8 for ServiceUnavailableError).
-- Task 2: Added `cumadre_error_handler`, `unhandled_error_handler`, and `register_exception_handlers` to `exceptions.py`. Uses starlette imports (not fastapi) for Request/JSONResponse. FastAPI type hint guarded behind `TYPE_CHECKING`. Unhandled errors log traceback server-side via `get_logger("request")` and never leak details to client. 10 new async handler tests added.
-- Task 3: Created `src/cumadre/schemas.py` with `SpeechRequest` model, `ResponseFormat` (StrEnum), `Destination` (StrEnum). Per-engine char limit validation via `model_validator(mode="after")`: 500 for Kokoro voices, 300 for Qwen3 voices, unknown/None voices pass through. 22 new tests in `tests/test_schemas.py`.
+- Task 2: Added `comadre_error_handler`, `unhandled_error_handler`, and `register_exception_handlers` to `exceptions.py`. Uses starlette imports (not fastapi) for Request/JSONResponse. FastAPI type hint guarded behind `TYPE_CHECKING`. Unhandled errors log traceback server-side via `get_logger("request")` and never leak details to client. 10 new async handler tests added.
+- Task 3: Created `src/comadre/schemas.py` with `SpeechRequest` model, `ResponseFormat` (StrEnum), `Destination` (StrEnum). Per-engine char limit validation via `model_validator(mode="after")`: 500 for Kokoro voices, 300 for Qwen3 voices, unknown/None voices pass through. 22 new tests in `tests/test_schemas.py`.
 - All quality gates pass: ruff clean, mypy strict clean, 326 tests passed (49 new), 11 skipped (integration).
 
 ### Change Log
@@ -270,8 +270,8 @@ None — clean implementation, no debugging required.
 
 ### File List
 
-- `src/cumadre/exceptions.py` — modified (added AuthenticationError, ServiceUnavailableError, exception handlers, register function)
-- `src/cumadre/schemas.py` — new (SpeechRequest, ResponseFormat, Destination, char limit validation)
+- `src/comadre/exceptions.py` — modified (added AuthenticationError, ServiceUnavailableError, exception handlers, register function)
+- `src/comadre/schemas.py` — new (SpeechRequest, ResponseFormat, Destination, char limit validation)
 - `tests/test_exceptions.py` — modified (added 24 tests for new exceptions and handlers)
 - `tests/test_schemas.py` — new (22 tests for SpeechRequest validation)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` — modified (story status update)

@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cumadre import __version__
-from cumadre.health import HealthStatus, build_health_response
-from cumadre.main import create_app
+from comadre import __version__
+from comadre.health import HealthStatus, build_health_response
+from comadre.main import create_app
 
 
 @pytest.fixture()
@@ -201,7 +201,7 @@ class TestUptimeField:
 class TestMemoryField:
     """Tests for the memory_mb field."""
 
-    @patch("cumadre.health.resource")
+    @patch("comadre.health.resource")
     def test_memory_mb_calculation(
         self, mock_resource: MagicMock, mock_router: MagicMock
     ) -> None:
@@ -212,7 +212,7 @@ class TestMemoryField:
         )
         assert body["memory_mb"] == 500  # 512000 // 1024
 
-    @patch("cumadre.health.resource")
+    @patch("comadre.health.resource")
     def test_memory_mb_is_positive_int(
         self, mock_resource: MagicMock, mock_router: MagicMock
     ) -> None:

@@ -7,7 +7,7 @@ import ssl
 import urllib.request
 from pathlib import Path
 
-from cumadre.logging import get_logger
+from comadre.logging import get_logger
 
 logger = get_logger("download")
 

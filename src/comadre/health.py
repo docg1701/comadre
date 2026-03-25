@@ -1,4 +1,4 @@
-"""Health response assembler for CUMADRE."""
+"""Health response assembler for COMADRE."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from cumadre import __version__
-from cumadre.logging import get_logger
+from comadre import __version__
+from comadre.logging import get_logger
 
 if TYPE_CHECKING:
-    from cumadre.service import EngineRouter
+    from comadre.service import EngineRouter
 
 logger = get_logger("health")
 

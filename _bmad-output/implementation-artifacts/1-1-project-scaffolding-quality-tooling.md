@@ -10,7 +10,7 @@ So that all future code is written against consistent standards from day one.
 
 ## Acceptance Criteria
 
-1. **Given** a clean repository **When** I run `uv init --package cumadre` **Then** the project has `src/cumadre/` layout with `pyproject.toml` and `.python-version` (3.12)
+1. **Given** a clean repository **When** I run `uv init --package comadre` **Then** the project has `src/comadre/` layout with `pyproject.toml` and `.python-version` (3.12)
 
 2. **Given** the initialized project **When** I review `pyproject.toml` **Then** it includes ruff, mypy (strict + pydantic plugin), pytest + pytest-asyncio + httpx configs, and PEP 735 dependency groups (dev, lint, test, type-check)
 
@@ -21,10 +21,10 @@ So that all future code is written against consistent standards from day one.
 ## Tasks / Subtasks
 
 - [x] Task 1: Initialize project with uv (AC: #1)
-  - [x] 1.1: Run `uv init --package cumadre` to create src layout
+  - [x] 1.1: Run `uv init --package comadre` to create src layout
   - [x] 1.2: Verify `.python-version` is set to `3.12`
-  - [x] 1.3: Verify `src/cumadre/__init__.py` exists
-  - [x] 1.4: Set `__version__` in `src/cumadre/__init__.py`
+  - [x] 1.3: Verify `src/comadre/__init__.py` exists
+  - [x] 1.4: Set `__version__` in `src/comadre/__init__.py`
 
 - [x] Task 2: Configure pyproject.toml with all tooling (AC: #2)
   - [x] 2.1: Add project metadata (name, description, license, python requires >=3.12)
@@ -66,7 +66,7 @@ So that all future code is written against consistent standards from day one.
     PORT=8000
     ```
   - [x] 5.3: Create `voices/.gitkeep` (empty file)
-  - [x] 5.4: Create placeholder `src/cumadre/__init__.py` with `__version__`
+  - [x] 5.4: Create placeholder `src/comadre/__init__.py` with `__version__`
 
 - [x] Task 6: Create directory structure for future stories (AC: #4)
   - [x] 6.1: Create `tests/` directory with empty `__init__.py`
@@ -88,7 +88,7 @@ This is the foundation story. Every subsequent story depends on the patterns est
 
 **Build Backend:** `uv_build` (uv native backend, default for `--package` since uv 0.8+). Do NOT switch to setuptools or poetry.
 
-**Layout:** `src/cumadre/` — NOT flat layout. The `--package` flag ensures this. Import safety: prevents tests from accidentally importing local source instead of installed package.
+**Layout:** `src/comadre/` — NOT flat layout. The `--package` flag ensures this. Import safety: prevents tests from accidentally importing local source instead of installed package.
 
 **Python Version:** 3.12 exactly. Set in `.python-version` file.
 
@@ -96,7 +96,7 @@ This is the foundation story. Every subsequent story depends on the patterns est
 
 ### Module Structure (reference for directory creation)
 
-The full project will contain these modules in `src/cumadre/`:
+The full project will contain these modules in `src/comadre/`:
 ```
 __init__.py    — Package init, __version__
 main.py        — FastAPI app, lifespan, router mounting
@@ -104,7 +104,7 @@ api.py         — POST /v1/audio/speech route handler
 schemas.py     — Pydantic request/response models
 service.py     — KokoClone wrapper, TTS + voice cloning + OGG encoding
 config.py      — Settings(BaseSettings) — all env vars
-exceptions.py  — CumadreError hierarchy + exception handlers
+exceptions.py  — ComadreError hierarchy + exception handlers
 health.py      — GET /health route, runtime state assembly
 logging.py     — Structured pipe-delimited formatter + setup
 voices.py      — Voice discovery, WAV validation, listing
@@ -218,14 +218,14 @@ Claude Opus 4.6 (1M context)
 ### Debug Log References
 
 - `.python-version` defaulted to 3.13 from uv init; manually corrected to 3.12
-- `uv init --package cumadre` (without `.`) created a subdirectory; re-ran with `uv init --package --name cumadre .`
+- `uv init --package comadre` (without `.`) created a subdirectory; re-ran with `uv init --package --name comadre .`
 - markdownlint failed on `_bmad-output/` planning artifacts and docs; excluded generated directories from hook scope
 - MD013 (line-length) disabled entirely in markdownlint — impractical for documentation
 - Build backend is `uv_build` (uv's native backend), not `hatchling` as mentioned in Dev Notes — uv 0.8+ defaults to uv_build
 
 ### Completion Notes List
 
-- Initialized Python project with `uv init --package` creating proper `src/cumadre/` layout
+- Initialized Python project with `uv init --package` creating proper `src/comadre/` layout
 - Configured `pyproject.toml` with full tooling: ruff, mypy (strict + pydantic plugin), pytest-asyncio, PEP 735 dependency groups
 - Pre-commit hooks configured for ruff, mypy, hadolint, yamllint, shellcheck, markdownlint-cli2
 - Mypy runs as local hook via `uv run mypy` for full dependency access (pydantic plugin requires project venv)
@@ -238,7 +238,7 @@ Claude Opus 4.6 (1M context)
 - `pyproject.toml` (new) — project metadata, dependencies, tool configs
 - `uv.lock` (new) — locked dependency versions
 - `.python-version` (new) — Python 3.12
-- `src/cumadre/__init__.py` (new) — package init with __version__
+- `src/comadre/__init__.py` (new) — package init with __version__
 - `.pre-commit-config.yaml` (new) — pre-commit hook configuration
 - `.hadolint.yaml` (new) — Dockerfile linter config
 - `.yamllint.yaml` (new) — YAML linter config

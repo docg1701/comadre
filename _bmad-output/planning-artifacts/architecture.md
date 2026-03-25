@@ -4,11 +4,11 @@ lastStep: 8
 status: 'complete'
 completedAt: '2026-03-21'
 inputDocuments:
-  - _bmad-output/planning-artifacts/product-brief-cumadre-2026-03-21.md
+  - _bmad-output/planning-artifacts/product-brief-comadre-2026-03-21.md
   - _bmad-output/planning-artifacts/prd.md
   - _bmad-output/planning-artifacts/ux-design-specification.md
 workflowType: 'architecture'
-project_name: 'cumadre'
+project_name: 'comadre'
 user_name: 'Galvani'
 date: '2026-03-21'
 ---
@@ -105,12 +105,12 @@ API backend (Python/FastAPI) with Docker packaging and Ansible deployment. No st
 
 ### Selected Starter: `uv init --package`
 
-**Rationale:** CUMADRE is ~80-150 lines of core code. Any template beyond `uv init` adds more to delete than to keep. The src layout, pyproject.toml, and .python-version are the only scaffolding needed.
+**Rationale:** COMADRE is ~80-150 lines of core code. Any template beyond `uv init` adds more to delete than to keep. The src layout, pyproject.toml, and .python-version are the only scaffolding needed.
 
 **Initialization Command:**
 
 ```bash
-uv init --package cumadre
+uv init --package comadre
 ```
 
 ### Engine Integration Discovery
@@ -223,9 +223,9 @@ Full evaluation in `docs/feasibility-report-tts-engine.md`. Key rejections:
 ### Project Structure
 
 ```
-cumadre/
+comadre/
 ├── src/
-│   └── cumadre/
+│   └── comadre/
 │       ├── __init__.py
 │       ├── main.py            # FastAPI app, startup lifecycle, health endpoint
 │       ├── api.py             # POST /v1/audio/speech route
@@ -304,7 +304,7 @@ type-check = ["mypy>=1.14"]
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Layout | `src/cumadre/` | Import safety, prevents accidental local imports during testing |
+| Layout | `src/comadre/` | Import safety, prevents accidental local imports during testing |
 | Build backend | hatchling | uv default, minimal config |
 | Linter/formatter | ruff only | Replaces black + isort + flake8 in a single tool, 100x faster |
 | Type checker | mypy --strict | Catches type errors before runtime; pydantic plugin essential for FastAPI |
@@ -354,9 +354,9 @@ No database. No persistent data storage. Audio is generated and returned in the 
 
 | Data | Storage | Lifecycle |
 |---|---|---|
-| Kokoro models (~352 MB) | Docker named volume `cumadre-models` | `kokoro-v1.0.onnx` (325 MB) + `voices-v1.0.bin` (27 MB). Downloaded once from HuggingFace |
-| Qwen3 models (~1.6 GB) | Docker named volume `cumadre-models` | `qwen3-tts-0.6b-q8_0.gguf` (1.3 GB) + `qwen3-tts-tokenizer-f16.gguf` (341 MB) |
-| Clone reference WAV | Docker named volume `cumadre-voices` | Operator-provisioned at deploy time for Qwen3 voice cloning |
+| Kokoro models (~352 MB) | Docker named volume `comadre-models` | `kokoro-v1.0.onnx` (325 MB) + `voices-v1.0.bin` (27 MB). Downloaded once from HuggingFace |
+| Qwen3 models (~1.6 GB) | Docker named volume `comadre-models` | `qwen3-tts-0.6b-q8_0.gguf` (1.3 GB) + `qwen3-tts-tokenizer-f16.gguf` (341 MB) |
+| Clone reference WAV | Docker named volume `comadre-voices` | Operator-provisioned at deploy time for Qwen3 voice cloning |
 | Noise WAV files (~2 MB) | Baked into Docker image | Room ambience + hiss noise for post-processing realism |
 | espeak-ng pt_extra data | Baked into Docker image | Compiled custom dictionary (pt_dict ~141 KB + phoneme files) |
 | qwen3-tts-cli binary | Baked into Docker image | Pre-built binary with seed patch (~600 KB) |
@@ -421,7 +421,7 @@ Generated audio files are stored temporarily on the VPS SSD. Without periodic cl
 
 ```bash
 # User-level crontab entry (configured by bootstrap playbook)
-0 */6 * * * find ~/cumadre/audio -name '*.ogg' -o -name '*.wav' -mmin +1440 -delete 2>/dev/null
+0 */6 * * * find ~/comadre/audio -name '*.ogg' -o -name '*.wav' -mmin +1440 -delete 2>/dev/null
 ```
 
 ### Platform Audio Format Compatibility
@@ -519,7 +519,7 @@ ansible-playbook deploy/ansible/playbooks/update.yml
 | Element | Convention | Example |
 |---|---|---|
 | App config | UPPER_SNAKE_CASE | `API_KEY`, `DEFAULT_VOICE`, `WORKERS`, `PORT` |
-| No prefix | Keep it simple | `API_KEY` not `CUMADRE_API_KEY` |
+| No prefix | Keep it simple | `API_KEY` not `COMADRE_API_KEY` |
 
 **File & Directory Naming:**
 
@@ -651,16 +651,16 @@ Rules:
 
 ```python
 # Custom exceptions → centralized handler → consistent JSON
-class CumadreError(Exception):
+class ComadreError(Exception):
     status_code: int
     error_type: str
     hint: str
 
-class VoiceNotFoundError(CumadreError):
+class VoiceNotFoundError(ComadreError):
     status_code = 404
     error_type = "not_found_error"
 
-# Registered once in main.py via @app.exception_handler(CumadreError)
+# Registered once in main.py via @app.exception_handler(ComadreError)
 ```
 
 Rules:
@@ -775,12 +775,12 @@ voice = os.environ.get("DEFAULT_VOICE", "default")  # Wrong: use Settings
 ### Complete Project Directory Structure
 
 ```
-cumadre/
+comadre/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                    # GitHub Actions: lint + test + docker build
 ├── src/
-│   └── cumadre/
+│   └── comadre/
 │       ├── __init__.py               # Package init, __version__
 │       ├── main.py                   # FastAPI app, lifespan, router mounting
 │       ├── api.py                    # POST /v1/audio/speech route handler
@@ -788,7 +788,7 @@ cumadre/
 │       ├── service.py                # Dual-engine wrapper: voice routing, Kokoro/Qwen3 dispatch, post-processing, OGG encoding
 │       ├── preprocessing.py          # pt-BR text normalization + sentence chunking
 │       ├── config.py                 # Settings(BaseSettings) — all env vars
-│       ├── exceptions.py             # CumadreError hierarchy + exception handlers
+│       ├── exceptions.py             # ComadreError hierarchy + exception handlers
 │       ├── health.py                 # GET /health route, runtime state assembly
 │       ├── logging.py                # Structured pipe-delimited formatter + setup
 │       └── voices.py                 # Voice discovery, WAV validation, listing
@@ -871,15 +871,15 @@ Rules:
 │                                                  │
 │  ┌─ Docker (user in docker group) ───────────┐  │
 │  │                                            │  │
-│  │  cumadre-service                          │  │
+│  │  comadre-service                          │  │
 │  │  ├── Uvicorn (single worker)              │  │
 │  │  ├── asyncio.Lock FIFO queue              │  │
 │  │  ├── Port 8000 (mapped)                   │  │
 │  │  │                                        │  │
 │  │  │  Volumes:                              │  │
-│  │  │  ├── cumadre-voices:/voices (ro)       │  │
-│  │  │  ├── cumadre-models:/models (rw)       │  │
-│  │  │  └── cumadre-audio:/audio (rw)         │  │
+│  │  │  ├── comadre-voices:/voices (ro)       │  │
+│  │  │  ├── comadre-models:/models (rw)       │  │
+│  │  │  └── comadre-audio:/audio (rw)         │  │
 │  │  │                                        │  │
 │  │  │  Resource limits:                      │  │
 │  │  │  ├── cpus: 4                           │  │
@@ -897,7 +897,7 @@ Rules:
 ```
 Developer machine                    VPS (Debian 13)
 ┌──────────────┐                    ┌──────────────────────┐
-│ cumadre/     │   Ansible SSH      │ ~/cumadre/           │
+│ comadre/     │   Ansible SSH      │ ~/comadre/           │
 │ deploy/      │ ──────────────►    │   Dockerfile         │
 │  ansible/    │  (as VPS user)     │   compose.yaml       │
 │  playbooks/  │                    │   src/               │
@@ -905,7 +905,7 @@ Developer machine                    VPS (Debian 13)
 │ voices/*.wav │ ──── copy ────►    │   voices/*.wav       │
 └──────────────┘                    └──────────────────────┘
 
-All project files live in ~/cumadre (user home directory).
+All project files live in ~/comadre (user home directory).
 No files in /opt, /tmp, /src, /bin, or any system directory.
 ```
 
@@ -914,9 +914,9 @@ No files in /opt, /tmp, /src, /bin, or any system directory.
 | Playbook | Privilege | Scope |
 |---|---|---|
 | `bootstrap.yml` | `become: true` for apt tasks only | Install Docker, add user to docker group (Debian 13 apt) |
-| `bootstrap.yml` | Unprivileged for everything else | Clone repo to ~/cumadre, copy voices, docker compose up |
-| `update.yml` | Unprivileged | git pull in ~/cumadre, docker compose build + restart |
-| `cleanup.yml` | Unprivileged | docker compose down, rm -rf ~/cumadre |
+| `bootstrap.yml` | Unprivileged for everything else | Clone repo to ~/comadre, copy voices, docker compose up |
+| `update.yml` | Unprivileged | git pull in ~/comadre, docker compose build + restart |
+| `cleanup.yml` | Unprivileged | docker compose down, rm -rf ~/comadre |
 | `health.yml` | Unprivileged | curl health endpoint, docker stats |
 
 **Critical rule:** After bootstrap installs system packages and adds the user to the `docker` group, all subsequent operations run without privilege escalation. The daily restart cron is a user-level crontab entry, not a system cron.
@@ -1069,7 +1069,7 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 - [x] Complete directory tree with every file annotated
 - [x] Architectural boundaries diagrammed — API, container, deployment
 - [x] FR-to-file mapping complete
-- [x] Deployment model defined — ~/cumadre, unprivileged except bootstrap apt
+- [x] Deployment model defined — ~/comadre, unprivileged except bootstrap apt
 
 ### Architecture Readiness Assessment
 
@@ -1099,15 +1099,15 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 - Use implementation patterns consistently — especially the exception hierarchy and module boundaries
 - Respect the import dependency graph — dependencies flow downward only
 - All config via pydantic-settings, never raw os.environ
-- All errors via CumadreError subclasses, never raw HTTPException
+- All errors via ComadreError subclasses, never raw HTTPException
 - All logging via structured logger, never print()
-- All project files on VPS live in ~/cumadre — never in /opt, /tmp, or system directories
+- All project files on VPS live in ~/comadre — never in /opt, /tmp, or system directories
 - Ansible uses `become: true` only for apt tasks in bootstrap — everything else unprivileged
 
 **First Implementation Priority:**
 
 ```bash
-uv init --package cumadre
+uv init --package comadre
 ```
 
 Then configure pyproject.toml with all tool settings and quality tooling.

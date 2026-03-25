@@ -125,4 +125,4 @@ All pronunciation fixes must be done via **text preprocessing** before the model
 
 ## Final Verdict
 
-**Chatterbox is demoted to second choice** for the cumadre project due to unreliable sigla pronunciation. It remains an excellent engine for non-legal contexts where siglas are rare. Qwen3-TTS is being evaluated as replacement for voice cloning with sigla support.
+**Chatterbox is demoted to second choice** for the comadre project due to unreliable sigla pronunciation. It remains an excellent engine for non-legal contexts where siglas are rare. Qwen3-TTS is being evaluated as replacement for voice cloning with sigla support.

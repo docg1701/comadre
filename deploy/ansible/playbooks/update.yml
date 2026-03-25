@@ -1,13 +1,13 @@
 ---
-# CUMADRE Update Playbook
-# Updates a running CUMADRE deployment from the latest repo:
+# COMADRE Update Playbook
+# Updates a running COMADRE deployment from the latest repo:
 #   ansible-playbook playbooks/update.yml -i inventory/production.yml
 #
 # Assumes bootstrap.yml has already been run. Entirely unprivileged — no become: true.
 # Data in Docker volumes (models, voices, audio) is preserved across rebuilds.
 
-- name: Update CUMADRE TTS Service
-  hosts: cumadre_vps
+- name: Update COMADRE TTS Service
+  hosts: comadre_vps
   gather_facts: false
 
   tasks:
@@ -15,28 +15,28 @@
     # Prerequisites
     # =========================================================================
 
-    - name: "[Prereq] Verify CUMADRE directory exists"
+    - name: "[Prereq] Verify COMADRE directory exists"
       ansible.builtin.stat:
-        path: "~/cumadre"
-      register: cumadre_dir
+        path: "~/comadre"
+      register: comadre_dir
 
     - name: "[Prereq] Fail if not bootstrapped"
       ansible.builtin.assert:
         that:
-          - cumadre_dir.stat.exists
-          - cumadre_dir.stat.isdir
+          - comadre_dir.stat.exists
+          - comadre_dir.stat.isdir
         fail_msg: >-
-          ~/cumadre directory does not exist.
+          ~/comadre directory does not exist.
           Run bootstrap.yml first to deploy the service.
-        success_msg: "CUMADRE directory found."
+        success_msg: "COMADRE directory found."
 
     - name: "[Prereq] Validate API key is configured"
       ansible.builtin.assert:
         that:
           - api_key_value | length > 0
         fail_msg: >-
-          CUMADRE_API_KEY environment variable is not set or is empty.
-          Set it before running the playbook: export CUMADRE_API_KEY="your-secret-key"
+          COMADRE_API_KEY environment variable is not set or is empty.
+          Set it before running the playbook: export COMADRE_API_KEY="your-secret-key"
         success_msg: "API key is configured."
 
     - name: "[Prereq] Verify service is running"
@@ -50,10 +50,10 @@
           - tts_container.exists
           - tts_container.container.State.Running
         fail_msg: >-
-          CUMADRE service is not running.
+          COMADRE service is not running.
           Investigate why the service is down before attempting an update.
           Check logs with: docker compose logs
-        success_msg: "CUMADRE service is running."
+        success_msg: "COMADRE service is running."
 
     # =========================================================================
     # Git Pull
@@ -62,7 +62,7 @@
     - name: "[Git] Pull latest changes"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
-        dest: "~/cumadre"
+        dest: "~/comadre"
         version: "{{ repo_branch }}"
         force: false
         update: true
@@ -73,7 +73,7 @@
 
     - name: "[TTS] Rebuild image and restart service"
       community.docker.docker_compose_v2:
-        project_src: "~/cumadre"
+        project_src: "~/comadre"
         state: present
         build: always
         remove_orphans: true
@@ -102,13 +102,13 @@
           Health check failed after rebuild. Service may be in a broken state.
 
           Immediate actions:
-            1. Check logs:   docker compose -f ~/cumadre/compose.yaml logs --tail=50
-            2. Check status: docker compose -f ~/cumadre/compose.yaml ps
-            3. Try restart:  docker compose -f ~/cumadre/compose.yaml restart
+            1. Check logs:   docker compose -f ~/comadre/compose.yaml logs --tail=50
+            2. Check status: docker compose -f ~/comadre/compose.yaml ps
+            3. Try restart:  docker compose -f ~/comadre/compose.yaml restart
 
           If the issue persists, consider rolling back by checking out the
           previous git commit and rebuilding:
-            cd ~/cumadre && git log --oneline -5
+            cd ~/comadre && git log --oneline -5
             git checkout <previous-commit> && docker compose up -d --build
 
     # =========================================================================
@@ -121,7 +121,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          CUMADRE TTS Service — Update Complete
+          COMADRE TTS Service — Update Complete
           ============================================
 
           Service Status:  {{ hc.status }}

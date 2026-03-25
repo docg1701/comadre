@@ -153,13 +153,13 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 **Resolution:**
 
-1. Check logs: `docker compose -f ~/cumadre/compose.yaml logs --tail=50`
-2. Check container status: `docker compose -f ~/cumadre/compose.yaml ps`
-3. Try restarting: `docker compose -f ~/cumadre/compose.yaml restart`
+1. Check logs: `docker compose -f ~/comadre/compose.yaml logs --tail=50`
+2. Check container status: `docker compose -f ~/comadre/compose.yaml ps`
+3. Try restarting: `docker compose -f ~/comadre/compose.yaml restart`
 4. Roll back to previous version:
 
     ```bash
-    cd ~/cumadre
+    cd ~/comadre
     git log --oneline -5
     git checkout <previous-commit>
     docker compose up -d --build
@@ -177,11 +177,11 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
     ```yaml
     volumes:
-      cumadre-models:
-        name: cumadre-models
+      comadre-models:
+        name: comadre-models
     ```
 
-2. Check existing volumes: `docker volume ls | grep cumadre`
+2. Check existing volumes: `docker volume ls | grep comadre`
 3. If volumes have wrong names, copy data to correctly named volumes and remove old ones
 
 ### Disk space
@@ -194,13 +194,13 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 1. Check disk usage: `df -h /`
 2. Check audio volume size: `docker exec tts-service du -sh /audio`
-3. Verify the audio cleanup cron is active: `crontab -l | grep cumadre-audio-cleanup`
+3. Verify the audio cleanup cron is active: `crontab -l | grep comadre-audio-cleanup`
 4. Expected: runs every 6 hours, deletes audio files older than 24 hours
 5. Manual cleanup: `docker exec tts-service find /audio -type f \( -name '*.ogg' -o -name '*.wav' \) -mmin +1440 -delete`
 
 ## Log Format
 
-CUMADRE uses structured pipe-delimited logging:
+COMADRE uses structured pipe-delimited logging:
 
 ```text
 2026-03-25T14:30:00Z | INFO  | request | TTS generation completed in 8.3s

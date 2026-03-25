@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cumadre.download import (
+from comadre.download import (
     _download_file,
     ensure_kokoro_models,
     ensure_qwen3_models,
@@ -47,7 +47,7 @@ class TestDownloadFile:
 
     def test_downloads_to_destination(self, tmp_path: Path) -> None:
         dest = tmp_path / "model.onnx"
-        with patch("cumadre.download.urllib.request.urlopen") as mock_open:
+        with patch("comadre.download.urllib.request.urlopen") as mock_open:
             mock_open.return_value = _FakeResponse(b"model-data")
             _download_file("https://example.com/model.onnx", dest)
 
@@ -56,7 +56,7 @@ class TestDownloadFile:
 
     def test_creates_parent_directories(self, tmp_path: Path) -> None:
         dest = tmp_path / "subdir" / "deep" / "model.bin"
-        with patch("cumadre.download.urllib.request.urlopen") as mock_open:
+        with patch("comadre.download.urllib.request.urlopen") as mock_open:
             mock_open.return_value = _FakeResponse(b"data")
             _download_file("https://example.com/model.bin", dest)
 
@@ -69,8 +69,8 @@ class TestDownloadFile:
             Path(src).rename(dst)
 
         with (
-            patch("cumadre.download.urllib.request.urlopen") as mock_open,
-            patch("cumadre.download.shutil.move", side_effect=fake_move) as mock_move,
+            patch("comadre.download.urllib.request.urlopen") as mock_open,
+            patch("comadre.download.shutil.move", side_effect=fake_move) as mock_move,
         ):
             mock_open.return_value = _FakeResponse(b"model-data")
             _download_file("https://example.com/model.onnx", dest)
@@ -81,7 +81,7 @@ class TestDownloadFile:
     def test_cleans_up_tmp_on_failure(self, tmp_path: Path) -> None:
         dest = tmp_path / "model.onnx"
         with (
-            patch("cumadre.download.urllib.request.urlopen") as mock_open,
+            patch("comadre.download.urllib.request.urlopen") as mock_open,
             pytest.raises(ConnectionError),
         ):
             mock_open.side_effect = ConnectionError("network error")
@@ -93,8 +93,8 @@ class TestDownloadFile:
     def test_logs_critical_on_download_failure(self, tmp_path: Path) -> None:
         dest = tmp_path / "model.onnx"
         with (
-            patch("cumadre.download.urllib.request.urlopen") as mock_open,
-            patch("cumadre.download.logger") as mock_logger,
+            patch("comadre.download.urllib.request.urlopen") as mock_open,
+            patch("comadre.download.logger") as mock_logger,
             pytest.raises(ConnectionError),
         ):
             mock_open.side_effect = ConnectionError("network error")
@@ -107,8 +107,8 @@ class TestDownloadFile:
         dest = tmp_path / "model.onnx"
         ssl_err = ssl.SSLCertVerificationError("certificate verify failed")
         with (
-            patch("cumadre.download.urllib.request.urlopen") as mock_open,
-            patch("cumadre.download.logger") as mock_logger,
+            patch("comadre.download.urllib.request.urlopen") as mock_open,
+            patch("comadre.download.logger") as mock_logger,
             pytest.raises(ssl.SSLCertVerificationError),
         ):
             mock_open.side_effect = ssl_err
@@ -127,7 +127,7 @@ class TestEnsureKokoroModels:
         model.write_bytes(b"model")
         voices.write_bytes(b"voices")
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_kokoro_models(
                 model_path=str(model),
                 voices_path=str(voices),
@@ -142,7 +142,7 @@ class TestEnsureKokoroModels:
         voices = tmp_path / "voices.bin"
         voices.write_bytes(b"voices")
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_kokoro_models(
                 model_path=str(model),
                 voices_path=str(voices),
@@ -157,7 +157,7 @@ class TestEnsureKokoroModels:
         voices = tmp_path / "voices.bin"
         model.write_bytes(b"model")
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_kokoro_models(
                 model_path=str(model),
                 voices_path=str(voices),
@@ -171,7 +171,7 @@ class TestEnsureKokoroModels:
         model = tmp_path / "kokoro.onnx"
         voices = tmp_path / "voices.bin"
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_kokoro_models(
                 model_path=str(model),
                 voices_path=str(voices),
@@ -185,7 +185,7 @@ class TestEnsureKokoroModels:
         model = tmp_path / "kokoro.onnx"
         voices = tmp_path / "voices.bin"
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_kokoro_models(
                 model_path=str(model),
                 voices_path=str(voices),
@@ -205,7 +205,7 @@ class TestEnsureQwen3Models:
         model.write_bytes(b"model")
         tokenizer.write_bytes(b"tokenizer")
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_qwen3_models(
                 model_path=str(model),
                 tokenizer_path=str(tokenizer),
@@ -220,7 +220,7 @@ class TestEnsureQwen3Models:
         tokenizer = tmp_path / "tokenizer.gguf"
         tokenizer.write_bytes(b"tokenizer")
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_qwen3_models(
                 model_path=str(model),
                 tokenizer_path=str(tokenizer),
@@ -234,7 +234,7 @@ class TestEnsureQwen3Models:
         model = tmp_path / "qwen3.gguf"
         tokenizer = tmp_path / "tokenizer.gguf"
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_qwen3_models(
                 model_path=str(model),
                 tokenizer_path=str(tokenizer),
@@ -248,7 +248,7 @@ class TestEnsureQwen3Models:
         model = tmp_path / "qwen3.gguf"
         tokenizer = tmp_path / "tokenizer.gguf"
 
-        with patch("cumadre.download._download_file") as mock_dl:
+        with patch("comadre.download._download_file") as mock_dl:
             ensure_qwen3_models(
                 model_path=str(model),
                 tokenizer_path=str(tokenizer),

@@ -5,14 +5,14 @@ Status: done
 ## Story
 
 As a **DevOps operator**,
-I want to update CUMADRE from the latest repo without losing data,
+I want to update COMADRE from the latest repo without losing data,
 So that I can deploy new features and fixes safely.
 
 ## Acceptance Criteria
 
-1. **Given** a running CUMADRE deployment, **When** I run `ansible-playbook playbooks/update.yml -i inventory/production.yml`, **Then** it pulls the latest repo, updates the qwen3-tts-cli binary if changed, rebuilds the Docker image (which recompiles espeak-ng pt_extra if the dictionary source changed), and restarts the container. **And** runs entirely unprivileged (no `become: true`).
+1. **Given** a running COMADRE deployment, **When** I run `ansible-playbook playbooks/update.yml -i inventory/production.yml`, **Then** it pulls the latest repo, updates the qwen3-tts-cli binary if changed, rebuilds the Docker image (which recompiles espeak-ng pt_extra if the dictionary source changed), and restarts the container. **And** runs entirely unprivileged (no `become: true`).
 
-2. **Given** the update playbook completes, **When** I check the service, **Then** voice files in cumadre-voices volume are intact, model cache in cumadre-models volume is intact, generated audio files in cumadre-audio volume are intact, clone reference WAV is intact, and the API_KEY is unchanged.
+2. **Given** the update playbook completes, **When** I check the service, **Then** voice files in comadre-voices volume are intact, model cache in comadre-models volume is intact, generated audio files in comadre-audio volume are intact, clone reference WAV is intact, and the API_KEY is unchanged.
 
 3. **Given** the update playbook completes, **When** I read the final `[Summary]` task, **Then** it confirms service health status, data preservation, both engine statuses (Kokoro and Qwen3), clone configuration, and loaded voices.
 
@@ -21,7 +21,7 @@ So that I can deploy new features and fixes safely.
 ## Tasks / Subtasks
 
 - [x] Task 1: Create `deploy/ansible/playbooks/update.yml` (AC: #1, #2, #4)
-  - [x] 1.1 Add prerequisite checks (verify ~/cumadre exists, service is running, API key configured)
+  - [x] 1.1 Add prerequisite checks (verify ~/comadre exists, service is running, API key configured)
   - [x] 1.2 Add `[Git] Pull latest changes` task using `ansible.builtin.git` with `update: true`
   - [x] 1.3 Add `[TTS] Rebuild image and restart service` using `community.docker.docker_compose_v2` with `build: always`
   - [x] 1.4 Add `[Health] Wait for service to become healthy` (same pattern as bootstrap: 60 retries x 10s)
@@ -32,7 +32,7 @@ So that I can deploy new features and fixes safely.
   - [x] 2.3 Run `ansible-lint` on the playbook
   - [x] 2.4 Audit: zero `become: true` tasks
   - [x] 2.5 Audit: all tasks follow `[Component] Action description` naming pattern
-  - [x] 2.6 Audit: no paths outside `~/cumadre`
+  - [x] 2.6 Audit: no paths outside `~/comadre`
 
 ## Dev Notes
 
@@ -40,16 +40,16 @@ So that I can deploy new features and fixes safely.
 
 The update playbook is deliberately simple compared to bootstrap. It assumes a working deployment already exists (created by `bootstrap.yml`). The flow:
 
-1. `[Prereq]` Verify `~/cumadre` directory exists (fail fast if not bootstrapped)
+1. `[Prereq]` Verify `~/comadre` directory exists (fail fast if not bootstrapped)
 2. `[Prereq]` Verify container is running (fail fast if service is down — operator should investigate first)
-3. `[Git]` Pull latest changes to `~/cumadre` (same repo/branch as bootstrap)
+3. `[Git]` Pull latest changes to `~/comadre` (same repo/branch as bootstrap)
 4. `[TTS]` Rebuild Docker image and restart service
 5. `[Health]` Wait for healthy status (60 retries x 10s = 10 min timeout)
 6. `[Summary]` Report update results
 
 ### Architecture Patterns to Follow (from bootstrap.yml)
 
-- **Play target:** `hosts: cumadre_vps` (same inventory as bootstrap)
+- **Play target:** `hosts: comadre_vps` (same inventory as bootstrap)
 - **Task naming:** `[Component] Action description` pattern (e.g., `[Git] Pull latest changes`)
 - **Module usage:** Use `community.docker.docker_compose_v2` for compose operations, not raw `shell:` commands
 - **Health check pattern:** `ansible.builtin.uri` with `until` loop, 60 retries, 10s delay, checking `status == 200` and `json.status == "healthy"`
@@ -60,7 +60,7 @@ The update playbook is deliberately simple compared to bootstrap. It assumes a w
 ### Critical Constraint: Zero Privilege Escalation
 
 The update playbook must have **NO** `become: true` tasks. Everything runs as the unprivileged VPS user who is already in the `docker` group (set up by bootstrap). This includes:
-- `git pull` (user owns `~/cumadre`)
+- `git pull` (user owns `~/comadre`)
 - `docker compose build` (user in docker group)
 - `docker compose up` (user in docker group)
 - Health checks (plain HTTP curl)
@@ -70,9 +70,9 @@ The update playbook must have **NO** `become: true` tasks. Everything runs as th
 The update does NOT touch Docker volumes. The `docker_compose_v2` module with `build: always` + `state: present`:
 1. Rebuilds the image (new code, new pt_extra, new noise WAVs baked in)
 2. Recreates the container from the new image
-3. **Re-mounts** the existing named volumes (`cumadre-models`, `cumadre-voices`, `cumadre-audio`)
+3. **Re-mounts** the existing named volumes (`comadre-models`, `comadre-voices`, `comadre-audio`)
 
-Named volumes persist across container recreation by design. The `.env` file lives on the host filesystem at `~/cumadre/.env` — it is NOT inside the container or a volume.
+Named volumes persist across container recreation by design. The `.env` file lives on the host filesystem at `~/comadre/.env` — it is NOT inside the container or a volume.
 
 Crucially, `docker_compose_v2` with `state: present` does NOT run `docker compose down -v` (which would delete volumes). It performs an in-place rebuild+restart.
 
@@ -97,12 +97,12 @@ Any changes to these files are picked up automatically on `docker compose build`
 - **NO** `shell:` or `command:` for compose operations — use the dedicated module
 - **NO** restart of cron jobs — they're already configured by bootstrap and don't change
 - **NO** `.env` file recreation — it already exists and must be preserved (operator may have customized it)
-- **NO** clone reference WAV re-deployment — it's in the cumadre-voices volume, untouched by rebuild
+- **NO** clone reference WAV re-deployment — it's in the comadre-voices volume, untouched by rebuild
 - **NO** `gather_facts: true` — not needed for unprivileged-only operations
 
 ### Previous Story Learnings (from Story 3.1)
 
-1. **`community.docker.docker_compose_v2`** is the correct module (requires `community.docker >= 3.12.0` from `requirements.yml`). Use `project_src: "~/cumadre"`, `state: present`, `build: always`, `remove_orphans: true`.
+1. **`community.docker.docker_compose_v2`** is the correct module (requires `community.docker >= 3.12.0` from `requirements.yml`). Use `project_src: "~/comadre"`, `state: present`, `build: always`, `remove_orphans: true`.
 2. **Health check** uses `ansible.builtin.uri` with `url: "http://localhost:{{ port }}/health"`, `return_content: true`, `register: health_check`, `until:` condition, `retries: 60`, `delay: 10`.
 3. **Summary** uses `vars: hc: "{{ health_check.json }}"` and `ansible.builtin.debug` with multi-line `msg: |` block accessing `hc.status`, `hc.voices`, `hc.engines.kokoro`, `hc.engines.qwen3`, `hc.clone_configured`, `hc.uptime_seconds`.
 4. **Task names** must follow `[Component] Action description` pattern exactly.
@@ -117,7 +117,7 @@ Any changes to these files are picked up automatically on `docker compose build`
 - `ansible-lint` must pass (production profile, same as bootstrap)
 - Zero `become: true` tasks (privilege audit)
 - All tasks follow `[Component] Action description` naming
-- No paths outside `~/cumadre`
+- No paths outside `~/comadre`
 - Existing Python test suite must still pass: `uv run pytest` (394+ tests, all mocked)
 
 ### Project Structure Notes
@@ -152,7 +152,7 @@ None — clean implementation with no issues.
 ### Completion Notes List
 
 - Created `deploy/ansible/playbooks/update.yml` with 7 tasks following bootstrap.yml patterns exactly
-- Prereqs: verify ~/cumadre dir exists (stat+assert) and API key configured (assert)
+- Prereqs: verify ~/comadre dir exists (stat+assert) and API key configured (assert)
 - Git pull: `ansible.builtin.git` with `force: false`, `update: true` for safe idempotent pulls
 - TTS rebuild: `community.docker.docker_compose_v2` with `state: present`, `build: always`, `remove_orphans: true`
 - Health check: `ansible.builtin.uri` with `until` loop, 60 retries x 10s delay

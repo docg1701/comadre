@@ -1,14 +1,14 @@
 all:
   hosts:
-    cumadre_vps:
+    comadre_vps:
       # VPS connection — set these to your server's IP and SSH user
       ansible_host: "CHANGE_ME"
       ansible_user: "CHANGE_ME"
 
   vars:
-    # API authentication key — reads from CUMADRE_API_KEY env var (required)
-    # Set it before running any playbook: export CUMADRE_API_KEY="your-secret-key"
-    api_key_value: "{{ lookup('env', 'CUMADRE_API_KEY') }}"
+    # API authentication key — reads from COMADRE_API_KEY env var (required)
+    # Set it before running any playbook: export COMADRE_API_KEY="your-secret-key"
+    api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
 
     # Optional: local path to a clone reference WAV file for Qwen3 voice cloning
     # Leave empty to skip clone WAV deployment

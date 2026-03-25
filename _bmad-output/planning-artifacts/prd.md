@@ -2,7 +2,7 @@
 stepsCompleted: [step-01-init, step-02-discovery, step-02b-vision, step-02c-executive-summary, step-03-success, step-04-journeys, step-05-domain-skipped, step-06-innovation-skipped, step-07-project-type, step-08-scoping, step-09-functional, step-10-nonfunctional, step-11-polish, step-12-complete]
 status: complete
 inputDocuments:
-  - _bmad-output/planning-artifacts/product-brief-cumadre-2026-03-21.md
+  - _bmad-output/planning-artifacts/product-brief-comadre-2026-03-21.md
 workflowType: 'prd'
 classification:
   projectType: api_backend
@@ -11,22 +11,22 @@ classification:
   projectContext: greenfield
 ---
 
-# Product Requirements Document - cumadre
+# Product Requirements Document - comadre
 
 **Author:** Galvani
 **Date:** 2026-03-21
 
 ## Executive Summary
 
-CUMADRE (Cumadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with optional voice cloning, purpose-built for automated customer service audio in Brazilian Portuguese. It uses a dual-engine architecture — Kokoro fp32 for fast built-in voices with perfect sigla pronunciation, and Qwen3-TTS C++ Q8_0 for voice cloning — behind a FastAPI endpoint compatible with the OpenAI audio API, packaged as a Docker service and deployed via Ansible to commodity hardware. The sole consumer is n8n workflow automation on the same local network — no human interacts with the service directly.
+COMADRE (Comadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with optional voice cloning, purpose-built for automated customer service audio in Brazilian Portuguese. It uses a dual-engine architecture — Kokoro fp32 for fast built-in voices with perfect sigla pronunciation, and Qwen3-TTS C++ Q8_0 for voice cloning — behind a FastAPI endpoint compatible with the OpenAI audio API, packaged as a Docker service and deployed via Ansible to commodity hardware. The sole consumer is n8n workflow automation on the same local network — no human interacts with the service directly.
 
-After initial deployment, CUMADRE requires zero internet access, zero per-request cost, and sends zero customer data externally. A DevOps operator manages the full lifecycle (bootstrap, update, cleanup, health) through Ansible playbooks.
+After initial deployment, COMADRE requires zero internet access, zero per-request cost, and sends zero customer data externally. A DevOps operator manages the full lifecycle (bootstrap, update, cleanup, health) through Ansible playbooks.
 
 ### What Makes This Special
 
-No single open-source TTS engine provides both fast built-in voices and voice cloning at acceptable quality on CPU-only hardware. After evaluating 10+ engine configurations (400+ audio samples), CUMADRE combines two complementary engines: Kokoro fp32 (RTF 1.1x, 10/10 sigla pronunciation via custom espeak-ng dictionary) for speed, and Qwen3-TTS C++ Q8_0 (RTF 2.5x, native voice cloning) for personalization. Cloud alternatives (ElevenLabs, Google, Azure) require internet on every request, introduce per-character cost, and expose customer data. KokoClone was evaluated and rejected (Kanade produces 1/10 diction quality on CPU). Chatterbox Multilingual was rejected (sigla pronunciation fundamentally broken).
+No single open-source TTS engine provides both fast built-in voices and voice cloning at acceptable quality on CPU-only hardware. After evaluating 10+ engine configurations (400+ audio samples), COMADRE combines two complementary engines: Kokoro fp32 (RTF 1.1x, 10/10 sigla pronunciation via custom espeak-ng dictionary) for speed, and Qwen3-TTS C++ Q8_0 (RTF 2.5x, native voice cloning) for personalization. Cloud alternatives (ElevenLabs, Google, Azure) require internet on every request, introduce per-character cost, and expose customer data. KokoClone was evaluated and rejected (Kanade produces 1/10 diction quality on CPU). Chatterbox Multilingual was rejected (sigla pronunciation fundamentally broken).
 
-CUMADRE is the productization layer: a FastAPI server with voice-based engine routing, engine-specific post-processing pipelines (vibrato_warm for Kokoro, whatsapp-subtle for Qwen3), a Dockerfile, compose.yaml, and four Ansible playbooks. It turns two research-grade inference engines into a deploy-once, zero-maintenance production service optimized for WhatsApp audio delivery (OGG Opus 24kbps 16kHz mono).
+COMADRE is the productization layer: a FastAPI server with voice-based engine routing, engine-specific post-processing pipelines (vibrato_warm for Kokoro, whatsapp-subtle for Qwen3), a Dockerfile, compose.yaml, and four Ansible playbooks. It turns two research-grade inference engines into a deploy-once, zero-maintenance production service optimized for WhatsApp audio delivery (OGG Opus 24kbps 16kHz mono).
 
 ## Project Classification
 
@@ -81,36 +81,36 @@ CUMADRE is the productization layer: a FastAPI server with voice-based engine ro
 - Auth enforcement: Requests without valid API key return 401
 - Dual engine routing: voice name correctly routes to Kokoro or Qwen3
 - Sigla pronunciation: CPF, CNPJ, FGTS, SUS, LOAS etc. pronounce correctly via Kokoro+pt_extra
-- Cleanup completeness: `cleanup.yml` leaves zero CUMADRE artifacts on VPS
+- Cleanup completeness: `cleanup.yml` leaves zero COMADRE artifacts on VPS
 
 
 ## User Journeys
 
 ### Journey 1: First Deployment — Meet Carlos, the DevOps Operator
 
-Carlos maintains the infrastructure for a small customer service operation. He's been asked to get voice responses working for the WhatsApp chatbot — without adding another cloud dependency. He finds CUMADRE.
+Carlos maintains the infrastructure for a small customer service operation. He's been asked to get voice responses working for the WhatsApp chatbot — without adding another cloud dependency. He finds COMADRE.
 
-**Opening Scene:** Carlos has a clean Ubuntu 22.04 VPS with 4 vCPU and 8 GB RAM. He clones the CUMADRE repo and reviews the deployment docs.
+**Opening Scene:** Carlos has a clean Ubuntu 22.04 VPS with 4 vCPU and 8 GB RAM. He clones the COMADRE repo and reviews the deployment docs.
 
 **Rising Action:** He configures the Ansible inventory with his VPS IP, sets an `API_KEY`, and optionally places a 5-second WAV recording of the employee for voice cloning. He runs `ansible-playbook bootstrap.yml`.
 
 **Climax:** Ansible installs Docker, clones the repo to the VPS, builds the container, downloads models (Kokoro ~325 MB, Qwen3 ~1.6 GB), compiles the espeak-ng pt_extra dictionary, and starts the service. The health check goes green. Carlos tests with voice "santa" — and hears natural Brazilian Portuguese with perfect sigla pronunciation. He tests with voice "clone" — and hears the employee's cloned voice.
 
-**Resolution:** Carlos configures the n8n HTTP Request node to point at the CUMADRE endpoint. The chatbot now responds with natural voice audio. No cloud API key, no per-request billing, no data leaving the network.
+**Resolution:** Carlos configures the n8n HTTP Request node to point at the COMADRE endpoint. The chatbot now responds with natural voice audio. No cloud API key, no per-request billing, no data leaving the network.
 
 ### Journey 2: Routine Operation — n8n Handles a Customer Interaction
 
 **Opening Scene:** A customer sends a WhatsApp message asking about their order status. The n8n workflow receives the message via webhook.
 
-**Rising Action:** n8n processes the message through STT (if voice) and the LLM, which generates a response: "Seu pedido foi enviado ontem e deve chegar até sexta-feira." The workflow POSTs this text to CUMADRE's `/v1/audio/speech` endpoint with `response_format: ogg` and the bearer token.
+**Rising Action:** n8n processes the message through STT (if voice) and the LLM, which generates a response: "Seu pedido foi enviado ontem e deve chegar até sexta-feira." The workflow POSTs this text to COMADRE's `/v1/audio/speech` endpoint with `response_format: ogg` and the bearer token.
 
-**Climax:** CUMADRE routes to the Kokoro engine (voice "santa"), preprocesses the text (normalize numbers, chunk sentences), generates speech, applies the vibrato_warm post-processing pipeline, and returns OGG Opus audio in ~10 seconds.
+**Climax:** COMADRE routes to the Kokoro engine (voice "santa"), preprocesses the text (normalize numbers, chunk sentences), generates speech, applies the vibrato_warm post-processing pipeline, and returns OGG Opus audio in ~10 seconds.
 
 **Resolution:** n8n sends the OGG Opus audio as a voice note back to the customer on WhatsApp. The customer hears a natural voice with correct sigla pronunciation — not a robot. The entire exchange happened on the local network. WhatsApp conversations are async, so the latency is imperceptible.
 
-### Journey 3: Update Cycle — Carlos Keeps CUMADRE Current
+### Journey 3: Update Cycle — Carlos Keeps COMADRE Current
 
-**Opening Scene:** A new CUMADRE release adds OGG quality improvements. Carlos needs to update without disrupting the live service.
+**Opening Scene:** A new COMADRE release adds OGG quality improvements. Carlos needs to update without disrupting the live service.
 
 **Rising Action:** Carlos runs `ansible-playbook update.yml`. Ansible pulls the latest repo, rebuilds the Docker image, and restarts the container.
 
@@ -120,7 +120,7 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 
 ### Journey 4: Troubleshooting — Something Breaks at 2 AM
 
-**Opening Scene:** The n8n workflow starts getting timeouts from CUMADRE. Carlos gets an alert.
+**Opening Scene:** The n8n workflow starts getting timeouts from COMADRE. Carlos gets an alert.
 
 **Rising Action:** Carlos runs `ansible-playbook health.yml` from his laptop. It reports: container running, health endpoint returning 200, but `docker stats` shows RAM at 3.8 GB and climbing — the known Kokoro memory leak.
 
@@ -134,7 +134,7 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 
 **Rising Action:** Carlos runs `ansible-playbook cleanup.yml`. Ansible stops containers, removes images, volumes, data, and uninstalls Docker.
 
-**Resolution:** Zero CUMADRE artifacts remain on the VPS. The machine is clean for reuse.
+**Resolution:** Zero COMADRE artifacts remain on the VPS. The machine is clean for reuse.
 
 ### Journey Requirements Summary
 
@@ -150,7 +150,7 @@ Carlos maintains the infrastructure for a small customer service operation. He's
 
 ### Project-Type Overview
 
-CUMADRE is a single-purpose API backend: one generation endpoint, one health endpoint, bearer token auth, JSON in, binary audio out. It follows the OpenAI audio API contract so existing HTTP clients and n8n nodes work without custom integration code.
+COMADRE is a single-purpose API backend: one generation endpoint, one health endpoint, bearer token auth, JSON in, binary audio out. It follows the OpenAI audio API contract so existing HTTP clients and n8n nodes work without custom integration code.
 
 ### Endpoint Specifications
 
@@ -416,7 +416,7 @@ The `destination` parameter (optional) allows the API to optimize the output enc
 
 - Bootstrap playbook completes without manual intervention on a clean Ubuntu VPS
 - Update playbook completes without data loss in under 5 minutes
-- Cleanup playbook removes 100% of CUMADRE artifacts from VPS
+- Cleanup playbook removes 100% of COMADRE artifacts from VPS
 - Health playbook reports container state, endpoint status, resource usage, and disk consumption
 - All Python dependencies managed via `uv`
 

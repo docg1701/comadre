@@ -463,19 +463,19 @@ Recent commits show Story 1.4 was completed on 2026-03-23:
 ### Project Structure Notes
 
 **Files to modify:**
-- `src/cumadre/config.py` — Add Qwen3 settings (cli_path, model_path, tokenizer_path, clone_reference_path, threads)
-- `src/cumadre/preprocessing.py` — Add `expand_siglas()` function and `WORD_SIGLAS` set
-- `src/cumadre/service.py` — Add `QwenEngine` class and `_apply_whatsapp_subtle()`, refactor `_apply_noise_and_encode()` for volume params
+- `src/comadre/config.py` — Add Qwen3 settings (cli_path, model_path, tokenizer_path, clone_reference_path, threads)
+- `src/comadre/preprocessing.py` — Add `expand_siglas()` function and `WORD_SIGLAS` set
+- `src/comadre/service.py` — Add `QwenEngine` class and `_apply_whatsapp_subtle()`, refactor `_apply_noise_and_encode()` for volume params
 - `tests/test_config.py` — Add Qwen3 config field tests
 - `tests/test_preprocessing.py` — Add `expand_siglas()` tests
 - `tests/test_service.py` — Add `QwenEngine` test class
 
 **Files NOT to modify:**
-- `src/cumadre/exceptions.py` — All needed exception types already exist
-- `src/cumadre/voices.py` — Already complete, NOT needed for clone validation (use inline `wave.open()` in service.py)
-- `src/cumadre/logging.py` — Already complete
+- `src/comadre/exceptions.py` — All needed exception types already exist
+- `src/comadre/voices.py` — Already complete, NOT needed for clone validation (use inline `wave.open()` in service.py)
+- `src/comadre/logging.py` — Already complete
 - `pyproject.toml` — No new PyPI dependencies needed (Qwen3 is a subprocess binary)
-- `src/cumadre/__init__.py` — No changes needed
+- `src/comadre/__init__.py` — No changes needed
 
 **New imports needed in `service.py`:** `import tempfile` (for temp WAV output file)
 
@@ -527,9 +527,9 @@ Claude Opus 4.6 (1M context)
 
 ### File List
 
-- src/cumadre/config.py (modified — added Qwen3 config fields)
-- src/cumadre/preprocessing.py (modified — added WORD_SIGLAS, _SIGLA_RE, expand_siglas())
-- src/cumadre/service.py (modified — added QwenEngine class, _apply_whatsapp_subtle(), refactored _apply_noise_and_encode() for volume params)
+- src/comadre/config.py (modified — added Qwen3 config fields)
+- src/comadre/preprocessing.py (modified — added WORD_SIGLAS, _SIGLA_RE, expand_siglas())
+- src/comadre/service.py (modified — added QwenEngine class, _apply_whatsapp_subtle(), refactored _apply_noise_and_encode() for volume params)
 - tests/test_config.py (modified — added 11 Qwen3 config tests)
 - tests/test_preprocessing.py (modified — added 15 expand_siglas tests)
 - tests/test_service.py (modified — added 46 Qwen3/whatsapp-subtle tests)

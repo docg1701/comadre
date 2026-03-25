@@ -1,6 +1,6 @@
-# Proxmox VM Setup for CUMADRE
+# Proxmox VM Setup for COMADRE
 
-Step-by-step guide for creating a Debian 13 VM on Proxmox VE to run CUMADRE.
+Step-by-step guide for creating a Debian 13 VM on Proxmox VE to run COMADRE.
 
 **Research date:** 2026-03-25
 **Proxmox VE version:** 9.1 (released 2025-11-19, based on Debian 13 "Trixie")
@@ -36,7 +36,7 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 
 | Field | Value |
 | --- | --- |
-| Name | `cumadre-tts` |
+| Name | `comadre-tts` |
 
 ### OS
 
@@ -199,7 +199,7 @@ stat -fc %T /sys/fs/cgroup/           # Expected: cgroup2fs
 
 Debian 13 ships with cgroup v2 enabled by default. Docker works without kernel parameter changes.
 
-## 5. Deploy CUMADRE
+## 5. Deploy COMADRE
 
 The VM is ready. See [local-testing-guide.md](local-testing-guide.md) for steps to build and run the service, or use Ansible from your workstation:
 
@@ -210,7 +210,7 @@ cd deploy/ansible
 vim inventory/production.yml
 
 # Deploy
-export CUMADRE_API_KEY="your-secret-key"
+export COMADRE_API_KEY="your-secret-key"
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 ```
 
@@ -224,7 +224,7 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 ## VM config summary
 
 ```text
-Name:    cumadre-tts
+Name:    comadre-tts
 OS:      Debian 13.4 "Trixie" (netinst)
 Machine: q35, OVMF (UEFI)
 CPU:     4 cores, type=host, 1 socket

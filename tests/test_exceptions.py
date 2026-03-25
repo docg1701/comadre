@@ -4,22 +4,22 @@ import json
 
 from starlette.requests import Request
 
-from cumadre.exceptions import (
+from comadre.exceptions import (
     AuthenticationError,
-    CumadreError,
+    ComadreError,
     GenerationError,
     InvalidRequestError,
     ServiceUnavailableError,
     VoiceNotFoundError,
-    cumadre_error_handler,
+    comadre_error_handler,
     register_exception_handlers,
     unhandled_error_handler,
 )
 
 
-class TestCumadreError:
+class TestComadreError:
     def test_message_attribute(self) -> None:
-        err = CumadreError(
+        err = ComadreError(
             "something broke",
             status_code=500,
             error_type="server_error",
@@ -29,21 +29,21 @@ class TestCumadreError:
         assert str(err) == "something broke"
 
     def test_status_code(self) -> None:
-        err = CumadreError(
+        err = ComadreError(
             "bad", status_code=418, error_type="teapot", hint="brew coffee"
         )
         assert err.status_code == 418
 
     def test_error_type(self) -> None:
-        err = CumadreError("bad", status_code=400, error_type="custom_type", hint="")
+        err = ComadreError("bad", status_code=400, error_type="custom_type", hint="")
         assert err.error_type == "custom_type"
 
     def test_hint(self) -> None:
-        err = CumadreError("bad", status_code=400, error_type="t", hint="helpful hint")
+        err = ComadreError("bad", status_code=400, error_type="t", hint="helpful hint")
         assert err.hint == "helpful hint"
 
     def test_is_exception(self) -> None:
-        err = CumadreError("x", status_code=500, error_type="e", hint="h")
+        err = ComadreError("x", status_code=500, error_type="e", hint="h")
         assert isinstance(err, Exception)
 
 
@@ -73,9 +73,9 @@ class TestVoiceNotFoundError:
         err = VoiceNotFoundError(voice="ghost", available=["alice", "bob"])
         assert err.available == ["alice", "bob"]
 
-    def test_is_cumadre_error(self) -> None:
+    def test_is_comadre_error(self) -> None:
         err = VoiceNotFoundError(voice="x", available=[])
-        assert isinstance(err, CumadreError)
+        assert isinstance(err, ComadreError)
 
 
 class TestInvalidRequestError:
@@ -95,9 +95,9 @@ class TestInvalidRequestError:
         err = InvalidRequestError(message="bad", hint="fix this")
         assert err.hint == "fix this"
 
-    def test_is_cumadre_error(self) -> None:
+    def test_is_comadre_error(self) -> None:
         err = InvalidRequestError(message="x", hint="h")
-        assert isinstance(err, CumadreError)
+        assert isinstance(err, ComadreError)
 
 
 class TestGenerationError:
@@ -117,9 +117,9 @@ class TestGenerationError:
         err = GenerationError("anything")
         assert "server logs" in err.hint.lower() or "traceback" in err.hint.lower()
 
-    def test_is_cumadre_error(self) -> None:
+    def test_is_comadre_error(self) -> None:
         err = GenerationError("x")
-        assert isinstance(err, CumadreError)
+        assert isinstance(err, ComadreError)
 
 
 class TestAuthenticationError:
@@ -144,9 +144,9 @@ class TestAuthenticationError:
         assert "API_KEY" in err.hint
         assert "Bearer" in err.hint
 
-    def test_is_cumadre_error(self) -> None:
+    def test_is_comadre_error(self) -> None:
         err = AuthenticationError()
-        assert isinstance(err, CumadreError)
+        assert isinstance(err, ComadreError)
 
 
 class TestServiceUnavailableError:
@@ -180,9 +180,9 @@ class TestServiceUnavailableError:
         err = ServiceUnavailableError()
         assert "loading models" in err.hint.lower()
 
-    def test_is_cumadre_error(self) -> None:
+    def test_is_comadre_error(self) -> None:
         err = ServiceUnavailableError()
-        assert isinstance(err, CumadreError)
+        assert isinstance(err, ComadreError)
 
 
 def _mock_request() -> Request:
@@ -200,21 +200,21 @@ def _response_json(resp: object) -> dict[str, object]:
     return result
 
 
-class TestCumadreErrorHandler:
+class TestComadreErrorHandler:
     async def test_returns_correct_status_code(self) -> None:
         exc = VoiceNotFoundError(voice="ghost", available=["santa"])
-        resp = await cumadre_error_handler(_mock_request(), exc)
+        resp = await comadre_error_handler(_mock_request(), exc)
         assert resp.status_code == 404
 
     async def test_returns_json_with_error_key(self) -> None:
         exc = InvalidRequestError(message="too long", hint="shorten it")
-        resp = await cumadre_error_handler(_mock_request(), exc)
+        resp = await comadre_error_handler(_mock_request(), exc)
         body = _response_json(resp)
         assert "error" in body
 
     async def test_json_has_all_three_fields(self) -> None:
         exc = AuthenticationError()
-        resp = await cumadre_error_handler(_mock_request(), exc)
+        resp = await comadre_error_handler(_mock_request(), exc)
         error = _response_json(resp)["error"]
         assert isinstance(error, dict)
         assert "message" in error
@@ -223,7 +223,7 @@ class TestCumadreErrorHandler:
 
     async def test_json_values_match_exception(self) -> None:
         exc = GenerationError("model crashed")
-        resp = await cumadre_error_handler(_mock_request(), exc)
+        resp = await comadre_error_handler(_mock_request(), exc)
         error = _response_json(resp)["error"]
         assert isinstance(error, dict)
         assert error["message"] == "model crashed"
@@ -232,7 +232,7 @@ class TestCumadreErrorHandler:
 
     async def test_service_unavailable_status(self) -> None:
         exc = ServiceUnavailableError()
-        resp = await cumadre_error_handler(_mock_request(), exc)
+        resp = await comadre_error_handler(_mock_request(), exc)
         assert resp.status_code == 503
 
 
@@ -267,12 +267,12 @@ class TestUnhandledErrorHandler:
 
 
 class TestRegisterExceptionHandlers:
-    def test_registers_cumadre_error_handler(self) -> None:
+    def test_registers_comadre_error_handler(self) -> None:
         from fastapi import FastAPI
 
         app = FastAPI()
         register_exception_handlers(app)
-        assert CumadreError in app.exception_handlers
+        assert ComadreError in app.exception_handlers
 
     def test_registers_unhandled_error_handler(self) -> None:
         from fastapi import FastAPI

@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cumadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
-from cumadre.logging import get_logger
-from cumadre.preprocessing import chunk_text, expand_siglas, normalize_text
+from comadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
+from comadre.logging import get_logger
+from comadre.preprocessing import chunk_text, expand_siglas, normalize_text
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray

@@ -96,8 +96,8 @@ Models are too large for git (~1.6 GB total). Deploy via SSH.
 Copy models to VPS and populate the Docker named volume using a helper container (no root needed):
 
 ```bash
-scp models/qwen3-tts-0.6b-q8_0.gguf models/qwen3-tts-tokenizer-f16.gguf <user>@<vps-ip>:~/cumadre-models/
-ssh <user>@<vps-ip> 'docker run --rm -v cumadre-models:/models -v ~/cumadre-models:/src:ro alpine cp /src/qwen3-tts-0.6b-q8_0.gguf /src/qwen3-tts-tokenizer-f16.gguf /models/ && rm -rf ~/cumadre-models'
+scp models/qwen3-tts-0.6b-q8_0.gguf models/qwen3-tts-tokenizer-f16.gguf <user>@<vps-ip>:~/comadre-models/
+ssh <user>@<vps-ip> 'docker run --rm -v comadre-models:/models -v ~/comadre-models:/src:ro alpine cp /src/qwen3-tts-0.6b-q8_0.gguf /src/qwen3-tts-tokenizer-f16.gguf /models/ && rm -rf ~/comadre-models'
 ```
 
 Deploy models before `docker compose up`, or the service starts without Qwen3 (Kokoro still works).

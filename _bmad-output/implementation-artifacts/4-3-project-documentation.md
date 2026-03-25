@@ -132,7 +132,7 @@ docs/quantizing-qwen3-models.md      # Model conversion (advanced, reference fro
 
 The existing `docs/api-architecture.md` is an internal design document with implementation details (queue design, ffmpeg pipeline parameters, module boundaries). The new `docs/api-reference.md` is an operator-facing reference with curl examples and error codes. They serve different audiences — do NOT merge or replace.
 
-### Actual API Schema (from `src/cumadre/schemas.py`)
+### Actual API Schema (from `src/comadre/schemas.py`)
 
 The actual implemented schema differs from the early design doc `docs/api-architecture.md` in some details. Use the code as the source of truth:
 
@@ -144,16 +144,16 @@ The actual implemented schema differs from the early design doc `docs/api-archit
 
 Note: The design doc mentions `enhance` and `seed` parameters — these are NOT in the implemented schema. Do not document them.
 
-### Actual Configuration Variables (from `src/cumadre/config.py`)
+### Actual Configuration Variables (from `src/comadre/config.py`)
 
-Source of truth for configuration reference. All 18 env vars with their types, defaults, and validation rules are in `src/cumadre/config.py`. Key details:
+Source of truth for configuration reference. All 18 env vars with their types, defaults, and validation rules are in `src/comadre/config.py`. Key details:
 - `API_KEY` uses `SecretStr` with `min_length=1` — required, startup fails without it
 - `PORT` has range validation `ge=1, le=65535`, default 8000
 - `QWEN3_THREADS` default 4, `ge=1`
 - URL fields validated via `@field_validator` — empty string allowed for Qwen3 URLs (skip download)
 - `CLONE_REFERENCE_PATH` is `str | None`, default None (clone disabled)
 
-### Error Response Format (from `src/cumadre/exceptions.py`)
+### Error Response Format (from `src/comadre/exceptions.py`)
 
 All errors return JSON with this structure:
 ```json
@@ -194,7 +194,7 @@ The deployment guide must reference these operator-configurable variables:
 - `ansible_host`: VPS IP address
 - `ansible_user`: SSH user
 - `repo_url`: Git repo URL
-- `api_key`: lookup from CUMADRE_API_KEY env var
+- `api_key`: lookup from COMADRE_API_KEY env var
 - `clone_reference_wav`: optional path to reference WAV on control machine
 - `port`: service port (default 8000)
 - `restart_hour`: daily restart hour (default 3)
@@ -249,9 +249,9 @@ No changes to Python code, Docker, Ansible, or CI. No new dependencies.
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md — UX-DR11 documentation standards, lines 501-568]
 - [Source: _bmad-output/planning-artifacts/architecture.md — project structure, module responsibilities, API formats]
 - [Source: _bmad-output/planning-artifacts/prd.md — success criteria, user journeys]
-- [Source: src/cumadre/schemas.py — actual request schema (SpeechRequest, ResponseFormat, Destination)]
-- [Source: src/cumadre/config.py — all 18 env vars with types, defaults, validators]
-- [Source: src/cumadre/exceptions.py — error response format, CumadreError hierarchy]
+- [Source: src/comadre/schemas.py — actual request schema (SpeechRequest, ResponseFormat, Destination)]
+- [Source: src/comadre/config.py — all 18 env vars with types, defaults, validators]
+- [Source: src/comadre/exceptions.py — error response format, ComadreError hierarchy]
 - [Source: .env.example — template for operator configuration]
 - [Source: deploy/ansible/inventory/production.yml — Ansible inventory variables]
 - [Source: docs/api-architecture.md — internal design doc (reference, not to be replaced)]

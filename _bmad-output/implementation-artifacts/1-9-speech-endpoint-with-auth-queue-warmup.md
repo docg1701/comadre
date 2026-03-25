@@ -30,7 +30,7 @@ so that customers hear natural voice responses on WhatsApp/Telegram.
 
 ## Tasks / Subtasks
 
-- [x] Task 1: Create `src/cumadre/main.py` — FastAPI app, lifespan, health route, shared state (AC: #5, #6, #7)
+- [x] Task 1: Create `src/comadre/main.py` — FastAPI app, lifespan, health route, shared state (AC: #5, #6, #7)
   - [x] 1.1 Define `AppState` typed container: `router`, `settings`, `ready`, `start_time`, `queue_lock`, `queue_depth`
   - [x] 1.2 Implement `lifespan()` async context manager with 9-phase startup sequence (AC: #6)
   - [x] 1.3 Create `create_app() -> FastAPI` factory function
@@ -39,7 +39,7 @@ so that customers hear natural voice responses on WhatsApp/Telegram.
   - [x] 1.6 Mount `api_router` from api.py under the app
   - [x] 1.7 Define `verify_ready` dependency that raises `ServiceUnavailableError` when `app.state.ready is False` (AC: #5)
 
-- [x] Task 2: Create `src/cumadre/api.py` — POST /v1/audio/speech route handler (AC: #1, #2, #3, #4, #7, #8)
+- [x] Task 2: Create `src/comadre/api.py` — POST /v1/audio/speech route handler (AC: #1, #2, #3, #4, #7, #8)
   - [x] 2.1 Implement `verify_api_key` FastAPI dependency using `Authorization` header (AC: #2)
   - [x] 2.2 Implement `POST /v1/audio/speech` route handler
   - [x] 2.3 Resolve default voice from `settings.default_voice` when `request.voice` is None (AC: #4)
@@ -56,7 +56,7 @@ so that customers hear natural voice responses on WhatsApp/Telegram.
 |--------|-------------------------------|
 | `config.py` | `Settings` class (api_key, default_voice, port, all model paths, espeak_data_path, clone_reference_path, qwen3_threads), `get_settings()` cached singleton |
 | `logging.py` | `get_logger(component)` → pipe-delimited logger, `setup_logging(level)` |
-| `exceptions.py` | `CumadreError` hierarchy: `AuthenticationError`, `ServiceUnavailableError(retry_seconds)`, `InvalidRequestError`, `VoiceNotFoundError`, `GenerationError`. `register_exception_handlers(app)` function. `cumadre_error_handler()`, `unhandled_error_handler()` |
+| `exceptions.py` | `ComadreError` hierarchy: `AuthenticationError`, `ServiceUnavailableError(retry_seconds)`, `InvalidRequestError`, `VoiceNotFoundError`, `GenerationError`. `register_exception_handlers(app)` function. `comadre_error_handler()`, `unhandled_error_handler()` |
 | `schemas.py` | `SpeechRequest(input, voice, response_format, speed, destination)`, `ResponseFormat` enum (ogg/wav), `Destination` enum |
 | `service.py` | `KokoroEngine` (.load_model(), .warm_up(), .generate_speech(), .is_loaded), `QwenEngine` (.load_model(), .warm_up(), .generate_speech(), .is_loaded, .is_clone_configured), `EngineRouter(kokoro, qwen)` (.generate_speech(), .available_voices(), .engine_status()) |
 | `health.py` | `build_health_response(router=, ready=, start_time=, queue_depth=) -> tuple[dict, int]`, `HealthStatus` enum |
@@ -66,8 +66,8 @@ so that customers hear natural voice responses on WhatsApp/Telegram.
 
 ### What This Story Creates
 
-1. **New file `src/cumadre/main.py`** — FastAPI application factory, lifespan context manager, health endpoint, shared state management
-2. **New file `src/cumadre/api.py`** — Speech endpoint route handler with auth dependency, queue management, response formatting
+1. **New file `src/comadre/main.py`** — FastAPI application factory, lifespan context manager, health endpoint, shared state management
+2. **New file `src/comadre/api.py`** — Speech endpoint route handler with auth dependency, queue management, response formatting
 
 ### What This Story Does NOT Create
 
@@ -85,7 +85,7 @@ The module is the application entry point. It creates the FastAPI app, manages l
 **Import graph position:** main.py is the TOP of the import graph. It imports from api.py, health.py, config.py, logging.py, exceptions.py, service.py, and voices.py. Nothing imports from main.py.
 
 ```python
-"""CUMADRE FastAPI application entry point."""
+"""COMADRE FastAPI application entry point."""
 
 from __future__ import annotations
 
@@ -98,12 +98,12 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from cumadre.api import api_router
-from cumadre.config import Settings, get_settings
-from cumadre.exceptions import ServiceUnavailableError, register_exception_handlers
-from cumadre.health import build_health_response
-from cumadre.logging import get_logger, setup_logging
-from cumadre.service import EngineRouter, KokoroEngine, QwenEngine
+from comadre.api import api_router
+from comadre.config import Settings, get_settings
+from comadre.exceptions import ServiceUnavailableError, register_exception_handlers
+from comadre.health import build_health_response
+from comadre.logging import get_logger, setup_logging
+from comadre.service import EngineRouter, KokoroEngine, QwenEngine
 
 logger = get_logger("startup")
 ```
@@ -254,7 +254,7 @@ async def health_endpoint(request: Request) -> JSONResponse:
 ```python
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="CUMADRE",
+        title="COMADRE",
         version=__version__,
         lifespan=lifespan,
     )
@@ -272,7 +272,7 @@ The module contains the speech route handler. It owns the asyncio.Lock acquire/r
 **Import graph position:** api.py imports from schemas.py, exceptions.py, config.py, logging.py, service.py. It is imported by main.py only.
 
 ```python
-"""Speech endpoint route handler for CUMADRE."""
+"""Speech endpoint route handler for COMADRE."""
 
 from __future__ import annotations
 
@@ -282,13 +282,13 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 
-from cumadre.exceptions import (
+from comadre.exceptions import (
     AuthenticationError,
     GenerationError,
     ServiceUnavailableError,
 )
-from cumadre.logging import get_logger
-from cumadre.schemas import ResponseFormat, SpeechRequest
+from comadre.logging import get_logger
+from comadre.schemas import ResponseFormat, SpeechRequest
 
 if TYPE_CHECKING:
     pass
@@ -446,7 +446,7 @@ Wait — actually check if `register_exception_handlers()` already handles `Requ
 - **DO NOT** add business logic to main.py — it orchestrates, not implements
 - **DO NOT** import FastAPI or Starlette types in service.py, health.py, or preprocessing.py — import graph flows downward only
 - **DO NOT** use `os.environ` — use `get_settings()` / `request.app.state.settings`
-- **DO NOT** raise raw `HTTPException` — use `CumadreError` subclasses exclusively
+- **DO NOT** raise raw `HTTPException` — use `ComadreError` subclasses exclusively
 - **DO NOT** use `print()` — use `get_logger(component)` for structured logging
 - **DO NOT** create a `HealthResponse` Pydantic model — health uses plain dict for field-order control
 - **DO NOT** add global state (module-level variables for router, lock, etc.) — use `app.state` exclusively
@@ -464,15 +464,15 @@ Wait — actually check if `register_exception_handlers()` already handles `Requ
 
 However, you MUST verify the app works by running:
 ```bash
-uv run ruff check src/cumadre/main.py src/cumadre/api.py
-uv run mypy src/cumadre/main.py src/cumadre/api.py
+uv run ruff check src/comadre/main.py src/comadre/api.py
+uv run mypy src/comadre/main.py src/comadre/api.py
 uv run pytest  # All existing tests must still pass (349 passed, 11 skipped)
 ```
 
 ### Project Structure Notes
 
-- `main.py` is a NEW file at `src/cumadre/main.py` — top of import graph
-- `api.py` is a NEW file at `src/cumadre/api.py` — imported only by main.py
+- `main.py` is a NEW file at `src/comadre/main.py` — top of import graph
+- `api.py` is a NEW file at `src/comadre/api.py` — imported only by main.py
 - Both files MUST pass mypy strict mode and ruff checks
 - `main.py` imports from: `api`, `config`, `exceptions`, `health`, `logging`, `service`
 - `api.py` imports from: `exceptions`, `logging`, `schemas`. Uses `request.app.state` for runtime dependencies
@@ -495,11 +495,11 @@ uv run pytest  # All existing tests must still pass (349 passed, 11 skipped)
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md — UX-DR1: Error Response Builder with type vocabulary]
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md — UX-DR8: Startup Communication Pattern — sequential phase logging]
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md — UX-DR3: Request logging with method, path, voice, format, chars, duration]
-- [Source: src/cumadre/config.py — Settings class with api_key, default_voice, all model paths]
-- [Source: src/cumadre/exceptions.py — CumadreError hierarchy, register_exception_handlers()]
-- [Source: src/cumadre/schemas.py — SpeechRequest model, ResponseFormat enum]
-- [Source: src/cumadre/service.py — EngineRouter, KokoroEngine, QwenEngine]
-- [Source: src/cumadre/health.py — build_health_response() signature]
+- [Source: src/comadre/config.py — Settings class with api_key, default_voice, all model paths]
+- [Source: src/comadre/exceptions.py — ComadreError hierarchy, register_exception_handlers()]
+- [Source: src/comadre/schemas.py — SpeechRequest model, ResponseFormat enum]
+- [Source: src/comadre/service.py — EngineRouter, KokoroEngine, QwenEngine]
+- [Source: src/comadre/health.py — build_health_response() signature]
 
 ### Previous Story Intelligence
 
@@ -511,7 +511,7 @@ uv run pytest  # All existing tests must still pass (349 passed, 11 skipped)
 - Test suite: 349 passed, 11 skipped. All quality gates pass.
 
 **From Story 1.7 (Exception Handling & Request Schemas):**
-- `register_exception_handlers(app)` installs CumadreError handler + unhandled exception handler.
+- `register_exception_handlers(app)` installs ComadreError handler + unhandled exception handler.
 - `AuthenticationError(message="...")` — check if it accepts `hint` param. Default hint is `"Check the API_KEY environment variable."`.
 - `ServiceUnavailableError(message="...", retry_seconds=30)` — hint auto-generated.
 - `SpeechRequest.voice` is `str | None = None` — None means use default voice.
@@ -558,7 +558,7 @@ None — clean implementation with no debugging required.
 
 ### File List
 
-- `src/cumadre/main.py` — NEW: FastAPI app factory, lifespan, health endpoint, validation error handler
-- `src/cumadre/api.py` — NEW: Speech route handler, auth dependency, readiness dependency, queue management
-- `src/cumadre/config.py` — MODIFIED: Changed default_voice from "default" to "santa" (integration fix)
+- `src/comadre/main.py` — NEW: FastAPI app factory, lifespan, health endpoint, validation error handler
+- `src/comadre/api.py` — NEW: Speech route handler, auth dependency, readiness dependency, queue management
+- `src/comadre/config.py` — MODIFIED: Changed default_voice from "default" to "santa" (integration fix)
 - `tests/test_config.py` — MODIFIED: Updated test assertion for new default_voice value

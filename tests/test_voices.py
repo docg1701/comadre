@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cumadre.voices import (
+from comadre.voices import (
     MAX_VOICE_DURATION,
     MIN_VOICE_DURATION,
     VoiceInfo,

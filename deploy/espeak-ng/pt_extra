@@ -1,4 +1,4 @@
-// Custom Brazilian Portuguese abbreviations for cumadre TTS project
+// Custom Brazilian Portuguese abbreviations for comadre TTS project
 // Format: word  pronunciation_or_flag
 // $abbrev = spell out letter by letter
 // See docs/dictionary.md for phoneme notation

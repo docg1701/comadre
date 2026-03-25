@@ -98,7 +98,7 @@ class TestPreprocessingIntegration:
     """Verify preprocessing + TTS works end to end."""
 
     def test_currency_normalized(self, kokoro: object) -> None:
-        from cumadre.preprocessing import normalize_text
+        from comadre.preprocessing import normalize_text
 
         text = normalize_text("O valor e R$ 1.500,00")
         assert "mil e quinhentos reais" in text
@@ -106,7 +106,7 @@ class TestPreprocessingIntegration:
         assert len(samples) / sr > 0  # type: ignore[arg-type]
 
     def test_mixed_content(self, kokoro: object) -> None:
-        from cumadre.preprocessing import normalize_text
+        from comadre.preprocessing import normalize_text
 
         text = normalize_text("Pedido R$ 247,90 em 21/03/2026 as 14:30 com 3 itens")
         samples, sr = _create(kokoro, text)
@@ -118,7 +118,7 @@ class TestChunking:
     """Verify long text chunking produces valid concatenated audio."""
 
     def test_long_text_generates(self, kokoro: object) -> None:
-        from cumadre.preprocessing import chunk_text, normalize_text
+        from comadre.preprocessing import chunk_text, normalize_text
 
         text = (
             "O Brasil e o maior pais da America do Sul. "

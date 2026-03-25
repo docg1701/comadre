@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from cumadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
-from cumadre.service import (
+from comadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
+from comadre.service import (
     KOKORO_CHAR_LIMIT,
     KOKORO_VOICES,
     QWEN_CHAR_LIMIT,
@@ -87,7 +87,7 @@ class TestVoiceMapping:
 
 
 class TestGenerateSpeechWav:
-    @patch("cumadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_vibrato_warm")
     def test_returns_processed_bytes(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -95,7 +95,7 @@ class TestGenerateSpeechWav:
         result = engine.generate_speech("hello", "santa", "wav")
         assert result == b"processed_wav"
 
-    @patch("cumadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_vibrato_warm")
     def test_calls_kokoro_create_with_correct_args(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -106,7 +106,7 @@ class TestGenerateSpeechWav:
         assert call_kwargs.kwargs["voice"] == "pm_santa"
         assert call_kwargs.kwargs["lang"] == "pt-br"
 
-    @patch("cumadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_vibrato_warm")
     def test_dora_maps_to_pf_dora(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -115,7 +115,7 @@ class TestGenerateSpeechWav:
         call_kwargs = engine._kokoro.create.call_args  # type: ignore[union-attr]
         assert call_kwargs.kwargs["voice"] == "pf_dora"
 
-    @patch("cumadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_vibrato_warm")
     def test_alex_maps_to_pm_alex(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -136,12 +136,12 @@ class TestResponseFormatValidation:
         assert exc_info.value.status_code == 400
 
     def test_accepts_wav(self, engine: KokoroEngine) -> None:
-        with patch("cumadre.service._apply_vibrato_warm", return_value=b"audio"):
+        with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
             result = engine.generate_speech("hello", "santa", "wav")
         assert result == b"audio"
 
     def test_accepts_ogg(self, engine: KokoroEngine) -> None:
-        with patch("cumadre.service._apply_vibrato_warm", return_value=b"audio"):
+        with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
             result = engine.generate_speech("hello", "santa", "ogg")
         assert result == b"audio"
 
@@ -167,7 +167,7 @@ class TestEmptyTextValidation:
 class TestCharLimitValidation:
     def test_text_at_limit_passes(self, engine: KokoroEngine) -> None:
         text = "a" * KOKORO_CHAR_LIMIT
-        with patch("cumadre.service._apply_vibrato_warm", return_value=b"audio"):
+        with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
             result = engine.generate_speech(text, "santa", "wav")
         assert result == b"audio"
 
@@ -222,7 +222,7 @@ class TestModelNotLoaded:
 
 
 class TestVibratoWarmPipeline:
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_calls_ffmpeg_with_vibrato_filter(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"processed")
         wav = _create_wav_bytes()
@@ -233,7 +233,7 @@ class TestVibratoWarmPipeline:
         filter_arg = cmd.kwargs.get("input") or cmd[1].get("input")
         assert filter_arg is not None  # WAV was piped in
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_stage1_filter_chain_complete_and_ordered(
         self, mock_run: MagicMock
     ) -> None:
@@ -261,7 +261,7 @@ class TestVibratoWarmPipeline:
         # Verify order: vibrato first, loudnorm last
         assert filter_chain.index("vibrato") < filter_chain.index("loudnorm")
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_wav_format_without_noise_calls_ffmpeg_twice(
         self, mock_run: MagicMock
     ) -> None:
@@ -277,7 +277,7 @@ class TestVibratoWarmPipeline:
 
 
 class TestOggOutput:
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_ogg_format_calls_ffmpeg_twice(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
@@ -285,7 +285,7 @@ class TestOggOutput:
         # Stage 1 (effects) + encode (to ogg)
         assert mock_run.call_count == 2
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_ogg_encoding_params(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
@@ -298,7 +298,7 @@ class TestOggOutput:
         assert "16000" in cmd_args  # sample rate
         assert "1" in cmd_args  # mono
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_ogg_encode_final_includes_second_loudnorm(
         self, mock_run: MagicMock
     ) -> None:
@@ -315,7 +315,7 @@ class TestOggOutput:
 
 
 class TestNoiseMixing:
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_noise_files_used_when_present(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -331,7 +331,7 @@ class TestNoiseMixing:
         # Stage 1 + stage 2 (with noise)
         assert mock_run.call_count == 2
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_noise_filter_complex_content(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -349,7 +349,7 @@ class TestNoiseMixing:
         assert "amix=inputs=3" in fc
         assert "loudnorm=I=-17:TP=-1.5:LRA=7" in fc
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_missing_noise_falls_back_gracefully(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -359,7 +359,7 @@ class TestNoiseMixing:
         result = _apply_vibrato_warm(wav, "ogg", noise_dir=tmp_path)
         assert result == b"clean_audio"
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_missing_noise_logs_warning(
         self,
         mock_run: MagicMock,
@@ -380,9 +380,9 @@ class TestNoiseMixing:
 
 
 class TestMultiChunkGeneration:
-    @patch("cumadre.service._apply_vibrato_warm")
-    @patch("cumadre.service.chunk_text")
-    @patch("cumadre.service.normalize_text")
+    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service.chunk_text")
+    @patch("comadre.service.normalize_text")
     def test_multi_chunk_calls_create_per_chunk(
         self,
         mock_normalize: MagicMock,
@@ -396,9 +396,9 @@ class TestMultiChunkGeneration:
         engine.generate_speech("chunk one. chunk two.", "santa", "wav")
         assert engine._kokoro.create.call_count == 2  # type: ignore[union-attr]
 
-    @patch("cumadre.service._apply_vibrato_warm")
-    @patch("cumadre.service.chunk_text")
-    @patch("cumadre.service.normalize_text")
+    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service.chunk_text")
+    @patch("comadre.service.normalize_text")
     def test_single_chunk_only_one_create_call(
         self,
         mock_normalize: MagicMock,
@@ -412,7 +412,7 @@ class TestMultiChunkGeneration:
         engine.generate_speech("short text", "santa", "wav")
         assert engine._kokoro.create.call_count == 1  # type: ignore[union-attr]
 
-    @patch("cumadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_vibrato_warm")
     def test_logs_chunk_count(
         self,
         mock_pipeline: MagicMock,
@@ -475,7 +475,7 @@ class TestLoadModel:
 
         mock_kokoro_class = MagicMock()
         with (
-            patch("cumadre.service.Kokoro", mock_kokoro_class, create=True),
+            patch("comadre.service.Kokoro", mock_kokoro_class, create=True),
             patch.dict(
                 "sys.modules",
                 {"kokoro_onnx": MagicMock(Kokoro=mock_kokoro_class)},
@@ -631,10 +631,10 @@ class TestQwenCloneReference:
             qwen_engine.generate_speech("Olá", "clone", "ogg")
         assert "clone" not in exc_info.value.available
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_clone_with_reference_includes_r_flag(
         self,
         _mock_unlink: MagicMock,
@@ -655,10 +655,10 @@ class TestQwenCloneReference:
         r_idx = cmd.index("-r")
         assert cmd[r_idx + 1] == "/voices/clone-ref.wav"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_female_voice_passes_female_reference(
         self,
         _mock_unlink: MagicMock,
@@ -678,10 +678,10 @@ class TestQwenCloneReference:
         r_idx = cmd.index("-r")
         assert cmd[r_idx + 1] == "/voices/female-reference.wav"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_male_voice_passes_male_reference(
         self,
         _mock_unlink: MagicMock,
@@ -716,10 +716,10 @@ class TestQwenCharLimit:
     def test_char_limit_is_300(self) -> None:
         assert QWEN_CHAR_LIMIT == 300
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_text_at_limit_passes(
         self,
         _mock_unlink: MagicMock,
@@ -777,10 +777,10 @@ class TestQwenResponseFormat:
 
 
 class TestQwenSubprocessInvocation:
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_passes_correct_cli_flags(
         self,
         _mock_unlink: MagicMock,
@@ -809,10 +809,10 @@ class TestQwenSubprocessInvocation:
         assert "-j" in cmd
         assert cmd[cmd.index("-j") + 1] == "4"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_seed_parameter_passed(
         self,
         _mock_unlink: MagicMock,
@@ -831,10 +831,10 @@ class TestQwenSubprocessInvocation:
         seed_idx = cmd.index("--seed")
         assert cmd[seed_idx + 1] == "42"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_default_seed_is_negative_one(
         self,
         _mock_unlink: MagicMock,
@@ -853,10 +853,10 @@ class TestQwenSubprocessInvocation:
         seed_idx = cmd.index("--seed")
         assert cmd[seed_idx + 1] == "-1"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_max_tokens_calculated_dynamically(
         self,
         _mock_unlink: MagicMock,
@@ -876,10 +876,10 @@ class TestQwenSubprocessInvocation:
         mt_idx = cmd.index("--max-tokens")
         assert cmd[mt_idx + 1] == "800"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_text_passed_through_expand_siglas(
         self,
         _mock_unlink: MagicMock,
@@ -898,10 +898,10 @@ class TestQwenSubprocessInvocation:
         t_idx = cmd.index("-t")
         assert cmd[t_idx + 1] == "Seu C N P J é válido"
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_all_voices_pass_r_flag(
         self,
         _mock_unlink: MagicMock,
@@ -919,10 +919,10 @@ class TestQwenSubprocessInvocation:
         cmd = mock_run.call_args[0][0]
         assert "-r" in cmd
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_output_path_and_model_paths_in_cmd(
         self,
         _mock_unlink: MagicMock,
@@ -945,10 +945,10 @@ class TestQwenSubprocessInvocation:
         assert cmd[t_idx + 1] == "Olá"
         assert "-o" in cmd
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_text_passed_via_t_flag(
         self,
         _mock_unlink: MagicMock,
@@ -968,10 +968,10 @@ class TestQwenSubprocessInvocation:
         assert cmd[t_idx + 1] == "Olá"
         assert "--" not in cmd
 
-    @patch("cumadre.service._apply_whatsapp_subtle")
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.read_bytes")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_max_tokens_uses_raw_text_length(
         self,
         _mock_unlink: MagicMock,
@@ -999,8 +999,8 @@ class TestQwenSubprocessInvocation:
 
 
 class TestQwenSubprocessErrors:
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.unlink")
     def test_timeout_raises_generation_error(
         self,
         _mock_unlink: MagicMock,
@@ -1017,8 +1017,8 @@ class TestQwenSubprocessErrors:
         ):
             qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
 
-    @patch("cumadre.service.subprocess.run")
-    @patch("cumadre.service.Path.unlink")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.unlink")
     def test_called_process_error_raises_generation_error(
         self,
         _mock_unlink: MagicMock,
@@ -1037,10 +1037,10 @@ class TestQwenSubprocessErrors:
 
     def test_subprocess_timeout_is_60s(self, qwen_engine: QwenEngine) -> None:
         with (
-            patch("cumadre.service.subprocess.run") as mock_run,
-            patch("cumadre.service.Path.read_bytes", return_value=_create_wav_bytes()),
-            patch("cumadre.service._apply_whatsapp_subtle", return_value=b"audio"),
-            patch("cumadre.service.Path.unlink"),
+            patch("comadre.service.subprocess.run") as mock_run,
+            patch("comadre.service.Path.read_bytes", return_value=_create_wav_bytes()),
+            patch("comadre.service._apply_whatsapp_subtle", return_value=b"audio"),
+            patch("comadre.service.Path.unlink"),
         ):
             mock_run.return_value = MagicMock(returncode=0)
             qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
@@ -1277,7 +1277,7 @@ class TestQwenLoadModel:
 
 
 class TestWhatsappSubtlePipeline:
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_calls_ffmpeg_with_whatsapp_subtle_filter(
         self, mock_run: MagicMock
     ) -> None:
@@ -1286,7 +1286,7 @@ class TestWhatsappSubtlePipeline:
         _apply_whatsapp_subtle(wav, "wav")
         assert mock_run.call_count >= 1
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_stage1_filter_chain_complete(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"processed")
         wav = _create_wav_bytes()
@@ -1311,7 +1311,7 @@ class TestWhatsappSubtlePipeline:
         # No vibrato in whatsapp-subtle
         assert "vibrato" not in filter_chain
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_wav_format_without_noise_calls_ffmpeg_twice(
         self, mock_run: MagicMock
     ) -> None:
@@ -1321,14 +1321,14 @@ class TestWhatsappSubtlePipeline:
         assert result == b"wav_data"
         assert mock_run.call_count == 2
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_ogg_format_calls_ffmpeg_twice(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
         _apply_whatsapp_subtle(wav, "ogg")
         assert mock_run.call_count == 2
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_ogg_encoding_params(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
@@ -1343,7 +1343,7 @@ class TestWhatsappSubtlePipeline:
 
 
 class TestWhatsappSubtleNoiseMixing:
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_qwen3_noise_volumes(self, mock_run: MagicMock, tmp_path: Path) -> None:
         mock_run.return_value = MagicMock(stdout=b"mixed")
         (tmp_path / "room.wav").write_bytes(_create_wav_bytes())
@@ -1357,7 +1357,7 @@ class TestWhatsappSubtleNoiseMixing:
         assert "volume=0.15" in fc  # Qwen3 room volume
         assert "volume=0.08" in fc  # Qwen3 hiss volume
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_missing_noise_falls_back_gracefully(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -1370,7 +1370,7 @@ class TestWhatsappSubtleNoiseMixing:
 
 
 class TestNoiseVolumeRefactoring:
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_vibrato_warm_still_uses_kokoro_volumes(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -1387,7 +1387,7 @@ class TestNoiseVolumeRefactoring:
         assert "volume=0.45" in fc  # Kokoro room volume unchanged
         assert "volume=0.24" in fc  # Kokoro hiss volume unchanged
 
-    @patch("cumadre.service.subprocess.run")
+    @patch("comadre.service.subprocess.run")
     def test_whatsapp_subtle_uses_qwen3_volumes(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:

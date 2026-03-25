@@ -16,7 +16,7 @@ documents:
 # Implementation Readiness Assessment Report (Post-Pivot)
 
 **Date:** 2026-03-23
-**Project:** cumadre
+**Project:** comadre
 **Context:** All planning artifacts updated after architectural pivot from KokoClone (single engine) to dual-engine architecture (Kokoro fp32 + Qwen3-TTS C++ Q8_0). This report validates alignment after the pivot.
 
 ## Document Inventory

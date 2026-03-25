@@ -172,6 +172,73 @@ wheels = [
 ]
 
 [[package]]
+name = "comadre"
+version = "1.0.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "kokoro-onnx" },
+    { name = "num2words" },
+    { name = "pydantic-settings" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "coverage" },
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+lint = [
+    { name = "pre-commit" },
+    { name = "ruff" },
+]
+test = [
+    { name = "coverage" },
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+type-check = [
+    { name = "mypy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "kokoro-onnx", specifier = ">=0.5.0" },
+    { name = "num2words", specifier = ">=0.5" },
+    { name = "pydantic-settings", specifier = ">=2.7" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "coverage", specifier = ">=7.6" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "mypy", specifier = ">=1.14" },
+    { name = "pre-commit", specifier = ">=4.0" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.25" },
+    { name = "ruff", specifier = ">=0.9" },
+]
+lint = [
+    { name = "pre-commit", specifier = ">=4.0" },
+    { name = "ruff", specifier = ">=0.9" },
+]
+test = [
+    { name = "coverage", specifier = ">=7.6" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.25" },
+]
+type-check = [{ name = "mypy", specifier = ">=1.14" }]
+
+[[package]]
 name = "coverage"
 version = "7.13.5"
 source = { registry = "https://pypi.org/simple" }
@@ -276,73 +343,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/d4/90/64efac40e52949079
 wheels = [
     { url = "https://files.pythonhosted.org/packages/80/cb/19e8e582fc164db200c18078bdbdcc60c012cb83c7f02ea8e876bc0b1adf/csvw-3.7.0-py2.py3-none-any.whl", hash = "sha256:21b88db50a35e940d4b5cdd8f3a8084493ad7f1bb1657ed7323aad977359940e", size = 60685, upload-time = "2025-10-07T10:46:26.708Z" },
 ]
-
-[[package]]
-name = "cumadre"
-version = "1.0.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "kokoro-onnx" },
-    { name = "num2words" },
-    { name = "pydantic-settings" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "coverage" },
-    { name = "httpx" },
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-lint = [
-    { name = "pre-commit" },
-    { name = "ruff" },
-]
-test = [
-    { name = "coverage" },
-    { name = "httpx" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-type-check = [
-    { name = "mypy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "kokoro-onnx", specifier = ">=0.5.0" },
-    { name = "num2words", specifier = ">=0.5" },
-    { name = "pydantic-settings", specifier = ">=2.7" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "coverage", specifier = ">=7.6" },
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "mypy", specifier = ">=1.14" },
-    { name = "pre-commit", specifier = ">=4.0" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.25" },
-    { name = "ruff", specifier = ">=0.9" },
-]
-lint = [
-    { name = "pre-commit", specifier = ">=4.0" },
-    { name = "ruff", specifier = ">=0.9" },
-]
-test = [
-    { name = "coverage", specifier = ">=7.6" },
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.25" },
-]
-type-check = [{ name = "mypy", specifier = ">=1.14" }]
 
 [[package]]
 name = "distlib"

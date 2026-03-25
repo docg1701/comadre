@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cumadre.exceptions import VoiceNotFoundError
+from comadre.exceptions import VoiceNotFoundError
 
 
 class TestSpeechSuccess:

@@ -2,11 +2,11 @@
 stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 status: complete
 inputDocuments:
-  - _bmad-output/planning-artifacts/product-brief-cumadre-2026-03-21.md
+  - _bmad-output/planning-artifacts/product-brief-comadre-2026-03-21.md
   - _bmad-output/planning-artifacts/prd.md
 ---
 
-# UX Design Specification cumadre
+# UX Design Specification comadre
 
 **Author:** Galvani
 **Date:** 2026-03-21
@@ -19,7 +19,7 @@ inputDocuments:
 
 ### Project Vision
 
-CUMADRE is a headless, self-hosted TTS service with optional dual-engine TTS via dual-engine architecture — a pure API backend with no graphical interface. The UX domain is API ergonomics, developer experience, and operational workflows. The "interfaces" are: the HTTP API contract (consumed by n8n), the health endpoint (consumed by monitoring and operators), Ansible playbook output (the operator's primary interaction surface), and error/log messages (the service's voice when things go wrong).
+COMADRE is a headless, self-hosted TTS service with optional dual-engine TTS via dual-engine architecture — a pure API backend with no graphical interface. The UX domain is API ergonomics, developer experience, and operational workflows. The "interfaces" are: the HTTP API contract (consumed by n8n), the health endpoint (consumed by monitoring and operators), Ansible playbook output (the operator's primary interaction surface), and error/log messages (the service's voice when things go wrong).
 
 ### Target Users
 
@@ -30,7 +30,7 @@ The primary consumer. Interacts exclusively via HTTP. UX needs: predictable Open
 Deploys, updates, monitors, and decommissions via Ansible CLI and SSH. UX needs: single-command lifecycle operations, data preservation guarantees on updates, at-a-glance health status, guided first-run experience, and clear failure diagnostics.
 
 **End Customers (Indirect Beneficiaries)**
-Hear the natural voice on WhatsApp/Telegram. Never interact with CUMADRE directly. UX impact: voice quality and latency determine their experience, but they are outside the design boundary.
+Hear the natural voice on WhatsApp/Telegram. Never interact with COMADRE directly. UX impact: voice quality and latency determine their experience, but they are outside the design boundary.
 
 ### Key Design Challenges
 
@@ -54,11 +54,11 @@ Hear the natural voice on WhatsApp/Telegram. Never interact with CUMADRE directl
 
 ### Defining Experience
 
-CUMADRE has two distinct interaction surfaces, each with its own "core experience":
+COMADRE has two distinct interaction surfaces, each with its own "core experience":
 
-**API Consumer (n8n):** The defining experience is `POST /v1/audio/speech` — text in, audio out. This request/response cycle executes on every customer interaction and must be indistinguishable from calling the OpenAI audio API. The core loop is: receive text from LLM → POST to CUMADRE → receive audio binary → send to customer. Any friction in this loop (unexpected response format, unclear errors, inconsistent behavior) breaks the automation chain.
+**API Consumer (n8n):** The defining experience is `POST /v1/audio/speech` — text in, audio out. This request/response cycle executes on every customer interaction and must be indistinguishable from calling the OpenAI audio API. The core loop is: receive text from LLM → POST to COMADRE → receive audio binary → send to customer. Any friction in this loop (unexpected response format, unclear errors, inconsistent behavior) breaks the automation chain.
 
-**DevOps Operator (Carlos):** The defining experience is the first deployment. Running `ansible-playbook bootstrap.yml` and hearing natural-voice audio from the first test `curl` is the moment CUMADRE proves its value. Every subsequent interaction (update, health check, troubleshooting) must reinforce the confidence established in that first deployment.
+**DevOps Operator (Carlos):** The defining experience is the first deployment. Running `ansible-playbook bootstrap.yml` and hearing natural-voice audio from the first test `curl` is the moment COMADRE proves its value. Every subsequent interaction (update, health check, troubleshooting) must reinforce the confidence established in that first deployment.
 
 ### Platform Strategy
 
@@ -72,7 +72,7 @@ No browser-based UI. No mobile considerations. No offline mode. The service is a
 
 ### Effortless Interactions
 
-1. **API integration should require zero learning** — If you've used OpenAI's `POST /v1/audio/speech`, you already know CUMADRE's API. Same contract, same fields, same response behavior. Drop-in replacement.
+1. **API integration should require zero learning** — If you've used OpenAI's `POST /v1/audio/speech`, you already know COMADRE's API. Same contract, same fields, same response behavior. Drop-in replacement.
 
 2. **Deployment should feel like a single button press** — `ansible-playbook bootstrap.yml` handles everything: Docker install, repo clone, voice provisioning, container build, model download, warm-up. No mid-flight decisions, no manual steps between tasks.
 
@@ -92,7 +92,7 @@ No browser-based UI. No mobile considerations. No offline mode. The service is a
 
 ### Experience Principles
 
-1. **Zero-Surprise API** — Follow the OpenAI audio API contract exactly. If a developer knows OpenAI's TTS endpoint, they know CUMADRE. No deviations, no custom fields, no unexpected behaviors.
+1. **Zero-Surprise API** — Follow the OpenAI audio API contract exactly. If a developer knows OpenAI's TTS endpoint, they know COMADRE. No deviations, no custom fields, no unexpected behaviors.
 
 2. **One Command, One Outcome** — Every Ansible playbook does exactly one thing, reports its result clearly, and never requires follow-up manual steps. The operator's mental model is always: run one command, get one result.
 
@@ -106,7 +106,7 @@ No browser-based UI. No mobile considerations. No offline mode. The service is a
 
 **Confidence** — The dominant emotion across all interactions. Carlos trusts that bootstrap will complete, that updates won't break things, that health checks tell the truth, and that the service does exactly what the documentation says. The n8n developer trusts the API contract is OpenAI-identical. Confidence is earned through predictability and transparency.
 
-**Relief** — The service eliminates an entire class of operational anxiety. No cloud dependency, no per-request billing, no data leaving the network, no third-party outage risk. Once deployed, CUMADRE is one less thing to worry about.
+**Relief** — The service eliminates an entire class of operational anxiety. No cloud dependency, no per-request billing, no data leaving the network, no third-party outage risk. Once deployed, COMADRE is one less thing to worry about.
 
 **Ownership** — Carlos owns this service completely. It runs on his hardware, serves his network, clones his employee's voice. There's no vendor lock-in, no account dashboard, no subscription to manage. This feeling of total control is a core differentiator from cloud TTS.
 
@@ -163,10 +163,10 @@ No browser-based UI. No mobile considerations. No offline mode. The service is a
 ### Inspiring Products Analysis
 
 **OpenAI Audio API**
-The API contract CUMADRE explicitly mirrors. What they do well: dead-simple endpoint design (one URL, one method, JSON in, binary out), consistent error format with structured JSON bodies, bearer token auth as the single auth mechanism, and response format negotiation via a request field rather than content negotiation headers. The developer experience is "read one page of docs, make your first request in 60 seconds." What they don't do well for CUMADRE's context: their errors assume cloud-scale concerns (rate limits, billing) that don't apply to a self-hosted single-consumer service.
+The API contract COMADRE explicitly mirrors. What they do well: dead-simple endpoint design (one URL, one method, JSON in, binary out), consistent error format with structured JSON bodies, bearer token auth as the single auth mechanism, and response format negotiation via a request field rather than content negotiation headers. The developer experience is "read one page of docs, make your first request in 60 seconds." What they don't do well for COMADRE's context: their errors assume cloud-scale concerns (rate limits, billing) that don't apply to a self-hosted single-consumer service.
 
 **Caddy**
-The gold standard for self-hosted infrastructure that "just works." What they do well: sensible defaults that eliminate configuration for common cases (automatic HTTPS, zero-config reverse proxy), a single static binary with no dependencies, clear and structured logging, and a config format (Caddyfile) that reads like plain English. The emotional signature is "I deployed it, it worked, I moved on." The key lesson for CUMADRE: complexity should be opt-in, not mandatory. The default path should require the minimum viable configuration. Caddy's health and status reporting is also exemplary — clear, structured, and machine-parseable.
+The gold standard for self-hosted infrastructure that "just works." What they do well: sensible defaults that eliminate configuration for common cases (automatic HTTPS, zero-config reverse proxy), a single static binary with no dependencies, clear and structured logging, and a config format (Caddyfile) that reads like plain English. The emotional signature is "I deployed it, it worked, I moved on." The key lesson for COMADRE: complexity should be opt-in, not mandatory. The default path should require the minimum viable configuration. Caddy's health and status reporting is also exemplary — clear, structured, and machine-parseable.
 
 **Ansible + Docker Compose (Operational Baseline)**
 The tools Carlos already uses daily. Ansible's strength: task-based output where each step has a descriptive name and a clear ok/changed/failed status. The operator watches sequential progress and knows exactly where a failure occurred. Docker Compose's strength: `docker compose up` as the canonical "one command to start everything" pattern, `docker compose ps` for instant status, and declarative service definitions that are self-documenting. Together, they set the operator's expectations for how infrastructure tooling should communicate.
@@ -193,15 +193,15 @@ The tools Carlos already uses daily. Ansible's strength: task-based output where
 
 ### Anti-Patterns to Avoid
 
-1. **Silent failures** — Services that return 200 OK but produce garbage output, or containers that start but never become healthy without explanation. CUMADRE must fail loudly with specific reasons.
+1. **Silent failures** — Services that return 200 OK but produce garbage output, or containers that start but never become healthy without explanation. COMADRE must fail loudly with specific reasons.
 
-2. **Configuration sprawl** — Tools that require editing 5 files across 3 directories before anything works. CUMADRE's configuration is environment variables in one docker-compose.yml and one Ansible inventory file. Two files, total.
+2. **Configuration sprawl** — Tools that require editing 5 files across 3 directories before anything works. COMADRE's configuration is environment variables in one docker-compose.yml and one Ansible inventory file. Two files, total.
 
-3. **Undifferentiated error messages** — APIs that return "Internal Server Error" for everything from missing models to encoding failures. Every CUMADRE error must be specific and actionable.
+3. **Undifferentiated error messages** — APIs that return "Internal Server Error" for everything from missing models to encoding failures. Every COMADRE error must be specific and actionable.
 
 4. **Implicit dependencies** — Services that silently assume tools are installed or ports are available. Bootstrap must check prerequisites and report missing dependencies before attempting installation.
 
-5. **Documentation-dependent operation** — Tools where you must read a wiki page to perform basic operations. CUMADRE's Ansible playbooks should be self-explanatory: `bootstrap.yml`, `update.yml`, `cleanup.yml`, `health.yml` — the filename is the documentation.
+5. **Documentation-dependent operation** — Tools where you must read a wiki page to perform basic operations. COMADRE's Ansible playbooks should be self-explanatory: `bootstrap.yml`, `update.yml`, `cleanup.yml`, `health.yml` — the filename is the documentation.
 
 ### Design Inspiration Strategy
 
@@ -210,9 +210,9 @@ The tools Carlos already uses daily. Ansible's strength: task-based output where
 - Ansible's task-name-plus-status output pattern for all playbooks
 - Caddy's "sensible defaults, complexity is opt-in" philosophy for all configuration
 
-**Adapt for CUMADRE's context:**
-- OpenAI's error format — adopt the structure (`error.message`, `error.type`) but add a `hint` field with actionable recovery guidance, since CUMADRE's operator can actually fix things (unlike a cloud API consumer)
-- Caddy's health reporting — adapt to include CUMADRE-specific state: loaded voices, memory usage, warm-up status, uptime
+**Adapt for COMADRE's context:**
+- OpenAI's error format — adopt the structure (`error.message`, `error.type`) but add a `hint` field with actionable recovery guidance, since COMADRE's operator can actually fix things (unlike a cloud API consumer)
+- Caddy's health reporting — adapt to include COMADRE-specific state: loaded voices, memory usage, warm-up status, uptime
 - Docker Compose's single-command pattern — extend via Ansible to cover the full lifecycle, not just start/stop
 
 **Avoid deliberately:**
@@ -224,13 +224,13 @@ The tools Carlos already uses daily. Ansible's strength: task-based output where
 
 ### Design System Choice
 
-**API & Operational Design System** — CUMADRE has no UI, so the traditional design system concept (component libraries, visual tokens, typography scales) does not apply. Instead, CUMADRE adopts a contract consistency system: a set of standards ensuring every interaction surface — API responses, error formats, health schema, Ansible output, and log messages — follows predictable, documented patterns.
+**API & Operational Design System** — COMADRE has no UI, so the traditional design system concept (component libraries, visual tokens, typography scales) does not apply. Instead, COMADRE adopts a contract consistency system: a set of standards ensuring every interaction surface — API responses, error formats, health schema, Ansible output, and log messages — follows predictable, documented patterns.
 
 This is the "design system" for a headless service: not visual components, but interaction contracts that serve the same purpose — consistency, predictability, and reduced cognitive load for consumers.
 
 ### Rationale for Selection
 
-- **No frontend exists** — CUMADRE has zero visual UI. No browser, no mobile app, no admin panel. Choosing a visual design system (Material, Chakra, Tailwind) would be solving a problem that doesn't exist.
+- **No frontend exists** — COMADRE has zero visual UI. No browser, no mobile app, no admin panel. Choosing a visual design system (Material, Chakra, Tailwind) would be solving a problem that doesn't exist.
 - **Interaction surfaces are non-visual** — The "interfaces" are HTTP responses, JSON schemas, terminal output, and log streams. These need their own consistency standards.
 - **Two consumers with different parsing needs** — n8n parses JSON programmatically; the DevOps operator reads terminal output visually. The design system must serve both.
 - **OpenAI compatibility constrains the API surface** — The primary API contract is already defined by the OpenAI audio API spec. The design system extends this with consistent error handling and health reporting.
@@ -298,7 +298,7 @@ No visual theming, no brand tokens, no typography decisions. The "brand" is cons
 
 ### Defining Experience
 
-CUMADRE's defining experience is making something complex feel like something users already do every day:
+COMADRE's defining experience is making something complex feel like something users already do every day:
 
 **For n8n (machine consumer):** "Send text, get back a human-sounding voice — in one HTTP call." The defining moment is indistinguishable from calling OpenAI's API, except the response comes from local hardware with a natural voice. The innovation is invisible — it's in the result, not the interaction.
 
@@ -327,7 +327,7 @@ Any deviation — a custom header, an extra required field, a different error fo
 - Health endpoint for monitoring
 - Logs via `docker compose logs`
 
-CUMADRE must fit into Carlos's existing operational workflow, not create a new one.
+COMADRE must fit into Carlos's existing operational workflow, not create a new one.
 
 ### Success Criteria
 
@@ -353,7 +353,7 @@ CUMADRE must fit into Carlos's existing operational workflow, not create a new o
 
 ### Novel UX Patterns
 
-CUMADRE uses **zero novel interaction patterns**. Both core loops follow established conventions:
+COMADRE uses **zero novel interaction patterns**. Both core loops follow established conventions:
 
 - **API loop:** Standard REST request/response, identical to OpenAI's audio API — a pattern millions of developers already know
 - **Ops loop:** Standard Ansible playbook execution with Docker Compose — a pattern every DevOps engineer uses daily
@@ -364,7 +364,7 @@ CUMADRE uses **zero novel interaction patterns**. Both core loops follow establi
 
 ### Experience Mechanics
 
-**Loop 1: Audio Generation (n8n → CUMADRE → Customer)**
+**Loop 1: Audio Generation (n8n → COMADRE → Customer)**
 
 ```
 1. INITIATION
@@ -395,7 +395,7 @@ CUMADRE uses **zero novel interaction patterns**. Both core loops follow establi
    → Customer hears natural voice response
 ```
 
-**Loop 2: Service Lifecycle (Carlos → Ansible → CUMADRE)**
+**Loop 2: Service Lifecycle (Carlos → Ansible → COMADRE)**
 
 ```
 1. INITIATION
@@ -422,14 +422,14 @@ CUMADRE uses **zero novel interaction patterns**. Both core loops follow establi
    Play recap: summary of all tasks
    → ok=12  changed=3  failed=0
    Final task: health verification or state confirmation
-   → "CUMADRE is healthy. Voice 'carlos' loaded. Uptime: 45s."
+   → "COMADRE is healthy. Voice 'carlos' loaded. Uptime: 45s."
 ```
 
 ## Visual Design Foundation
 
 ### Information Formatting Foundation
 
-CUMADRE has no visual UI — no screens, no components, no color palette. The "visual foundation" is an information formatting system that ensures every human-readable output (documentation, JSON responses, terminal output, logs) is consistent, scannable, and immediately useful.
+COMADRE has no visual UI — no screens, no components, no color palette. The "visual foundation" is an information formatting system that ensures every human-readable output (documentation, JSON responses, terminal output, logs) is consistent, scannable, and immediately useful.
 
 ### JSON Schema Conventions
 
@@ -478,7 +478,7 @@ Every playbook ends with a debug task that summarizes the outcome in human-reada
 ```
 TASK [Summary] *********
 ok: [vps] => {
-  "msg": "CUMADRE bootstrap complete. Service healthy. Voice 'carlos' loaded. Endpoint: http://vps:8000/v1/audio/speech"
+  "msg": "COMADRE bootstrap complete. Service healthy. Voice 'carlos' loaded. Endpoint: http://vps:8000/v1/audio/speech"
 }
 ```
 
@@ -528,7 +528,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Accessibility Considerations
 
-Traditional visual accessibility (contrast ratios, screen readers, WCAG) does not apply — there is no visual UI. Accessibility for CUMADRE means:
+Traditional visual accessibility (contrast ratios, screen readers, WCAG) does not apply — there is no visual UI. Accessibility for COMADRE means:
 
 - **Terminal accessibility:** Log and Ansible output uses plain ASCII — no emoji, no Unicode box-drawing characters, no color codes that break in non-ANSI terminals
 - **JSON readability:** Responses are pretty-printable with `jq` and parseable by any JSON library
@@ -539,7 +539,7 @@ Traditional visual accessibility (contrast ratios, screen readers, WCAG) does no
 
 ### Design Directions Explored
 
-Three interaction design directions were evaluated for CUMADRE's non-visual interface surfaces:
+Three interaction design directions were evaluated for COMADRE's non-visual interface surfaces:
 
 **Direction 1: Minimal — "Invisible Infrastructure"**
 Strict OpenAI clone with zero additions. Standard Ansible output, standard Python logging. Minimal surface area, minimal opinion. Rejected because it sacrifices operator experience for purity — in a self-hosted context, the operator needs more guidance than a cloud API consumer.
@@ -558,7 +558,7 @@ The service extends established patterns (OpenAI API, Ansible conventions) with 
 
 **Key elements of the chosen direction:**
 
-| Surface | Base Pattern | CUMADRE Extension |
+| Surface | Base Pattern | COMADRE Extension |
 |---|---|---|
 | API success responses | OpenAI-identical binary audio | None — exact match |
 | API error responses | OpenAI JSON error format | Added `hint` field with actionable recovery guidance |
@@ -569,7 +569,7 @@ The service extends established patterns (OpenAI API, Ansible conventions) with 
 
 ### Design Rationale
 
-1. **Matches project scale** — CUMADRE is a single-purpose service with one consumer and one operator. Direction 2 adds exactly enough intelligence to the interaction surfaces without creating new maintenance burden. No Prometheus, no log aggregation, no dashboards to maintain.
+1. **Matches project scale** — COMADRE is a single-purpose service with one consumer and one operator. Direction 2 adds exactly enough intelligence to the interaction surfaces without creating new maintenance burden. No Prometheus, no log aggregation, no dashboards to maintain.
 
 2. **Supports the experience principles** — "Errors Are Instructions" requires the `hint` field. "Transparency Over Silence" requires the rich health endpoint. "One Command, One Outcome" requires structured Ansible output with summaries. Direction 2 is the minimum implementation of these principles.
 
@@ -593,13 +593,13 @@ The service extends established patterns (OpenAI API, Ansible conventions) with 
 
 The most critical journey — where trust is established or lost.
 
-**Entry point:** Carlos has a clean Ubuntu VPS, cloned the CUMADRE repo, and has a reference WAV file.
+**Entry point:** Carlos has a clean Ubuntu VPS, cloned the COMADRE repo, and has a reference WAV file.
 
 **Pre-requisites:** VPS IP, SSH access, API key chosen, reference WAV file ready.
 
 ```mermaid
 flowchart TD
-    A[Carlos clones CUMADRE repo] --> B[Edits inventory.yml with VPS IP]
+    A[Carlos clones COMADRE repo] --> B[Edits inventory.yml with VPS IP]
     B --> C[Sets API_KEY in variables]
     C --> D[Copies reference WAV to voices/]
     D --> E["Runs: ansible-playbook bootstrap.yml -i inventory.yml"]
@@ -609,7 +609,7 @@ flowchart TD
     F -->|OK| G["[Docker] Install Docker Engine"]
 
     G -->|Failed| G1["FAILED: msg - check internet/apt sources"]
-    G -->|OK| H["[Repo] Clone CUMADRE to VPS"]
+    G -->|OK| H["[Repo] Clone COMADRE to VPS"]
 
     H --> I["[Voice] Copy reference WAV to volume"]
     I --> J["[Config] Set environment variables"]
@@ -702,7 +702,7 @@ flowchart TD
 
 The highest-stress journey — must reduce anxiety, not increase it.
 
-**Entry point:** n8n starts getting timeouts or errors from CUMADRE. Carlos investigates.
+**Entry point:** n8n starts getting timeouts or errors from COMADRE. Carlos investigates.
 
 ```mermaid
 flowchart TD
@@ -762,7 +762,7 @@ Every journey ends with positive confirmation of the final state, not just absen
 - Audio generation: HTTP 200 + valid audio binary
 - Health check: Full status summary with all metrics
 - Update: "Service healthy. Data preserved. Voice: ..."
-- Cleanup: "Zero CUMADRE artifacts remain."
+- Cleanup: "Zero COMADRE artifacts remain."
 
 ### Flow Optimization Principles
 
@@ -778,7 +778,7 @@ Every journey ends with positive confirmation of the final state, not just absen
 
 ### Design System Components
 
-CUMADRE's "design system" has no visual components. The foundation components are established patterns from the technology stack that require no custom design:
+COMADRE's "design system" has no visual components. The foundation components are established patterns from the technology stack that require no custom design:
 
 | Foundation Component | Source | Purpose |
 |---|---|---|
@@ -793,7 +793,7 @@ These are off-the-shelf patterns. No customization needed beyond configuration.
 
 ### Custom Components
 
-Five custom components bridge the gap between standard tooling and CUMADRE's "Operator-First DX" design direction:
+Five custom components bridge the gap between standard tooling and COMADRE's "Operator-First DX" design direction:
 
 #### 1. Error Response Builder
 
@@ -879,7 +879,7 @@ raise VoiceNotFoundError(
 - name: "[Summary] Bootstrap complete"
   debug:
     msg: >-
-      CUMADRE bootstrap complete.
+      COMADRE bootstrap complete.
       Service: {{ health_status }}.
       Voice: '{{ voice_name }}' loaded.
       Endpoint: http://{{ ansible_host }}:8000/v1/audio/speech
@@ -924,7 +924,7 @@ All five custom components are implemented in the MVP — none are deferred:
 | Ansible Summary Task | ~10 lines per playbook (debug task) | Ansible registered variables |
 | Voice Discovery Module | ~40 lines (scan + validate + report) | Python wave stdlib |
 
-**Total custom code:** ~150 lines across all five components. This is consistent with CUMADRE's ~80 line FastAPI wrapper philosophy — the interaction design components are small, focused, and self-contained.
+**Total custom code:** ~150 lines across all five components. This is consistent with COMADRE's ~80 line FastAPI wrapper philosophy — the interaction design components are small, focused, and self-contained.
 
 ### Implementation Roadmap
 
@@ -1058,13 +1058,13 @@ Phase 4: [Summary] Confirmation with proof
 
 ### Responsive Strategy — Not Applicable
 
-CUMADRE has no visual UI. There are no screens, breakpoints, layouts, or device-specific rendering. The concepts of responsive design, mobile-first, and WCAG visual compliance do not apply.
+COMADRE has no visual UI. There are no screens, breakpoints, layouts, or device-specific rendering. The concepts of responsive design, mobile-first, and WCAG visual compliance do not apply.
 
 This section reframes "responsiveness" and "accessibility" for a headless API service.
 
 ### Operational Context Adaptation
 
-CUMADRE must work correctly across different operational contexts without requiring context-specific configuration:
+COMADRE must work correctly across different operational contexts without requiring context-specific configuration:
 
 | Context | Adaptation | How |
 |---|---|---|
@@ -1078,7 +1078,7 @@ CUMADRE must work correctly across different operational contexts without requir
 
 ### Interaction Accessibility
 
-Traditional WCAG accessibility (screen readers, contrast ratios, keyboard navigation) does not apply. Accessibility for CUMADRE means ensuring all interaction surfaces are usable by operators with diverse tooling, environments, and experience levels.
+Traditional WCAG accessibility (screen readers, contrast ratios, keyboard navigation) does not apply. Accessibility for COMADRE means ensuring all interaction surfaces are usable by operators with diverse tooling, environments, and experience levels.
 
 **Terminal Accessibility:**
 - All Ansible output and logs use plain ASCII — no emoji, no Unicode box-drawing characters, no ANSI color codes that break in non-color terminals or screen readers

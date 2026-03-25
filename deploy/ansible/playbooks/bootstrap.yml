@@ -1,13 +1,13 @@
 ---
-# CUMADRE Bootstrap Playbook
-# Deploys CUMADRE TTS service on a clean Ubuntu VPS with a single command:
+# COMADRE Bootstrap Playbook
+# Deploys COMADRE TTS service on a clean Ubuntu VPS with a single command:
 #   ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 #
 # Idempotent: safe to run multiple times. Only tasks with actual changes
 # report as "changed".
 
-- name: Bootstrap CUMADRE TTS Service
-  hosts: cumadre_vps
+- name: Bootstrap COMADRE TTS Service
+  hosts: comadre_vps
   gather_facts: true
 
   tasks:
@@ -21,7 +21,7 @@
           - ansible_os_family == "Debian"
         fail_msg: >-
           Unsupported OS family '{{ ansible_os_family }}'.
-          CUMADRE requires Ubuntu or Debian.
+          COMADRE requires Ubuntu or Debian.
           Install on a supported distribution and retry.
         success_msg: >-
           OS family {{ ansible_os_family }}
@@ -36,8 +36,8 @@
         that:
           - api_key_value | length > 0
         fail_msg: >-
-          CUMADRE_API_KEY environment variable is not set or is empty.
-          Set it before running the playbook: export CUMADRE_API_KEY="your-secret-key"
+          COMADRE_API_KEY environment variable is not set or is empty.
+          Set it before running the playbook: export COMADRE_API_KEY="your-secret-key"
         success_msg: "API key is configured."
 
     - name: "[Prereq] Validate repository URL is configured"
@@ -115,10 +115,10 @@
     # Git Clone
     # =========================================================================
 
-    - name: "[Git] Clone CUMADRE repository"
+    - name: "[Git] Clone COMADRE repository"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
-        dest: "~/cumadre"
+        dest: "~/comadre"
         version: "{{ repo_branch }}"
         force: false
         update: true
@@ -133,22 +133,22 @@
         - name: "[Assets] Stage clone WAV on VPS"
           ansible.builtin.copy:
             src: "{{ clone_reference_wav }}"
-            dest: "~/cumadre/deploy/staging/{{ clone_reference_wav | basename }}"
+            dest: "~/comadre/deploy/staging/{{ clone_reference_wav | basename }}"
             mode: "0644"
 
         - name: "[Assets] Create helper container for volume access"
           community.docker.docker_container:
-            name: cumadre-volume-helper
+            name: comadre-volume-helper
             image: alpine:3.21
             volumes:
-              - "cumadre-voices:/voices"
+              - "comadre-voices:/voices"
             state: present
             auto_remove: false
 
         - name: "[Assets] Copy clone WAV into voices volume"
           community.docker.docker_container_copy_into:
-            container: cumadre-volume-helper
-            path: "{{ ansible_env.HOME }}/cumadre/deploy/staging/{{ clone_reference_wav | basename }}"
+            container: comadre-volume-helper
+            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/{{ clone_reference_wav | basename }}"
             container_path: "/voices/{{ clone_reference_wav | basename }}"
             owner_id: 0
             group_id: 0
@@ -156,12 +156,12 @@
 
         - name: "[Assets] Remove helper container"
           community.docker.docker_container:
-            name: cumadre-volume-helper
+            name: comadre-volume-helper
             state: absent
 
         - name: "[Assets] Clean up staging directory"
           ansible.builtin.file:
-            path: "~/cumadre/deploy/staging"
+            path: "~/comadre/deploy/staging"
             state: absent
 
     # =========================================================================
@@ -170,7 +170,7 @@
 
     - name: "[Config] Create .env file"
       ansible.builtin.copy:
-        dest: "~/cumadre/.env"
+        dest: "~/comadre/.env"
         content: |
           API_KEY={{ api_key_value }}
           DEFAULT_VOICE=santa
@@ -183,7 +183,7 @@
 
     - name: "[TTS] Build image and start service"
       community.docker.docker_compose_v2:
-        project_src: "~/cumadre"
+        project_src: "~/comadre"
         state: present
         build: always
         remove_orphans: true
@@ -194,14 +194,14 @@
 
     - name: "[Cron] Configure daily restart"
       ansible.builtin.cron:
-        name: "cumadre-daily-restart"
+        name: "comadre-daily-restart"
         minute: "0"
         hour: "{{ restart_hour }}"
-        job: "cd ~/cumadre && docker compose restart"
+        job: "cd ~/comadre && docker compose restart"
 
     - name: "[Cron] Configure audio cleanup every 6 hours"
       ansible.builtin.cron:
-        name: "cumadre-audio-cleanup"
+        name: "comadre-audio-cleanup"
         minute: "0"
         hour: "*/6"
         job: >-
@@ -236,7 +236,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          CUMADRE TTS Service — Bootstrap Complete
+          COMADRE TTS Service — Bootstrap Complete
           ============================================
 
           Service Status:  {{ hc.status }}
@@ -249,7 +249,7 @@
 
           Test command (copy-paste ready):
           curl -X POST \
-            -H "Authorization: Bearer $CUMADRE_API_KEY" \
+            -H "Authorization: Bearer $COMADRE_API_KEY" \
             -H "Content-Type: application/json" \
             http://{{ ansible_host }}:{{ port }}/v1/audio/speech \
             -d '{"input":"Olá mundo","voice":"santa"}' \

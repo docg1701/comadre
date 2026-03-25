@@ -7,11 +7,11 @@ inputDocuments:
   - _bmad-output/planning-artifacts/ux-design-specification.md
 ---
 
-# cumadre - Epic Breakdown
+# comadre - Epic Breakdown
 
 ## Overview
 
-This document provides the complete epic and story breakdown for cumadre, decomposing the requirements from the PRD, UX Design if it exists, and Architecture requirements into implementable stories.
+This document provides the complete epic and story breakdown for comadre, decomposing the requirements from the PRD, UX Design if it exists, and Architecture requirements into implementable stories.
 
 ## Requirements Inventory
 
@@ -67,20 +67,20 @@ This document provides the complete epic and story breakdown for cumadre, decomp
 - NFR14: Health endpoint accurately reflects actual service state (not just container running)
 - NFR15: Bootstrap playbook completes without manual intervention on a clean Ubuntu VPS
 - NFR16: Update playbook completes without data loss in under 5 minutes
-- NFR17: Cleanup playbook removes 100% of CUMADRE artifacts from VPS
+- NFR17: Cleanup playbook removes 100% of COMADRE artifacts from VPS
 - NFR18: Health playbook reports container state, endpoint status, resource usage, and disk consumption
 - NFR19: All Python dependencies managed via `uv`
 
 ### Additional Requirements
 
-- Starter template: `uv init --package cumadre` creates project scaffolding with src layout, pyproject.toml, and .python-version — this is Epic 1 Story 1
+- Starter template: `uv init --package comadre` creates project scaffolding with src layout, pyproject.toml, and .python-version — this is Epic 1 Story 1
 - Kokoro via kokoro-onnx (PyPI). Qwen3 via qwen3-tts-cli pre-built binary (subprocess)
 - Code quality tooling: ruff (lint+format), mypy --strict with pydantic plugin, pytest + pytest-asyncio + httpx, hadolint, yamllint, ansible-lint, shellcheck, markdownlint-cli2, all orchestrated by pre-commit
 - Dependency groups (PEP 735): dev = lint + test + type-check groups in pyproject.toml
-- Project structure: src/cumadre/ layout with 10 modules (main.py, api.py, schemas.py, service.py, preprocessing.py, config.py, exceptions.py, health.py, logging.py, voices.py)
+- Project structure: src/comadre/ layout with 10 modules (main.py, api.py, schemas.py, service.py, preprocessing.py, config.py, exceptions.py, health.py, logging.py, voices.py)
 - Import dependency graph enforced: config/logging at bottom, main.py at top, no circular imports
 - Module responsibility boundaries: no HTTP concerns in service.py, no business logic in api.py, no raw os.environ (use pydantic-settings)
-- All errors via CumadreError exception hierarchy, never raw HTTPException
+- All errors via ComadreError exception hierarchy, never raw HTTPException
 - Docker single-stage build using python:3.12-slim with system deps (espeak-ng **built from source** for pt-BR quality — PR #2344, ffmpeg, build deps: autoconf, automake, libtool, pkg-config)
 - Compose v2 standard filename: compose.yaml (not docker-compose.yml)
 - Single FIFO queue with asyncio.Lock — no multi-worker model
@@ -93,12 +93,12 @@ This document provides the complete epic and story breakdown for cumadre, decomp
 - CI/CD: GitHub Actions pipeline running pre-commit + pytest + docker build
 - Ansible flat playbooks in deploy/ansible/playbooks/ (no roles — project too small)
 - Ansible privilege model: `become: true` only for apt tasks in bootstrap; all other operations unprivileged
-- All project files on VPS live in ~/cumadre — never in /opt, /tmp, or system directories
+- All project files on VPS live in ~/comadre — never in /opt, /tmp, or system directories
 - User-level crontab for daily container restart (not system cron)
 - Docker restart policy: `restart: unless-stopped`
 - Docker health check must accommodate warm-up period (start_period)
 - Container resource limits: cpus 4, memory 6G in compose.yaml
-- Docker named volumes: cumadre-voices (ro), cumadre-models (rw), cumadre-audio (rw)
+- Docker named volumes: comadre-voices (ro), comadre-models (rw), comadre-audio (rw)
 - .env.example template with API_KEY, DEFAULT_VOICE, PORT
 - entrypoint.sh script for uvicorn launch with PORT from env
 - Implementation sequence: scaffolding → config → logging → voices → preprocessing + service → FastAPI app → Docker → Ansible → CI/CD → docs
@@ -162,11 +162,11 @@ n8n can POST text to an OpenAI-compatible endpoint and receive dual-engine route
 **FRs covered:** FR1, FR2, FR3, FR4, FR5, FR5a, FR5b, FR6, FR7, FR8, FR9, FR10, FR11, FR12, FR13, FR14, FR15, FR16, FR19, FR20
 
 ### Epic 2: Container Packaging & Production Runtime
-The operator can run CUMADRE as a Docker service with espeak-ng pt_extra dictionary compilation, qwen3-tts-cli binary, automatic dual-model download/caching, single-worker process, resource limits, and zero outbound network after first run.
+The operator can run COMADRE as a Docker service with espeak-ng pt_extra dictionary compilation, qwen3-tts-cli binary, automatic dual-model download/caching, single-worker process, resource limits, and zero outbound network after first run.
 **FRs covered:** FR17, FR18, FR21, FR27, FR28, FR29
 
 ### Epic 3: Deployment & Lifecycle Operations
-The operator can manage CUMADRE's full lifecycle on a remote VPS with single Ansible commands — bootstrap from scratch, update safely, check health diagnostics, decommission completely, and auto-restart daily as a safety net.
+The operator can manage COMADRE's full lifecycle on a remote VPS with single Ansible commands — bootstrap from scratch, update safely, check health diagnostics, decommission completely, and auto-restart daily as a safety net.
 **FRs covered:** FR22, FR23, FR24, FR25, FR26
 
 ### Epic 4: CI/CD Pipeline & Documentation
@@ -186,8 +186,8 @@ So that all future code is written against consistent standards from day one.
 **Acceptance Criteria:**
 
 **Given** a clean repository
-**When** I run `uv init --package cumadre`
-**Then** the project has src/cumadre/ layout with pyproject.toml and .python-version (3.12)
+**When** I run `uv init --package comadre`
+**Then** the project has src/comadre/ layout with pyproject.toml and .python-version (3.12)
 
 **Given** the initialized project
 **When** I review pyproject.toml
@@ -364,14 +364,14 @@ So that I can programmatically handle errors and the operator can diagnose issue
 
 **Given** the exceptions module
 **When** I inspect the error hierarchy
-**Then** `CumadreError` is the base class with `status_code`, `error_type`, and `hint` attributes, and subclasses exist for: `AuthenticationError` (401), `InvalidRequestError` (400), `VoiceNotFoundError` (404), `GenerationError` (500), `ServiceUnavailableError` (503)
+**Then** `ComadreError` is the base class with `status_code`, `error_type`, and `hint` attributes, and subclasses exist for: `AuthenticationError` (401), `InvalidRequestError` (400), `VoiceNotFoundError` (404), `GenerationError` (500), `ServiceUnavailableError` (503)
 
-**Given** any `CumadreError` is raised during request processing
+**Given** any `ComadreError` is raised during request processing
 **When** the centralized exception handler catches it
 **Then** it returns JSON with all three fields always present: `error.message`, `error.type`, `error.hint`
 **And** the `hint` field contains an actionable instruction, never a restatement of the message
 
-**Given** an unexpected exception (not a CumadreError subclass)
+**Given** an unexpected exception (not a ComadreError subclass)
 **When** the fallback handler catches it
 **Then** it returns a 500 response with `error.type: "server_error"` and a generic hint referencing log inspection
 **And** the full traceback is logged server-side at ERROR level but never returned to the client
@@ -485,13 +485,13 @@ So that regressions are caught before deployment.
 
 ## Epic 2: Container Packaging & Production Runtime
 
-The operator can run CUMADRE as a Docker service with espeak-ng pt_extra dictionary compilation, qwen3-tts-cli binary, automatic dual-model download/caching, single-worker process, resource limits, and zero outbound network after first run.
+The operator can run COMADRE as a Docker service with espeak-ng pt_extra dictionary compilation, qwen3-tts-cli binary, automatic dual-model download/caching, single-worker process, resource limits, and zero outbound network after first run.
 
 ### Story 2.1: Dockerfile & Entrypoint
 
 As a **DevOps operator**,
 I want a production-ready Docker image that builds the service with all dependencies for both engines,
-So that I can run CUMADRE as a container without installing Python or system packages on the host.
+So that I can run COMADRE as a container without installing Python or system packages on the host.
 
 **Acceptance Criteria:**
 
@@ -538,7 +538,7 @@ So that `docker compose up` starts a properly configured, resource-limited servi
 
 **Given** compose.yaml
 **When** I run `docker compose up`
-**Then** the tts-service starts with three named volumes mounted: `cumadre-models:/models:rw`, `cumadre-voices:/voices:ro`, and `cumadre-audio:/audio:rw` (for generated audio files requiring periodic cleanup)
+**Then** the tts-service starts with three named volumes mounted: `comadre-models:/models:rw`, `comadre-voices:/voices:ro`, and `comadre-audio:/audio:rw` (for generated audio files requiring periodic cleanup)
 
 **Given** compose.yaml environment variables
 **When** I inspect the service definition
@@ -566,19 +566,19 @@ So that `docker compose up` starts a properly configured, resource-limited servi
 **When** I inspect outbound network traffic
 **Then** zero outbound connections are made — all operation is local
 
-**Given** the cumadre-audio volume
+**Given** the comadre-audio volume
 **When** TTS requests are processed
 **Then** generated audio files are written to the audio volume mount
 **And** these files accumulate and require periodic cleanup (configured by Ansible bootstrap in Epic 3) to prevent disk exhaustion
 
 ## Epic 3: Deployment & Lifecycle Operations
 
-The operator can manage CUMADRE's full lifecycle on a remote VPS with single Ansible commands — bootstrap from scratch, update safely, check health diagnostics, decommission completely, and auto-restart daily as a safety net.
+The operator can manage COMADRE's full lifecycle on a remote VPS with single Ansible commands — bootstrap from scratch, update safely, check health diagnostics, decommission completely, and auto-restart daily as a safety net.
 
 ### Story 3.1: Ansible Project Structure & Bootstrap Playbook
 
 As a **DevOps operator**,
-I want to bootstrap CUMADRE on a clean VPS with a single Ansible command,
+I want to bootstrap COMADRE on a clean VPS with a single Ansible command,
 So that the service is fully deployed and healthy without manual intervention.
 
 **Acceptance Criteria:**
@@ -589,8 +589,8 @@ So that the service is fully deployed and healthy without manual intervention.
 
 **Given** a clean Ubuntu VPS with SSH access
 **When** I run `ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml`
-**Then** it installs Docker (using `become: true` for apt tasks only), clones the repo to ~/cumadre, deploys the qwen3-tts-cli binary (~600 KB with seed patch), deploys the clone reference WAV (if provided), builds the container, starts the service, configures audio cleanup cron, configures daily restart cron, and waits for healthy status
-**And** all project files on the VPS live in ~/cumadre (never in /opt, /tmp, or system directories)
+**Then** it installs Docker (using `become: true` for apt tasks only), clones the repo to ~/comadre, deploys the qwen3-tts-cli binary (~600 KB with seed patch), deploys the clone reference WAV (if provided), builds the container, starts the service, configures audio cleanup cron, configures daily restart cron, and waits for healthy status
+**And** all project files on the VPS live in ~/comadre (never in /opt, /tmp, or system directories)
 
 **Given** the bootstrap playbook
 **When** I inspect the task names
@@ -615,19 +615,19 @@ So that the service is fully deployed and healthy without manual intervention.
 ### Story 3.2: Update Playbook
 
 As a **DevOps operator**,
-I want to update CUMADRE from the latest repo without losing data,
+I want to update COMADRE from the latest repo without losing data,
 So that I can deploy new features and fixes safely.
 
 **Acceptance Criteria:**
 
-**Given** a running CUMADRE deployment
+**Given** a running COMADRE deployment
 **When** I run `ansible-playbook playbooks/update.yml -i inventory/production.yml`
 **Then** it pulls the latest repo, updates the qwen3-tts-cli binary if changed, rebuilds the Docker image (which recompiles espeak-ng pt_extra if the dictionary source changed), and restarts the container
 **And** runs entirely unprivileged (no `become: true`)
 
 **Given** the update playbook completes
 **When** I check the service
-**Then** voice files in cumadre-voices volume are intact, model cache in cumadre-models volume is intact, generated audio files in cumadre-audio volume are intact, clone reference WAV is intact, and the API_KEY is unchanged
+**Then** voice files in comadre-voices volume are intact, model cache in comadre-models volume is intact, generated audio files in comadre-audio volume are intact, clone reference WAV is intact, and the API_KEY is unchanged
 
 **Given** the update playbook completes
 **When** I read the final `[Summary]` task
@@ -640,12 +640,12 @@ So that I can deploy new features and fixes safely.
 ### Story 3.3: Health & Cleanup Playbooks
 
 As a **DevOps operator**,
-I want to diagnose service issues and fully decommission CUMADRE when needed,
+I want to diagnose service issues and fully decommission COMADRE when needed,
 So that I can troubleshoot at 2 AM and leave zero artifacts when retiring the service.
 
 **Acceptance Criteria:**
 
-**Given** a running CUMADRE deployment
+**Given** a running COMADRE deployment
 **When** I run `ansible-playbook playbooks/health.yml -i inventory/production.yml`
 **Then** it checks container state, queries the health endpoint, and reports: memory usage, loaded voices, both engine statuses (Kokoro: ready/loading/error, Qwen3: ready/loading/error/disabled), queue depth, clone configuration status, uptime, disk consumption (including audio volume size), and audio file cleanup cron status
 **And** runs entirely unprivileged
@@ -666,14 +666,14 @@ So that I can troubleshoot at 2 AM and leave zero artifacts when retiring the se
 **When** Qwen3 reports as disabled
 **Then** the output explains that clone reference WAV may be missing and suggests verifying CLONE_REFERENCE configuration
 
-**Given** a CUMADRE deployment I want to remove
+**Given** a COMADRE deployment I want to remove
 **When** I run `ansible-playbook playbooks/cleanup.yml -i inventory/production.yml`
-**Then** it stops containers, removes images, removes all three named volumes (cumadre-models, cumadre-voices, cumadre-audio), removes the ~/cumadre directory, and removes both crontab entries (daily restart and audio cleanup)
+**Then** it stops containers, removes images, removes all three named volumes (comadre-models, comadre-voices, comadre-audio), removes the ~/comadre directory, and removes both crontab entries (daily restart and audio cleanup)
 **And** runs entirely unprivileged
 
 **Given** the cleanup playbook completes
 **When** I inspect the VPS
-**Then** zero CUMADRE artifacts remain
+**Then** zero COMADRE artifacts remain
 **And** the `[Summary]` task confirms complete removal
 
 ## Epic 4: CI/CD Pipeline & Documentation

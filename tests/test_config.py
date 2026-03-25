@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from cumadre.config import Settings, get_settings
+from comadre.config import Settings, get_settings
 
 
 @pytest.fixture(autouse=True)

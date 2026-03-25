@@ -281,7 +281,7 @@ Request arrives
 
 ## Next Steps: Implementation
 
-1. **Refactor cumadre service** — Replace KokoClone with dual-engine (Kokoro + Qwen3 C++)
+1. **Refactor comadre service** — Replace KokoClone with dual-engine (Kokoro + Qwen3 C++)
 2. **Kokoro preprocessing** — normalize_text() + chunk_text() (siglas handled natively by pt_extra, no expand_siglas needed)
 3. **Qwen3 preprocessing** — expand_siglas() with spaced format for Qwen3 path only
 4. **Post-processing module** — ffmpeg pipeline per engine (vibrato_warm / whatsapp-subtle)

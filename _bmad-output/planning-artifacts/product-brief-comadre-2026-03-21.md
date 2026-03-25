@@ -7,13 +7,13 @@ date: 2026-03-21
 author: Galvani
 ---
 
-# Product Brief: cumadre
+# Product Brief: comadre
 
 <!-- Content will be appended sequentially through collaborative workflow steps -->
 
 ## Executive Summary
 
-CUMADRE (Cumadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with optional voice cloning, purpose-built for automated customer service audio responses in Brazilian Portuguese. It runs as a network-isolated Docker service on a cheap VPS or any internet-connected PC, serving n8n chatbot workflows over the local network. The service uses a dual-engine architecture — Kokoro fp32 for fast built-in voices and Qwen3-TTS C++ Q8_0 for voice cloning — behind a FastAPI layer with an OpenAI-compatible endpoint, requiring no cloud dependencies after deployment.
+COMADRE (Comadre Manda Audio Direto, Rapido e Eficiente) is a self-hosted text-to-speech service with optional voice cloning, purpose-built for automated customer service audio responses in Brazilian Portuguese. It runs as a network-isolated Docker service on a cheap VPS or any internet-connected PC, serving n8n chatbot workflows over the local network. The service uses a dual-engine architecture — Kokoro fp32 for fast built-in voices and Qwen3-TTS C++ Q8_0 for voice cloning — behind a FastAPI layer with an OpenAI-compatible endpoint, requiring no cloud dependencies after deployment.
 
 ---
 
@@ -55,7 +55,7 @@ A Docker service with a dual-engine TTS architecture behind a single FastAPI end
 
 #### n8n Workflow Engine (Machine Consumer)
 
-CUMADRE's primary consumer is the n8n instance running on the same local network or VPS cluster. n8n workflows call `POST /v1/audio/speech` with text from LLM responses and receive audio files back. There is no human interaction with the TTS service itself — it is a pure API backend.
+COMADRE's primary consumer is the n8n instance running on the same local network or VPS cluster. n8n workflows call `POST /v1/audio/speech` with text from LLM responses and receive audio files back. There is no human interaction with the TTS service itself — it is a pure API backend.
 
 - **Interaction:** HTTP POST with JSON body, receives WAV/OGG binary response
 - **Frequency:** On every customer interaction that requires an audio response
@@ -63,7 +63,7 @@ CUMADRE's primary consumer is the n8n instance running on the same local network
 
 #### DevOps Operator (Human Operator)
 
-The person who deploys, updates, monitors, and maintains CUMADRE via Ansible playbooks and SSH. Responsible for initial bootstrap, voice file provisioning, health monitoring, and lifecycle management.
+The person who deploys, updates, monitors, and maintains COMADRE via Ansible playbooks and SSH. Responsible for initial bootstrap, voice file provisioning, health monitoring, and lifecycle management.
 
 - **Interaction:** Ansible CLI, SSH, health endpoint, docker logs
 - **Frequency:** Deploy once, update occasionally, monitor periodically
@@ -73,18 +73,18 @@ The person who deploys, updates, monitors, and maintains CUMADRE via Ansible pla
 
 #### End Customers (Indirect Beneficiaries)
 
-Customers interacting with the chatbot on WhatsApp, Telegram, or other messaging platforms. They never interact with CUMADRE directly — they hear the cloned voice audio delivered by n8n through the messaging platform. Their experience depends on voice quality and response latency, but they are unaware the service exists.
+Customers interacting with the chatbot on WhatsApp, Telegram, or other messaging platforms. They never interact with COMADRE directly — they hear the cloned voice audio delivered by n8n through the messaging platform. Their experience depends on voice quality and response latency, but they are unaware the service exists.
 
 ### User Journey
 
-1. **DevOps operator** runs Ansible bootstrap playbook → CUMADRE is deployed, models download, warm-up completes
+1. **DevOps operator** runs Ansible bootstrap playbook → COMADRE is deployed, models download, warm-up completes
 2. **DevOps operator** optionally places clone reference WAV on the server for Qwen3 voice cloning
-3. **n8n workflow** receives customer message → processes through STT/LLM → calls CUMADRE API (voice name selects engine) → receives OGG Opus audio → sends to customer on WhatsApp
+3. **n8n workflow** receives customer message → processes through STT/LLM → calls COMADRE API (voice name selects engine) → receives OGG Opus audio → sends to customer on WhatsApp
 4. **DevOps operator** periodically checks health endpoint and docker stats, runs update playbook when repo changes
 
 ## Success Metrics
 
-Service success is measured by operational reliability and audio quality — there are no user acquisition or engagement metrics. CUMADRE either works or it doesn't.
+Service success is measured by operational reliability and audio quality — there are no user acquisition or engagement metrics. COMADRE either works or it doesn't.
 
 ### Operational KPIs
 
@@ -158,7 +158,7 @@ Service success is measured by operational reliability and audio quality — the
 
 ### Out of Scope
 
-- **No n8n deployment** — n8n runs on a separate VPS, not managed by CUMADRE
+- **No n8n deployment** — n8n runs on a separate VPS, not managed by COMADRE
 - **No Chatwoot integration** — not part of this project
 - **No human-in-the-loop** — not part of this project
 - **No multi-language support** — pt-BR only
@@ -180,6 +180,6 @@ Service success is measured by operational reliability and audio quality — the
 | Latency within budget | Kokoro typical 5-16s, Qwen3 typical 12-37s on 4 vCPU |
 | Queue handles concurrent requests | Single FIFO queue processes requests sequentially without failures |
 | Update preserves data | Run `update.yml`, verify voices, model cache, and API key intact |
-| Cleanup is total | Run `cleanup.yml`, verify zero CUMADRE artifacts remain on VPS |
+| Cleanup is total | Run `cleanup.yml`, verify zero COMADRE artifacts remain on VPS |
 | Health check is accurate | `health.yml` reports real container/service state |
 | Documentation is complete | All playbooks, API endpoints, and configuration options documented |

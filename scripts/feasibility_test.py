@@ -1,5 +1,5 @@
 # ruff: noqa: E501,E402,PTH112
-"""CUMADRE Feasibility Test: pt-BR TTS quality and performance evaluation.
+"""COMADRE Feasibility Test: pt-BR TTS quality and performance evaluation.
 
 Generates real audio files for human listening evaluation and produces
 a markdown report with timing metrics.
@@ -389,7 +389,7 @@ def run_test_case(
     output_dir: Path,
 ) -> TestResult:
     """Run a single test case and return the result."""
-    from cumadre.preprocessing import normalize_text
+    from comadre.preprocessing import normalize_text
 
     category_dir = output_dir / tc.category
     category_dir.mkdir(parents=True, exist_ok=True)
@@ -483,7 +483,7 @@ def write_report(
     report_path = output_dir / "report.md"
     lines: list[str] = []
 
-    lines.append("# CUMADRE Feasibility Test Report\n")
+    lines.append("# COMADRE Feasibility Test Report\n")
     lines.append(f"Generated: {sys_info['timestamp']}\n")
 
     lines.append("\n## System Info\n")
@@ -620,7 +620,7 @@ def write_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="CUMADRE pt-BR TTS feasibility test")
+    parser = argparse.ArgumentParser(description="COMADRE pt-BR TTS feasibility test")
     parser.add_argument(
         "--categories",
         default="A,B,C,D,E",
@@ -652,7 +652,7 @@ def main() -> None:
     sys_info = get_system_info()
 
     print("=" * 60)
-    print("CUMADRE Feasibility Test")
+    print("COMADRE Feasibility Test")
     print("=" * 60)
     print(f"Platform: {sys_info['platform']}")
     print(f"Thread limit: {sys_info['threads_limit']}")

@@ -1,4 +1,4 @@
-# CUMADRE API & Architecture Specification
+# COMADRE API & Architecture Specification
 
 **Date:** 2026-03-23
 **Status:** Definitive specification for implementation
@@ -6,7 +6,7 @@
 
 ## Overview
 
-CUMADRE is a self-hosted pt-BR TTS API for WhatsApp automation via n8n. Dual-engine: Kokoro (fast, no cloning) and Qwen3-TTS C++ (voice cloning). Single FIFO queue per instance, horizontal scaling via Caddy load balancer.
+COMADRE is a self-hosted pt-BR TTS API for WhatsApp automation via n8n. Dual-engine: Kokoro (fast, no cloning) and Qwen3-TTS C++ (voice cloning). Single FIFO queue per instance, horizontal scaling via Caddy load balancer.
 
 ## API Endpoint
 
@@ -204,9 +204,9 @@ n8n (any server)
     ▼
 Caddy (reverse proxy + load balancer)
     │
-    ├── VPS 1: cumadre instance (own FIFO queue)
-    ├── VPS 2: cumadre instance (own FIFO queue)
-    └── VPS N: cumadre instance (own FIFO queue)
+    ├── VPS 1: comadre instance (own FIFO queue)
+    ├── VPS 2: comadre instance (own FIFO queue)
+    └── VPS N: comadre instance (own FIFO queue)
 ```
 
 ### Caddy configuration
@@ -235,21 +235,21 @@ Each instance is independent — own model loaded, own queue, own processing. No
 
 ### Failover pattern (n8n-side)
 
-When a cumadre instance times out, the n8n workflow handles failover — not the load balancer. This gives the workflow control over retry logic and alerting.
+When a comadre instance times out, the n8n workflow handles failover — not the load balancer. This gives the workflow control over retry logic and alerting.
 
 ```text
 n8n workflow:
     │
-    ├── HTTP Request to cumadre primary (timeout: 120s)
+    ├── HTTP Request to comadre primary (timeout: 120s)
     │   ├── Success → send audio to WhatsApp
     │   └── Timeout/Error ─┐
     │                       ▼
-    │   HTTP Request to cumadre backup (timeout: 120s)
+    │   HTTP Request to comadre backup (timeout: 120s)
     │   ├── Success → send audio to WhatsApp
     │   └── Timeout/Error → send text message instead + alert sysop
     │
     └── On any failover: notify sysop (Slack/email/webhook)
-        "cumadre primary overloaded, failover triggered"
+        "comadre primary overloaded, failover triggered"
 ```
 
 **Why n8n-side failover (not Caddy):**
@@ -300,7 +300,7 @@ All Qwen3 voices use x-vector cloning from reference WAV files. The 0.6B-Base mo
 
 ```yaml
 services:
-  cumadre:
+  comadre:
     build: .
     ports:
       - "8000:8000"

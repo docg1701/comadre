@@ -3,7 +3,7 @@
 ## Deferred from: code review of story 2-2 (2026-03-24)
 
 - Download failure crashes startup with no retry or backoff — design trade-off for container workloads, consider adding retry with exponential backoff
-- Empty cumadre-voices volume causes Qwen3 failure on first run — operator must pre-populate voice reference WAVs before starting with Qwen3
+- Empty comadre-voices volume causes Qwen3 failure on first run — operator must pre-populate voice reference WAVs before starting with Qwen3
 - No URL scheme validation on download URLs — operator-controlled config, consider adding HttpUrl validation
 - Dockerfile installs libsndfile1-dev instead of runtime libsndfile1 — image bloat, should use libsndfile1 runtime package
 - Stale .tmp file with wrong ownership blocks subsequent downloads — unlikely edge case on container kill mid-download
@@ -32,7 +32,7 @@
 
 ## Deferred from: post-review gap analysis (2026-03-24)
 
-- Ansible bootstrap playbook does NOT deploy Qwen3 GGUF model files to VPS — models (~1.6 GB) must be copied via SSH manually. A future story should add Ansible tasks using the helper container pattern to populate the cumadre-models Docker volume before service startup. See `docs/quantizing-qwen3-models.md` for the manual deployment procedure.
+- Ansible bootstrap playbook does NOT deploy Qwen3 GGUF model files to VPS — models (~1.6 GB) must be copied via SSH manually. A future story should add Ansible tasks using the helper container pattern to populate the comadre-models Docker volume before service startup. See `docs/quantizing-qwen3-models.md` for the manual deployment procedure.
 
 ## Deferred from: code review of story 3-2 (2026-03-25)
 
@@ -50,12 +50,12 @@
 
 ## Deferred from: code review of story 3-3 (2026-03-25)
 
-- Volume name mismatch: helper containers in bootstrap.yml and deploy-models.yml mount `cumadre-models` (unprefixed), but Docker Compose v2 may create volumes as `cumadre_cumadre-models` (project-prefixed) since compose.yaml has no explicit `name:` on volume definitions. If volumes are different, models and clone WAV are deployed to volumes the service never mounts. Verify on deployed VPS with `docker volume ls | grep cumadre`. Fix: add `name: cumadre-models` (etc.) to each volume definition in compose.yaml.
-- `~` expansion in `community.docker.docker_container_copy_into` path parameter — bootstrap.yml and deploy-models.yml both use `~/cumadre/deploy/staging/...` as the `path:` value. Module may not expand `~` to the remote user's home directory. Pre-existing pattern from bootstrap.yml clone WAV deployment.
+- Volume name mismatch: helper containers in bootstrap.yml and deploy-models.yml mount `comadre-models` (unprefixed), but Docker Compose v2 may create volumes as `comadre_comadre-models` (project-prefixed) since compose.yaml has no explicit `name:` on volume definitions. If volumes are different, models and clone WAV are deployed to volumes the service never mounts. Verify on deployed VPS with `docker volume ls | grep comadre`. Fix: add `name: comadre-models` (etc.) to each volume definition in compose.yaml.
+- `~` expansion in `community.docker.docker_container_copy_into` path parameter — bootstrap.yml and deploy-models.yml both use `~/comadre/deploy/staging/...` as the `path:` value. Module may not expand `~` to the remote user's home directory. Pre-existing pattern from bootstrap.yml clone WAV deployment.
 
 ## Resolved in: code review of story 4-3 (2026-03-25)
 
-- FIXED: `changeme` API key fallback removed from `production.yml` — now uses bare `lookup('env', 'CUMADRE_API_KEY')` with no fallback. Playbook assertions updated to check `length > 0` instead of `!= 'changeme'`.
+- FIXED: `changeme` API key fallback removed from `production.yml` — now uses bare `lookup('env', 'COMADRE_API_KEY')` with no fallback. Playbook assertions updated to check `length > 0` instead of `!= 'changeme'`.
 - RESOLVED: `degraded` health status removed from api-reference.md status table — docs now only list `healthy` and `warming_up` (matching code behavior). Enum value remains in code but is harmless.
 - RESOLVED: AAC M4A Content-Type gap — api-reference.md Platform Output Formats section updated to note destination is not yet implemented, all output currently uses OGG Opus.
 

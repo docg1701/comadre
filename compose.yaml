@@ -6,9 +6,9 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     volumes:
-      - cumadre-models:/models:rw
-      - cumadre-voices:/voices:ro
-      - cumadre-audio:/audio:rw
+      - comadre-models:/models:rw
+      - comadre-voices:/voices:ro
+      - comadre-audio:/audio:rw
     environment:
       API_KEY: ${API_KEY:?API_KEY must be set}
       DEFAULT_VOICE: santa
@@ -37,9 +37,9 @@ services:
       start_period: 120s
 
 volumes:
-  cumadre-models:
-    name: cumadre-models
-  cumadre-voices:
-    name: cumadre-voices
-  cumadre-audio:
-    name: cumadre-audio
+  comadre-models:
+    name: comadre-models
+  comadre-voices:
+    name: comadre-voices
+  comadre-audio:
+    name: comadre-audio

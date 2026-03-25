@@ -1,4 +1,4 @@
-"""Custom exception hierarchy for CUMADRE."""
+"""Custom exception hierarchy for COMADRE."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from cumadre.logging import get_logger
+from comadre.logging import get_logger
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 _logger = get_logger("request")
 
 
-class CumadreError(Exception):
-    """Base exception for all CUMADRE errors."""
+class ComadreError(Exception):
+    """Base exception for all COMADRE errors."""
 
     def __init__(
         self,
@@ -33,7 +33,7 @@ class CumadreError(Exception):
         self.hint = hint
 
 
-class VoiceNotFoundError(CumadreError):
+class VoiceNotFoundError(ComadreError):
     """Raised when a requested voice is not available."""
 
     def __init__(self, voice: str, available: list[str]) -> None:
@@ -50,7 +50,7 @@ class VoiceNotFoundError(CumadreError):
         self.available = available
 
 
-class InvalidRequestError(CumadreError):
+class InvalidRequestError(ComadreError):
     """Raised when request parameters are invalid."""
 
     def __init__(self, message: str, hint: str) -> None:
@@ -62,7 +62,7 @@ class InvalidRequestError(CumadreError):
         )
 
 
-class GenerationError(CumadreError):
+class GenerationError(ComadreError):
     """Raised when TTS generation fails."""
 
     def __init__(self, message: str) -> None:
@@ -77,7 +77,7 @@ class GenerationError(CumadreError):
         )
 
 
-class AuthenticationError(CumadreError):
+class AuthenticationError(ComadreError):
     """Raised when authentication fails."""
 
     def __init__(self, message: str = "Invalid or missing API key") -> None:
@@ -92,7 +92,7 @@ class AuthenticationError(CumadreError):
         )
 
 
-class ServiceUnavailableError(CumadreError):
+class ServiceUnavailableError(ComadreError):
     """Raised when the service is not ready to handle requests."""
 
     def __init__(
@@ -110,8 +110,8 @@ class ServiceUnavailableError(CumadreError):
         self.retry_seconds = retry_seconds
 
 
-async def cumadre_error_handler(request: Request, exc: CumadreError) -> JSONResponse:
-    """Handle CumadreError subclasses with structured JSON response."""
+async def comadre_error_handler(request: Request, exc: ComadreError) -> JSONResponse:
+    """Handle ComadreError subclasses with structured JSON response."""
     headers: dict[str, str] | None = None
     if isinstance(exc, ServiceUnavailableError):
         headers = {"Retry-After": str(exc.retry_seconds)}
@@ -145,5 +145,5 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Register centralized exception handlers on the FastAPI app."""
-    app.add_exception_handler(CumadreError, cumadre_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ComadreError, comadre_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, unhandled_error_handler)

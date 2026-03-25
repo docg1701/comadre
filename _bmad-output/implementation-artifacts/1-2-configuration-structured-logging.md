@@ -22,13 +22,13 @@ so that all modules have a consistent foundation for settings and observability.
 
 ## Tasks / Subtasks
 
-- [x] Task 1: Create `src/cumadre/config.py` (AC: #1, #2)
+- [x] Task 1: Create `src/comadre/config.py` (AC: #1, #2)
   - [x] 1.1: Define `Settings(BaseSettings)` with `model_config = SettingsConfigDict(...)` — no env prefix, case-insensitive
   - [x] 1.2: Declare `api_key: SecretStr` (required — no default value, masked in repr/logs)
   - [x] 1.3: Declare `default_voice: str = "default"`, `workers: int = 1`, `port: int = 8000`
   - [x] 1.4: Add a module-level `get_settings()` function returning a cached `Settings()` instance (use `@lru_cache`)
   - [x] 1.5: Verify that missing `API_KEY` raises `pydantic.ValidationError` with `type=missing`
-- [x] Task 2: Create `src/cumadre/logging.py` (AC: #3, #4)
+- [x] Task 2: Create `src/comadre/logging.py` (AC: #3, #4)
   - [x] 2.1: Define a custom `PipeFormatter(logging.Formatter)` that outputs `timestamp | level | component | message`
   - [x] 2.2: Timestamps must be ISO 8601 UTC (e.g., `2026-03-21T14:32:00Z`)
   - [x] 2.3: Levels must be fixed-width 5 chars: `INFO `, `WARN `, `ERROR`, `CRIT `, `DEBUG`
@@ -89,7 +89,7 @@ def get_settings() -> Settings:
 ```
 
 **Key design decisions:**
-- No `env_prefix` — env vars are `API_KEY`, `DEFAULT_VOICE`, `WORKERS`, `PORT` (not `CUMADRE_API_KEY`)
+- No `env_prefix` — env vars are `API_KEY`, `DEFAULT_VOICE`, `WORKERS`, `PORT` (not `COMADRE_API_KEY`)
 - No `.env` file loading — environment variables are set via `compose.yaml` or shell. The `.env` file is for developer convenience only and is handled by Docker Compose / shell, not the app
 - `@lru_cache` on `get_settings()` ensures the `Settings` object is created exactly once. This also means tests must call `get_settings.cache_clear()` when patching env vars
 - Field `api_key: SecretStr` with no default means pydantic-settings raises `ValidationError` with `type=missing` if `API_KEY` is not in the environment. Use `settings.api_key.get_secret_value()` to access the raw string
@@ -142,7 +142,7 @@ Four fields, pipe-delimited:
 ### Anti-Patterns to Avoid
 
 - Do NOT load `.env` files in the Settings class — Docker Compose handles `.env` in production
-- Do NOT use `env_prefix` — the architecture specifies bare `API_KEY`, not `CUMADRE_API_KEY`
+- Do NOT use `env_prefix` — the architecture specifies bare `API_KEY`, not `COMADRE_API_KEY`
 - Do NOT use `structlog` — standard library `logging` with custom formatter is sufficient for pipe-delimited output
 - Do NOT use `colorama`, `rich`, or any ANSI color library — terminal accessibility requires plain ASCII (UX-DR10)
 - Do NOT add emoji to log messages — terminal accessibility (UX-DR10)
@@ -170,15 +170,15 @@ Four fields, pipe-delimited:
 
 **Files to create in this story:**
 ```
-src/cumadre/config.py     (new)
-src/cumadre/logging.py    (new)
+src/comadre/config.py     (new)
+src/comadre/logging.py    (new)
 tests/test_config.py      (new)
 tests/test_logging.py     (new)
 ```
 
 **Files NOT to create or modify:**
-- `src/cumadre/main.py` — belongs to Story 1.7
-- `src/cumadre/__init__.py` — already exists, no changes needed
+- `src/comadre/main.py` — belongs to Story 1.7
+- `src/comadre/__init__.py` — already exists, no changes needed
 - `pyproject.toml` — `pydantic-settings` is already a dependency; no new deps needed for this story
 
 ### References
@@ -216,7 +216,7 @@ No issues encountered during implementation.
 
 ### File List
 
-- `src/cumadre/config.py` (new)
-- `src/cumadre/logging.py` (new)
+- `src/comadre/config.py` (new)
+- `src/comadre/logging.py` (new)
 - `tests/test_config.py` (new)
 - `tests/test_logging.py` (new)

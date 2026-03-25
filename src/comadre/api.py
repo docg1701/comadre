@@ -1,4 +1,4 @@
-"""Speech endpoint route handler for CUMADRE."""
+"""Speech endpoint route handler for COMADRE."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 
-from cumadre.exceptions import (
+from comadre.exceptions import (
     AuthenticationError,
     GenerationError,
     ServiceUnavailableError,
 )
-from cumadre.logging import get_logger
-from cumadre.schemas import ResponseFormat, SpeechRequest
+from comadre.logging import get_logger
+from comadre.schemas import ResponseFormat, SpeechRequest
 
 logger = get_logger("request")
 

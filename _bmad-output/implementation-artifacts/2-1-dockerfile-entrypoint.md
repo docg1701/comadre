@@ -8,7 +8,7 @@ Status: done
 
 As a **DevOps operator**,
 I want a production-ready Docker image that builds the service with all dependencies for both engines,
-So that I can run CUMADRE as a container without installing Python or system packages on the host.
+So that I can run COMADRE as a container without installing Python or system packages on the host.
 
 ## Acceptance Criteria
 
@@ -35,14 +35,14 @@ So that I can run CUMADRE as a container without installing Python or system pac
   - [x] 1.4 Wire `noise_dir` through `api.py` → `router.generate_speech()` call so post-processing pipelines can access noise files
 
 - [x] Task 2: Add model auto-download to startup (AC: #5, #6)
-  - [x] 2.1 Create `src/cumadre/download.py` module with download functions
+  - [x] 2.1 Create `src/comadre/download.py` module with download functions
   - [x] 2.2 Implement `ensure_kokoro_models(model_path, voices_path)` — download from HuggingFace if not present (Note: check if `kokoro-onnx` library handles this natively first — if so, just verify paths exist after Kokoro init)
   - [x] 2.3 Implement `ensure_qwen3_models(model_path, tokenizer_path)` — download GGUF files if not present
   - [x] 2.4 Integrate download phase into `main.py` lifespan between Phase 1 (config) and Phase 5 (Kokoro load) — log progress, skip if files exist
   - [x] 2.5 Use `httpx` (already in test deps — promote to main deps) or `urllib.request` for downloads — avoid adding heavy deps like `huggingface_hub` unless necessary
 
 - [x] Task 3: Create `scripts/entrypoint.sh` (AC: #4)
-  - [x] 3.1 Write shell script: `exec uvicorn cumadre.main:create_app --factory --host 0.0.0.0 --port "${PORT:-8000}"`
+  - [x] 3.1 Write shell script: `exec uvicorn comadre.main:create_app --factory --host 0.0.0.0 --port "${PORT:-8000}"`
   - [x] 3.2 Single process — NO `--workers` flag, no WORKERS env var
   - [x] 3.3 Make executable: `chmod +x scripts/entrypoint.sh`
   - [x] 3.4 Add shebang: `#!/usr/bin/env bash` and `set -euo pipefail`
@@ -76,10 +76,10 @@ So that I can run CUMADRE as a container without installing Python or system pac
 | File | Status | What It Does |
 |------|--------|-------------|
 | `deploy/espeak-ng/pt_extra` | EXISTS | 67 custom sigla entries for espeak-ng pt-BR dictionary. COPY this into the Dockerfile during build. |
-| `src/cumadre/config.py` | EXISTS — needs `noise_dir` field | Pydantic-settings `Settings` class. Add `noise_dir: str = Field(default="/app/noise")`. |
-| `src/cumadre/main.py` | EXISTS — needs download phase | 9-phase lifespan. Insert download logic before Phase 5 (Kokoro load). |
-| `src/cumadre/api.py` | EXISTS — needs `noise_dir` wiring | `generate_speech()` calls `router.generate_speech()` without `noise_dir`. Add `noise_dir=Path(settings.noise_dir)`. |
-| `src/cumadre/service.py` | EXISTS — already handles `noise_dir` | Both `KokoroEngine.generate_speech()` and `QwenEngine.generate_speech()` accept `noise_dir: Path | None = None`. Already works. |
+| `src/comadre/config.py` | EXISTS — needs `noise_dir` field | Pydantic-settings `Settings` class. Add `noise_dir: str = Field(default="/app/noise")`. |
+| `src/comadre/main.py` | EXISTS — needs download phase | 9-phase lifespan. Insert download logic before Phase 5 (Kokoro load). |
+| `src/comadre/api.py` | EXISTS — needs `noise_dir` wiring | `generate_speech()` calls `router.generate_speech()` without `noise_dir`. Add `noise_dir=Path(settings.noise_dir)`. |
+| `src/comadre/service.py` | EXISTS — already handles `noise_dir` | Both `KokoroEngine.generate_speech()` and `QwenEngine.generate_speech()` accept `noise_dir: Path | None = None`. Already works. |
 | `scripts/` | EXISTS — has `.gitkeep` and `feasibility_test.py` | Add `entrypoint.sh` here. |
 | `.hadolint.yaml` | EXISTS | Ignores DL3008 (apt version pinning), DL3013 (pip — N/A), DL3059 (multiple RUN). |
 | `.gitignore` | EXISTS | Has `*.wav` with `!voices/**/*.wav` exception. Needs `!noise/**/*.wav` exception. |
@@ -149,7 +149,7 @@ The binary is a statically-linked C++ executable. Ensure it's for `linux/amd64`.
 - These are used by the C++ binary, not Python — need explicit download logic
 
 **Download module design:**
-- Create `src/cumadre/download.py`
+- Create `src/comadre/download.py`
 - Use `urllib.request.urlretrieve()` with progress logging (no new deps)
 - Or use `httpx` streaming (already in project deps for tests — promote to main deps if appropriate)
 - All downloads go to paths from `Settings` (default: `models/` directory)
@@ -180,7 +180,7 @@ Verify after build: `docker run <image> ffmpeg -encoders 2>/dev/null | grep aac`
 #!/usr/bin/env bash
 set -euo pipefail
 
-exec uvicorn cumadre.main:create_app \
+exec uvicorn comadre.main:create_app \
     --factory \
     --host 0.0.0.0 \
     --port "${PORT:-8000}"
@@ -196,8 +196,8 @@ Key decisions:
 
 - **DO NOT** use multi-stage Docker build — architecture specifies single-stage for simplicity
 - **DO NOT** add `--workers` or `WORKERS` env var to entrypoint — single-process architecture is enforced
-- **DO NOT** bake models into the Docker image — they go in the `cumadre-models` volume at runtime
-- **DO NOT** bake voice reference WAVs into the image — they go in the `cumadre-voices` volume (operator-provisioned)
+- **DO NOT** bake models into the Docker image — they go in the `comadre-models` volume at runtime
+- **DO NOT** bake voice reference WAVs into the image — they go in the `comadre-voices` volume (operator-provisioned)
 - **DO NOT** use `pip` in the Dockerfile — use `uv sync --frozen --no-dev`
 - **DO NOT** install espeak-ng from apt — build from source (git master) for PR #2344 pt-BR improvements
 - **DO NOT** forget the dual-path copy for pt_extra — misaki ignores ESPEAK_DATA_PATH
@@ -210,13 +210,13 @@ Key decisions:
 
 New/modified files in this story:
 ```
-cumadre/
+comadre/
 ├── noise/                        # NEW — noise WAV files for post-processing
 │   ├── room.wav                  # Room ambience (~1 MB)
 │   └── hiss.wav                  # Mic hiss (~1 MB)
 ├── scripts/
 │   └── entrypoint.sh             # NEW — uvicorn launch script
-├── src/cumadre/
+├── src/comadre/
 │   ├── config.py                 # MODIFIED — add noise_dir setting
 │   ├── api.py                    # MODIFIED — pass noise_dir to router
 │   ├── main.py                   # MODIFIED — add download phase to lifespan
@@ -238,11 +238,11 @@ cumadre/
 - [Source: _bmad-output/planning-artifacts/architecture.md — Technical Constraints: espeak-ng from source + pt_extra, misaki ignores ESPEAK_DATA_PATH, line 63]
 - [Source: _bmad-output/planning-artifacts/architecture.md — Audio File Cleanup Strategy, lines 412-425]
 - [Source: _bmad-output/planning-artifacts/prd.md — Platform Audio Format Requirements: Instagram requires AAC M4A, lines 199-215]
-- [Source: src/cumadre/service.py — _find_noise_file() expects room.wav/hiss.wav, lines 285-296]
-- [Source: src/cumadre/service.py — noise_dir parameter on generate_speech, lines 87, 554]
-- [Source: src/cumadre/config.py — Settings class with default model/CLI paths, lines 24-60]
-- [Source: src/cumadre/main.py — 9-phase lifespan startup sequence, lines 26-115]
-- [Source: src/cumadre/api.py — generate_speech route handler, noise_dir not wired, lines 46-112]
+- [Source: src/comadre/service.py — _find_noise_file() expects room.wav/hiss.wav, lines 285-296]
+- [Source: src/comadre/service.py — noise_dir parameter on generate_speech, lines 87, 554]
+- [Source: src/comadre/config.py — Settings class with default model/CLI paths, lines 24-60]
+- [Source: src/comadre/main.py — 9-phase lifespan startup sequence, lines 26-115]
+- [Source: src/comadre/api.py — generate_speech route handler, noise_dir not wired, lines 46-112]
 - [Source: CLAUDE.md — misaki ignores ESPEAK_DATA_PATH gotcha]
 
 ### Previous Story Intelligence
@@ -293,10 +293,10 @@ Claude Opus 4.6 (1M context)
 
 - noise/room.wav — NEW (copied from tmp/)
 - noise/hiss.wav — NEW (copied from tmp/)
-- src/cumadre/config.py — MODIFIED (added noise_dir, kokoro_model_url, kokoro_voices_url, qwen3_model_url, qwen3_tokenizer_url settings)
-- src/cumadre/api.py — MODIFIED (added Path import, pass noise_dir to router.generate_speech())
-- src/cumadre/download.py — NEW (model auto-download module)
-- src/cumadre/main.py — MODIFIED (added download phase between Phase 1 and Phase 3)
+- src/comadre/config.py — MODIFIED (added noise_dir, kokoro_model_url, kokoro_voices_url, qwen3_model_url, qwen3_tokenizer_url settings)
+- src/comadre/api.py — MODIFIED (added Path import, pass noise_dir to router.generate_speech())
+- src/comadre/download.py — NEW (model auto-download module)
+- src/comadre/main.py — MODIFIED (added download phase between Phase 1 and Phase 3)
 - scripts/entrypoint.sh — NEW (uvicorn launch script)
 - Dockerfile — NEW (single-stage production build)
 - .gitignore — MODIFIED (added !noise/**/*.wav)
@@ -311,8 +311,8 @@ Claude Opus 4.6 (1M context)
 - [x] [Review][Fixed] `noise_dir` not validated at startup; empty string causes CWD fallback — added `min_length=1` to Field + startup directory check in lifespan Phase 2.7
 - [x] [Review][Fixed] `ensure_kokoro_models` missing empty URL guard (unlike Qwen3 equivalent) — added matching guard with warning log
 - [x] [Review][Fixed] Unused `workers` field in config.py contradicts single-process design — removed field, tests, and .env.example entry
-- [x] [Review][Defer] No integrity verification (hash/checksum) of downloaded models [src/cumadre/download.py:23] — deferred, defense-in-depth hardening
-- [x] [Review][Defer] No download timeout or size limit on `urlretrieve` [src/cumadre/download.py:23] — deferred, operational hardening
+- [x] [Review][Defer] No integrity verification (hash/checksum) of downloaded models [src/comadre/download.py:23] — deferred, defense-in-depth hardening
+- [x] [Review][Defer] No download timeout or size limit on `urlretrieve` [src/comadre/download.py:23] — deferred, operational hardening
 
 ### Change Log
 

@@ -1,4 +1,4 @@
-"""CUMADRE FastAPI application entry point."""
+"""COMADRE FastAPI application entry point."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from cumadre import __version__
-from cumadre.api import api_router
-from cumadre.config import get_settings
-from cumadre.download import ensure_kokoro_models, ensure_qwen3_models
-from cumadre.exceptions import register_exception_handlers
-from cumadre.health import build_health_response
-from cumadre.logging import get_logger, setup_logging
-from cumadre.service import EngineRouter, KokoroEngine, QwenEngine
+from comadre import __version__
+from comadre.api import api_router
+from comadre.config import get_settings
+from comadre.download import ensure_kokoro_models, ensure_qwen3_models
+from comadre.exceptions import register_exception_handlers
+from comadre.health import build_health_response
+from comadre.logging import get_logger, setup_logging
+from comadre.service import EngineRouter, KokoroEngine, QwenEngine
 
 logger = get_logger("startup")
 
@@ -163,7 +163,7 @@ async def validation_error_handler(
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
-        title="CUMADRE",
+        title="COMADRE",
         version=__version__,
         lifespan=lifespan,
     )

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from httpx import ASGITransport, AsyncClient
 
-from cumadre.exceptions import GenerationError
+from comadre.exceptions import GenerationError
 
 
 class TestSequentialProcessing:

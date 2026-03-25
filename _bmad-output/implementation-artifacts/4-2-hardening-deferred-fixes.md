@@ -10,7 +10,7 @@ so that the documentation accurately reflects the final production behavior.
 
 ## Acceptance Criteria
 
-1. **Given** compose.yaml volume definitions, **When** Docker Compose v2 creates volumes, **Then** each volume has an explicit `name:` matching what Ansible playbooks mount (e.g., `cumadre-models`, `cumadre-voices`), preventing project-prefix mismatch.
+1. **Given** compose.yaml volume definitions, **When** Docker Compose v2 creates volumes, **Then** each volume has an explicit `name:` matching what Ansible playbooks mount (e.g., `comadre-models`, `comadre-voices`), preventing project-prefix mismatch.
 
 2. **Given** `download.py` moves a temporary file to its final path, **When** the source and destination are on different filesystem mount boundaries, **Then** `shutil.move` is used instead of `Path.rename()` so the operation succeeds.
 
@@ -30,7 +30,7 @@ so that the documentation accurately reflects the final production behavior.
 
 10. **Given** config fields `kokoro_model_url`, etc., **When** an invalid URL is provided, **Then** pydantic validates the URL format at config load time (not at download time).
 
-11. **Given** Ansible playbooks `bootstrap.yml` and `deploy-models.yml` use `~/cumadre/...` in path parameters, **When** the playbook runs on the remote host, **Then** the `~` is correctly expanded (use `{{ ansible_env.HOME }}` or absolute paths).
+11. **Given** Ansible playbooks `bootstrap.yml` and `deploy-models.yml` use `~/comadre/...` in path parameters, **When** the playbook runs on the remote host, **Then** the `~` is correctly expanded (use `{{ ansible_env.HOME }}` or absolute paths).
 
 12. **Given** compose.yaml hardcodes `PORT: '8000'` internally, **When** the operator overrides `${PORT:-8000}` on the host side, **Then** both sides use the same variable consistently.
 
@@ -39,7 +39,7 @@ so that the documentation accurately reflects the final production behavior.
 ## Tasks / Subtasks
 
 - [x] Task 1: Fix Docker volume name mismatch (AC: 1)
-  - [x] 1.1 Add explicit `name:` to each volume definition in `compose.yaml` (cumadre-models, cumadre-voices, cumadre-audio)
+  - [x] 1.1 Add explicit `name:` to each volume definition in `compose.yaml` (comadre-models, comadre-voices, comadre-audio)
   - [x] 1.2 Verify Ansible playbooks (bootstrap.yml, deploy-models.yml) reference matching unprefixed volume names
   - [x] 1.3 Run `docker compose config` to verify volume names resolve correctly
 
@@ -88,12 +88,12 @@ so that the documentation accurately reflects the final production behavior.
   - [x] 10.3 Add test that invalid URLs fail at config load time
 
 - [x] Task 11: Fix Ansible path expansion (AC: 11)
-  - [x] 11.1 In all playbooks, replace bare `~/cumadre` paths with `{{ ansible_env.HOME }}/cumadre` for `community.docker.docker_container_copy_into` path parameters
+  - [x] 11.1 In all playbooks, replace bare `~/comadre` paths with `{{ ansible_env.HOME }}/comadre` for `community.docker.docker_container_copy_into` path parameters
   - [x] 11.2 Verify `ansible.builtin.git`, `ansible.builtin.file`, `ansible.builtin.cron` modules handle `~` correctly (they do — only docker modules need fixing)
   - [x] 11.3 Test with `ansible-playbook --check` against inventory
 
 - [x] Task 12: Improve deploy failure reporting (AC: 13)
-  - [x] 12.1 In update.yml, after health check failure (line 88+), add a rescue block or `failed_when` with actionable message: "Health check failed. Service may be in broken state. Check logs with: docker compose -f ~/cumadre/compose.yaml logs --tail=50"
+  - [x] 12.1 In update.yml, after health check failure (line 88+), add a rescue block or `failed_when` with actionable message: "Health check failed. Service may be in broken state. Check logs with: docker compose -f ~/comadre/compose.yaml logs --tail=50"
   - [x] 12.2 Ensure the playbook does NOT silently continue after health check failure
 
 ## Dev Notes
@@ -102,7 +102,7 @@ so that the documentation accurately reflects the final production behavior.
 
 - **Module boundaries enforced** — no HTTP concerns in service.py, no business logic in api.py
 - **Import graph flows downward only** — config/logging → exceptions/voices/schemas → preprocessing → service → api/health → main. No circular imports.
-- **All errors via CumadreError hierarchy** — never raw HTTPException
+- **All errors via ComadreError hierarchy** — never raw HTTPException
 - **Structured logging** — pipe-delimited `timestamp | level | component | message`, never `print()`
 - **Configuration** — pydantic-settings only, never raw `os.environ`
 - **Docker Compose v2 syntax** — `docker compose`, never `docker-compose`
@@ -112,7 +112,7 @@ so that the documentation accurately reflects the final production behavior.
 ### Exact Code Locations to Modify
 
 **compose.yaml:**
-- Lines 9-11: Volume mounts (`cumadre-models:/models:rw`, `cumadre-voices:/voices:ro`, `cumadre-audio:/audio:rw`)
+- Lines 9-11: Volume mounts (`comadre-models:/models:rw`, `comadre-voices:/voices:ro`, `comadre-audio:/audio:rw`)
 - Line 13: `API_KEY: ${API_KEY}` — needs `${API_KEY:?API_KEY must be set}`
 - Line 15: `PORT: "8000"` — hardcoded, needs `${PORT:-8000}`
 - Bottom of file: volume definitions need explicit `name:` keys
@@ -122,7 +122,7 @@ so that the documentation accurately reflects the final production behavior.
 - Line 19: `git clone --depth 1 https://github.com/espeak-ng/espeak-ng.git /tmp/espeak-ng` — unpinned master
 - Lines 53-63: gcc/g++ purge + autoremove section — add `apt-mark manual libstdc++6` before autoremove
 
-**src/cumadre/download.py:**
+**src/comadre/download.py:**
 - Line 13: `_DOWNLOAD_TIMEOUT = 300`
 - Line 24: Uses `.tmp` suffix temp files
 - Line 31: `tmp.rename(dest)` — must become `shutil.move(str(tmp), str(dest))`
@@ -130,12 +130,12 @@ so that the documentation accurately reflects the final production behavior.
 - Lines 41-42: Skip logic `if path.is_file(): return`
 - Lines 49-83: `ensure_kokoro_models()` and `ensure_qwen3_models()` functions
 
-**src/cumadre/main.py:**
+**src/comadre/main.py:**
 - Lines 27-28: `lifespan()` async context manager
 - Lines 49-54: `ensure_kokoro_models()` call — wrap in `asyncio.to_thread()`
 - Lines 55-60: `ensure_qwen3_models()` call — wrap in `asyncio.to_thread()`
 
-**src/cumadre/config.py:**
+**src/comadre/config.py:**
 - Lines 65-69: `kokoro_model_url: str` with HuggingFace URL default
 - Lines 72-76: `kokoro_voices_url: str` with HuggingFace URL default
 - Lines 79-81: `qwen3_model_url: str = ""` (empty = skip)
@@ -148,28 +148,28 @@ so that the documentation accurately reflects the final production behavior.
 - Python version: `"3.12"` (lines 17, 30)
 
 **deploy/ansible/playbooks/bootstrap.yml:**
-- Line 122: `dest: "~/cumadre"` (git clone)
-- Lines 137, 152, 165: `"~/cumadre/deploy/staging"` paths
-- Line 145: `cumadre-voices:/voices` (volume ref — already unprefixed, OK)
-- Line 174: `.env` file path `"~/cumadre/.env"`
-- Lines 186-187: `project_src: "~/cumadre"` (docker compose)
+- Line 122: `dest: "~/comadre"` (git clone)
+- Lines 137, 152, 165: `"~/comadre/deploy/staging"` paths
+- Line 145: `comadre-voices:/voices` (volume ref — already unprefixed, OK)
+- Line 174: `.env` file path `"~/comadre/.env"`
+- Lines 186-187: `project_src: "~/comadre"` (docker compose)
 
 **deploy/ansible/playbooks/deploy-models.yml:**
-- Lines 65, 72, 78, 122: `"~/cumadre/deploy/staging"` paths
-- Line 92: `"cumadre-models:/models"` (volume ref — already unprefixed, OK)
+- Lines 65, 72, 78, 122: `"~/comadre/deploy/staging"` paths
+- Line 92: `"comadre-models:/models"` (volume ref — already unprefixed, OK)
 
 **deploy/ansible/playbooks/update.yml:**
-- Line 20: `path: "~/cumadre"` check
-- Lines 66-67: `dest: "~/cumadre"` (git pull)
-- Lines 77-79: `project_src: "~/cumadre"` (docker compose)
+- Line 20: `path: "~/comadre"` check
+- Lines 66-67: `dest: "~/comadre"` (git pull)
+- Lines 77-79: `project_src: "~/comadre"` (docker compose)
 - Line 88: Health check URL `http://localhost:{{ port }}/health`
 
 **deploy/ansible/playbooks/health.yml:**
-- Line 21: `path: "~/cumadre"` check
+- Line 21: `path: "~/comadre"` check
 - Line 58: Health endpoint URL
 
 **deploy/ansible/playbooks/cleanup.yml:**
-- Line 77: `path: "~/cumadre"` removal
+- Line 77: `path: "~/comadre"` removal
 
 ### Ansible ~ Path Expansion: What Needs Fixing vs What's OK
 
@@ -243,19 +243,19 @@ This moves the blocking I/O to a thread pool while keeping the lifespan async, a
 
 ### Volume Name Mismatch: The Actual Risk
 
-Docker Compose v2 prefixes volume names with the project name by default. If `compose.yaml` is in `~/cumadre/`, the project name is `cumadre`, so:
-- Defined as `cumadre-models` → created as `cumadre_cumadre-models`
-- Ansible mounts `cumadre-models` (unprefixed) → different volume
+Docker Compose v2 prefixes volume names with the project name by default. If `compose.yaml` is in `~/comadre/`, the project name is `comadre`, so:
+- Defined as `comadre-models` → created as `comadre_comadre-models`
+- Ansible mounts `comadre-models` (unprefixed) → different volume
 
 Fix: Add explicit `name:` to prevent prefixing:
 ```yaml
 volumes:
-  cumadre-models:
-    name: cumadre-models
-  cumadre-voices:
-    name: cumadre-voices
-  cumadre-audio:
-    name: cumadre-audio
+  comadre-models:
+    name: comadre-models
+  comadre-voices:
+    name: comadre-voices
+  comadre-audio:
+    name: comadre-audio
 ```
 
 ### Items NOT Included (Low Priority / Edge Cases)
@@ -266,7 +266,7 @@ These were assessed as low priority and excluded from this story:
 - **Healthcheck `start_period` tuning** — operator can adjust; no code change needed
 - **Default voice bypasses schema char limit** — pre-existing design issue, not a bug
 - **COPY deploy/bin/qwen3-tts-cli fails if binary not present** — build dependency tracked in git; documented in build guide
-- **Empty cumadre-voices volume** — operator responsibility to pre-populate; documented
+- **Empty comadre-voices volume** — operator responsibility to pre-populate; documented
 - **Named volumes start empty on first run** — expected behavior; model download handles it
 - **Download retry/backoff** — design trade-off for container workloads; restart policy handles it
 - **No Docker layer cache in CI** — optimization only, would require `docker/build-push-action` migration
@@ -278,9 +278,9 @@ Files to modify (no new files created):
 ```
 compose.yaml                              # Volume names, env vars, PORT
 Dockerfile                                # espeak-ng pin, libsndfile, libstdc++ protection
-src/cumadre/download.py                   # shutil.move, progress logging, SSL errors
-src/cumadre/main.py                       # asyncio.to_thread for downloads
-src/cumadre/config.py                     # URL validation
+src/comadre/download.py                   # shutil.move, progress logging, SSL errors
+src/comadre/main.py                       # asyncio.to_thread for downloads
+src/comadre/config.py                     # URL validation
 .github/workflows/ci.yml                  # Cache, timeouts
 deploy/ansible/playbooks/bootstrap.yml    # Path expansion
 deploy/ansible/playbooks/deploy-models.yml # Path expansion
@@ -328,9 +328,9 @@ No new files. No new dependencies. No changes to import graph or module boundari
 - [Source: _bmad-output/planning-artifacts/epics.md — Epic 4 story definitions and acceptance criteria]
 - [Source: compose.yaml — volume definitions (lines 9-11), env vars (lines 13-23), volume block (bottom)]
 - [Source: Dockerfile — espeak-ng clone (line 19), libsndfile (line 7), purge section (lines 53-63)]
-- [Source: src/cumadre/download.py — Path.rename (line 31), download logic (lines 13-83)]
-- [Source: src/cumadre/main.py — lifespan() (lines 27-28), model downloads (lines 49-60)]
-- [Source: src/cumadre/config.py — URL fields (lines 65-85)]
+- [Source: src/comadre/download.py — Path.rename (line 31), download logic (lines 13-83)]
+- [Source: src/comadre/main.py — lifespan() (lines 27-28), model downloads (lines 49-60)]
+- [Source: src/comadre/config.py — URL fields (lines 65-85)]
 - [Source: .github/workflows/ci.yml — full pipeline (lines 1-42)]
 - [Source: deploy/ansible/playbooks/*.yml — all playbook path references]
 - [Source: deploy/ansible/inventory/production.yml — port and config variables]
@@ -360,14 +360,14 @@ Claude Opus 4.6 (1M context)
 - Task 8: Replaced `libsndfile1-dev` with `libsndfile1` in Dockerfile (no Python packages need headers at build time).
 - Task 9: Added `ssl.SSLCertVerificationError` handler with actionable message, general exception handler with `logger.critical` and URL context. Added 2 new tests verifying critical logging on failures.
 - Task 10: Added `@field_validator` for all URL fields using `HttpUrl` validation, allowing empty string for optional Qwen3 URLs. Added 3 new tests (invalid kokoro URL, invalid qwen3 URL, empty qwen3 URL allowed).
-- Task 11: Replaced `~/cumadre` with `{{ ansible_env.HOME }}/cumadre` in `docker_container_copy_into` path params in bootstrap.yml and deploy-models.yml. Enabled `gather_facts: true` in deploy-models.yml for `ansible_env` access.
+- Task 11: Replaced `~/comadre` with `{{ ansible_env.HOME }}/comadre` in `docker_container_copy_into` path params in bootstrap.yml and deploy-models.yml. Enabled `gather_facts: true` in deploy-models.yml for `ansible_env` access.
 - Task 12: Added explicit failure task in update.yml that triggers when health check fails, providing actionable next steps (check logs, check status, try restart, rollback instructions).
 
 ### Review Findings
 
-- [x] [Review][Fixed] AC 9 progress logging — resolved via Content-Length from GET response headers (user chose option 2 over HEAD request). [src/cumadre/download.py:31]
+- [x] [Review][Fixed] AC 9 progress logging — resolved via Content-Length from GET response headers (user chose option 2 over HEAD request). [src/comadre/download.py:31]
 - [x] [Review][Fixed] Dockerfile espeak-ng shallow fetch — replaced `git clone` with `git init` + `git fetch --depth 1` + `git checkout FETCH_HEAD`. [Dockerfile:19-22]
-- [x] [Review][Fixed] SSL error hint corrected to SSL_CERT_FILE / SSL_CERT_DIR — was referencing `requests`-specific REQUESTS_CA_BUNDLE. [src/cumadre/download.py:40]
+- [x] [Review][Fixed] SSL error hint corrected to SSL_CERT_FILE / SSL_CERT_DIR — was referencing `requests`-specific REQUESTS_CA_BUNDLE. [src/comadre/download.py:40]
 - [x] [Review][Fixed] CI build job API_KEY — added `env: API_KEY: ci-build-dummy` to prevent `${API_KEY:?}` expansion failure. [.github/workflows/ci.yml:53]
 - [x] [Review][Fixed] cleanup.yml image prune replaced with `remove_images: all` on docker_compose_v2 task [deploy/ansible/playbooks/cleanup.yml:40] — `docker image prune` won't remove tagged images; `remove_images: all` does.
 - [x] [Review][Fixed] Pinned uv binary to 0.8.3 in Dockerfile [Dockerfile:34] — was `ghcr.io/astral-sh/uv:latest`, now `ghcr.io/astral-sh/uv:0.8.3` for reproducible builds.
@@ -386,9 +386,9 @@ Claude Opus 4.6 (1M context)
 
 - compose.yaml — volume names, API_KEY required, PORT unified
 - Dockerfile — libsndfile1 (not -dev), espeak-ng pinned SHA, apt-mark libstdc++6
-- src/cumadre/download.py — shutil.move, SSL error handler, critical logging
-- src/cumadre/main.py — asyncio.to_thread for downloads
-- src/cumadre/config.py — URL field_validator with HttpUrl
+- src/comadre/download.py — shutil.move, SSL error handler, critical logging
+- src/comadre/main.py — asyncio.to_thread for downloads
+- src/comadre/config.py — URL field_validator with HttpUrl
 - .github/workflows/ci.yml — uv cache, pre-commit cache, timeouts
 - deploy/ansible/playbooks/bootstrap.yml — ansible_env.HOME in docker_container_copy_into
 - deploy/ansible/playbooks/deploy-models.yml — ansible_env.HOME, gather_facts: true

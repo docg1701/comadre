@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from cumadre.schemas import Destination, ResponseFormat, SpeechRequest
+from comadre.schemas import Destination, ResponseFormat, SpeechRequest
 
 
 class TestSpeechRequestDefaults:

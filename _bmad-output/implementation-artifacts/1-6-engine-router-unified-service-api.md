@@ -64,7 +64,7 @@ so that voice selection is simple and engine details are transparent.
 
 ### What Already Exists (DO NOT RECREATE)
 
-The heavy lifting is done. Both engines are fully implemented in `src/cumadre/service.py`:
+The heavy lifting is done. Both engines are fully implemented in `src/comadre/service.py`:
 
 - **`KokoroEngine`** — `generate_speech(text, voice_name, response_format, noise_dir)` already calls `normalize_text()` + `chunk_text()`, generates chunks, concatenates WAVs, and applies `_apply_vibrato_warm()` with room=0.45/hiss=0.24 noise volumes.
 - **`QwenEngine`** — `generate_speech(text, voice_name, response_format, noise_dir, seed)` already calls `expand_siglas()`, builds CLI command, runs subprocess, and applies `_apply_whatsapp_subtle()` with room=0.15/hiss=0.08 noise volumes.
@@ -84,7 +84,7 @@ This is a **routing and aggregation layer**, not a rewrite. Do NOT duplicate pre
 
 ### Implementation Guidance
 
-**Where to add code:** `src/cumadre/service.py` — add `EngineRouter` class after the two engine classes. This keeps the import graph clean (service.py already imports from config, exceptions, preprocessing).
+**Where to add code:** `src/comadre/service.py` — add `EngineRouter` class after the two engine classes. This keeps the import graph clean (service.py already imports from config, exceptions, preprocessing).
 
 **EngineRouter signature sketch:**
 
@@ -160,12 +160,12 @@ main.py                         (Story 1.9 — not yet created)
 ### Project Structure Notes
 
 - New test file: `tests/test_routing.py`
-- Modified file: `src/cumadre/service.py` (add EngineRouter class)
+- Modified file: `src/comadre/service.py` (add EngineRouter class)
 - No new source modules needed — router lives in existing `service.py`
 
 ### Testing Standards
 
-- All tests mocked (no real model loading). Pattern: `@patch("cumadre.service.KokoroEngine.generate_speech")` etc.
+- All tests mocked (no real model loading). Pattern: `@patch("comadre.service.KokoroEngine.generate_speech")` etc.
 - Use pytest fixtures for EngineRouter setup with mocked engines
 - Test file naming: `test_routing.py` (separate from `test_service.py` which tests individual engines)
 - Must pass: `ruff check`, `mypy --strict`, `pytest`, `pre-commit run --all-files`
@@ -199,8 +199,8 @@ Recent commits show consistent patterns:
 
 - [Source: _bmad-output/planning-artifacts/epics.md — Story 1.6 acceptance criteria, lines 329-356]
 - [Source: _bmad-output/planning-artifacts/architecture.md — Module responsibilities, import graph, voice routing decision D9]
-- [Source: src/cumadre/service.py — KokoroEngine, QwenEngine, KOKORO_VOICES, QWEN_VOICES constants]
-- [Source: src/cumadre/exceptions.py — VoiceNotFoundError, InvalidRequestError, GenerationError]
+- [Source: src/comadre/service.py — KokoroEngine, QwenEngine, KOKORO_VOICES, QWEN_VOICES constants]
+- [Source: src/comadre/exceptions.py — VoiceNotFoundError, InvalidRequestError, GenerationError]
 - [Source: _bmad-output/implementation-artifacts/1-5-qwen3-tts-engine-integration.md — Previous story learnings]
 - [Source: _bmad-output/implementation-artifacts/1-4-kokoro-tts-engine-integration.md — Previous story learnings]
 
@@ -228,7 +228,7 @@ No issues encountered. Clean implementation.
 
 ### File List
 
-- `src/cumadre/service.py` — added `EngineRouter` class
+- `src/comadre/service.py` — added `EngineRouter` class
 - `tests/test_routing.py` — new file, 23 routing tests
 
 ### Change Log

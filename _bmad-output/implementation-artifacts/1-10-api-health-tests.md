@@ -82,7 +82,7 @@ so that regressions are caught before deployment.
 
 **Other existing test files (DO NOT modify):**
 - `tests/test_config.py` — Settings tests (36 tests)
-- `tests/test_exceptions.py` — CumadreError hierarchy tests (29 tests)
+- `tests/test_exceptions.py` — ComadreError hierarchy tests (29 tests)
 - `tests/test_schemas.py` — SpeechRequest validation tests (21 tests)
 - `tests/test_preprocessing.py` — normalize_text, chunk_text, expand_siglas tests
 - `tests/test_service.py` — KokoroEngine, QwenEngine unit tests
@@ -92,19 +92,19 @@ so that regressions are caught before deployment.
 
 ### Key Source Files Being Tested
 
-**`src/cumadre/main.py` (174 lines):**
+**`src/comadre/main.py` (174 lines):**
 - `create_app()` — FastAPI factory. Import this for test app creation.
 - `lifespan()` — DO NOT run in tests. Tests must skip lifespan and manually set `app.state`.
 - `health_endpoint()` — inline route at `GET /health`. Returns hardcoded 503 when `router` is None, delegates to `build_health_response()` otherwise.
 - `validation_error_handler()` — converts FastAPI 422 to 400 with `invalid_request_error` type.
 
-**`src/cumadre/api.py` (112 lines):**
+**`src/comadre/api.py` (112 lines):**
 - `verify_api_key(request, authorization)` — checks `Bearer <token>` against `settings.api_key.get_secret_value()` using `hmac.compare_digest()`. Raises `AuthenticationError`.
 - `verify_ready(request)` — checks `request.app.state.ready`. Raises `ServiceUnavailableError(retry_seconds=30)`.
 - `generate_speech(request, body)` — speech route handler. Uses `app.state.queue_lock`, `app.state.queue_depth`, `app.state.router.generate_speech()`.
 
-**`src/cumadre/exceptions.py` (150 lines):**
-- `cumadre_error_handler()` — returns JSON with `{"error": {"message", "type", "hint"}}`. Adds `Retry-After` header for `ServiceUnavailableError`.
+**`src/comadre/exceptions.py` (150 lines):**
+- `comadre_error_handler()` — returns JSON with `{"error": {"message", "type", "hint"}}`. Adds `Retry-After` header for `ServiceUnavailableError`.
 - Exception handlers are registered via `register_exception_handlers(app)` inside `create_app()`.
 
 ### Implementation Guidance
@@ -121,8 +121,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from cumadre.config import Settings
-from cumadre.main import create_app
+from comadre.config import Settings
+from comadre.main import create_app
 
 TEST_API_KEY = "test-key-12345"
 
@@ -203,9 +203,9 @@ The existing `test_routing.py` tests EngineRouter at the class level. AC4 requir
 
 These tests need deeper mocking since `generate_speech()` on the engines calls internal functions. Patch at module level:
 ```python
-@patch("cumadre.service._apply_vibrato_warm", return_value=b"processed")
-@patch("cumadre.service._concatenate_wavs", return_value=b"concat-wav")
-@patch("cumadre.service._samples_to_wav", return_value=b"wav-data")
+@patch("comadre.service._apply_vibrato_warm", return_value=b"processed")
+@patch("comadre.service._concatenate_wavs", return_value=b"concat-wav")
+@patch("comadre.service._samples_to_wav", return_value=b"wav-data")
 def test_kokoro_uses_vibrato_warm_pipeline(mock_wav, mock_concat, mock_vibrato, kokoro):
     kokoro._kokoro.create.return_value = (np.zeros(100), 24000)
     kokoro.generate_speech("test", "santa", "ogg")
@@ -285,9 +285,9 @@ All error responses follow this format (verified from exceptions.py):
 
 - New files go in `tests/` alongside existing test files
 - conftest.py fixtures are automatically available to all test files in the same directory
-- Import `create_app` from `cumadre.main` for app creation
-- Import `Settings` from `cumadre.config` for mock settings
-- Import exception types from `cumadre.exceptions` for mock side effects
+- Import `create_app` from `comadre.main` for app creation
+- Import `Settings` from `comadre.config` for mock settings
+- Import exception types from `comadre.exceptions` for mock side effects
 - Test file naming follows existing convention: `test_*.py`
 - Test class naming follows existing convention: `TestDescriptiveName`
 - Test function naming follows existing convention: `test_<subject>_<scenario>_<expectation>`
@@ -297,12 +297,12 @@ All error responses follow this format (verified from exceptions.py):
 - [Source: _bmad-output/planning-artifacts/epics.md — Story 1.10 acceptance criteria, lines 454-485]
 - [Source: _bmad-output/planning-artifacts/architecture.md — Test Organization table, lines 569-577]
 - [Source: _bmad-output/planning-artifacts/architecture.md — "Tests are proportional — no testing the framework", line 577]
-- [Source: src/cumadre/main.py — create_app() factory, health_endpoint inline route, validation_error_handler]
-- [Source: src/cumadre/api.py — verify_api_key, verify_ready, generate_speech route handler]
-- [Source: src/cumadre/exceptions.py — CumadreError hierarchy, cumadre_error_handler with Retry-After, register_exception_handlers]
-- [Source: src/cumadre/schemas.py — SpeechRequest model with per-engine char limits]
-- [Source: src/cumadre/config.py — Settings class, api_key is SecretStr with min_length=1]
-- [Source: src/cumadre/service.py — KokoroEngine uses normalize_text→chunk_text→_apply_vibrato_warm; QwenEngine uses expand_siglas→_apply_whatsapp_subtle]
+- [Source: src/comadre/main.py — create_app() factory, health_endpoint inline route, validation_error_handler]
+- [Source: src/comadre/api.py — verify_api_key, verify_ready, generate_speech route handler]
+- [Source: src/comadre/exceptions.py — ComadreError hierarchy, comadre_error_handler with Retry-After, register_exception_handlers]
+- [Source: src/comadre/schemas.py — SpeechRequest model with per-engine char limits]
+- [Source: src/comadre/config.py — Settings class, api_key is SecretStr with min_length=1]
+- [Source: src/comadre/service.py — KokoroEngine uses normalize_text→chunk_text→_apply_vibrato_warm; QwenEngine uses expand_siglas→_apply_whatsapp_subtle]
 - [Source: tests/conftest.py — existing marker registration (preserve)]
 - [Source: tests/test_health.py — existing 16 function-level tests (preserve)]
 - [Source: tests/test_routing.py — existing 18 EngineRouter tests (preserve)]
@@ -311,14 +311,14 @@ All error responses follow this format (verified from exceptions.py):
 ### Previous Story Intelligence
 
 **From Story 1.9 (Speech Endpoint):**
-- `create_app()` is the FastAPI factory — essential for test setup. Import from `cumadre.main`.
+- `create_app()` is the FastAPI factory — essential for test setup. Import from `comadre.main`.
 - Lifespan is 9-phase startup that loads real models. MUST be skipped in tests.
 - `app.state` attributes: `ready`, `queue_lock`, `queue_depth`, `start_time`, `settings`, `router`.
 - `hmac.compare_digest()` is used for timing-safe API key comparison — tests must provide exact match.
 - `validation_error_handler` converts 422 → 400. Tests that send malformed JSON should expect 400, not 422.
 - `verify_ready` is a dependency on the speech route, NOT on the health endpoint. Health works during warm-up.
 - `queue_depth` is incremented BEFORE lock acquisition (counts waiting + active), decremented in `finally`.
-- `Retry-After: 30` header is set on 503 responses by `cumadre_error_handler` for `ServiceUnavailableError`.
+- `Retry-After: 30` header is set on 503 responses by `comadre_error_handler` for `ServiceUnavailableError`.
 - Previous story noted: "Story 1.10 will import `create_app()` and override state for testing."
 
 **From Story 1.8 (Health Endpoint):**
@@ -327,7 +327,7 @@ All error responses follow this format (verified from exceptions.py):
 - Health endpoint is in `main.py`, NOT in `api.py` — different auth boundary.
 
 **From Story 1.7 (Exception Handling):**
-- `register_exception_handlers(app)` registers both `CumadreError` and `Exception` handlers.
+- `register_exception_handlers(app)` registers both `ComadreError` and `Exception` handlers.
 - `AuthenticationError` default message is "Invalid or missing API key", hint is hardcoded.
 - All handlers return `{"error": {"message", "type", "hint"}}` format.
 

@@ -10,7 +10,7 @@ so that `docker compose up` starts a properly configured, resource-limited servi
 
 ## Acceptance Criteria
 
-1. **Given** compose.yaml, **When** I run `docker compose up`, **Then** the tts-service starts with three named volumes: `cumadre-models:/models:rw`, `cumadre-voices:/voices:ro`, `cumadre-audio:/audio:rw`.
+1. **Given** compose.yaml, **When** I run `docker compose up`, **Then** the tts-service starts with three named volumes: `comadre-models:/models:rw`, `comadre-voices:/voices:ro`, `comadre-audio:/audio:rw`.
 
 2. **Given** compose.yaml environment variables, **When** I inspect the service definition, **Then** it defines `API_KEY` (from host env or .env), `DEFAULT_VOICE` (default: santa), `CLONE_REFERENCE_PATH` (path to clone reference WAV inside container), and `ESPEAK_DATA_PATH` (system espeak-ng data path). There is NO `WORKERS` env var — single-process architecture enforced.
 
@@ -22,7 +22,7 @@ so that `docker compose up` starts a properly configured, resource-limited servi
 
 6. **Given** the container is running with cached models, **When** I inspect outbound network traffic, **Then** zero outbound connections are made.
 
-7. **Given** the cumadre-audio volume, **When** TTS requests are processed, **Then** generated audio files are written to the audio volume (periodic cleanup configured by Ansible in Epic 3).
+7. **Given** the comadre-audio volume, **When** TTS requests are processed, **Then** generated audio files are written to the audio volume (periodic cleanup configured by Ansible in Epic 3).
 
 ## Tasks / Subtasks
 
@@ -91,7 +91,7 @@ Without this, the `:ro` volume mount at `/voices` will be owned by root. Since t
 
 ### Environment Variables — Complete List
 
-From `src/cumadre/config.py` Settings class, these are the env vars compose.yaml should define:
+From `src/comadre/config.py` Settings class, these are the env vars compose.yaml should define:
 
 | Variable | compose.yaml Value | Rationale |
 |---|---|---|
@@ -143,9 +143,9 @@ test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('ht
 
 | Volume | Mount | Mode | Contents |
 |---|---|---|---|
-| `cumadre-models` | `/models` | `rw` | Kokoro ONNX (~325 MB), voices (~27 MB), Qwen3 GGUF (~1.3 GB), tokenizer (~341 MB) |
-| `cumadre-voices` | `/voices` | `ro` | Operator-provisioned reference WAV files for voice cloning |
-| `cumadre-audio` | `/audio` | `rw` | Generated audio files (accumulate, cleaned by cron in Epic 3) |
+| `comadre-models` | `/models` | `rw` | Kokoro ONNX (~325 MB), voices (~27 MB), Qwen3 GGUF (~1.3 GB), tokenizer (~341 MB) |
+| `comadre-voices` | `/voices` | `ro` | Operator-provisioned reference WAV files for voice cloning |
+| `comadre-audio` | `/audio` | `rw` | Generated audio files (accumulate, cleaned by cron in Epic 3) |
 
 ### Resource Limits
 
@@ -174,9 +174,9 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     volumes:
-      - cumadre-models:/models:rw
-      - cumadre-voices:/voices:ro
-      - cumadre-audio:/audio:rw
+      - comadre-models:/models:rw
+      - comadre-voices:/voices:ro
+      - comadre-audio:/audio:rw
     environment:
       API_KEY: ${API_KEY}
       DEFAULT_VOICE: santa
@@ -204,9 +204,9 @@ services:
       start_period: 120s
 
 volumes:
-  cumadre-models:
-  cumadre-voices:
-  cumadre-audio:
+  comadre-models:
+  comadre-voices:
+  comadre-audio:
 ```
 
 ### Anti-Patterns to Avoid
@@ -223,7 +223,7 @@ volumes:
 
 Story 2.1 created the Dockerfile and entrypoint. Key learnings:
 - Non-root `appuser` is used — all volume mount points need `chown appuser:appuser`
-- Entrypoint uses `exec uvicorn cumadre.main:create_app --factory --host 0.0.0.0 --port "${PORT:-8000}"`
+- Entrypoint uses `exec uvicorn comadre.main:create_app --factory --host 0.0.0.0 --port "${PORT:-8000}"`
 - Build deps are cleaned up — image is production-ready
 - Model download uses urllib (no extra deps) — writes to `Path(model_path)` so absolute paths are critical
 - Noise WAVs baked in at `/app/noise/` — no volume needed for noise
@@ -258,8 +258,8 @@ Option 2 is preferred — zero image size impact, Python is already available.
 - [Source: _bmad-output/planning-artifacts/architecture.md — Resource limits, volume strategy (lines 878-882)]
 - [Source: _bmad-output/planning-artifacts/prd.md — FR17-FR21, FR27-FR28]
 - [Source: _bmad-output/implementation-artifacts/2-1-dockerfile-entrypoint.md — Dockerfile structure, review findings]
-- [Source: src/cumadre/config.py — Settings class with all env vars and defaults]
-- [Source: src/cumadre/download.py — Model download uses Path(model_path), confirms absolute path requirement]
+- [Source: src/comadre/config.py — Settings class with all env vars and defaults]
+- [Source: src/comadre/download.py — Model download uses Path(model_path), confirms absolute path requirement]
 - [Source: Dockerfile — Lines 77-79, /voices mount point missing]
 
 ## Dev Agent Record
@@ -296,13 +296,13 @@ Claude Opus 4.6 (1M context)
 
 - [x] [Review][Decision] CLONE_REFERENCE_PATH not defined in compose.yaml — resolved: added as YAML comment per user choice
 - [x] [Review][Patch] Entrypoint cannot find uvicorn — PATH not set for .venv [scripts/entrypoint.sh:4, Dockerfile] — fixed: added ENV PATH to Dockerfile
-- [x] [Review][Patch] No timeout on urlretrieve — download hangs indefinitely on network issues [src/cumadre/download.py:23] — fixed: replaced urlretrieve with urlopen(timeout=300) + shutil.copyfileobj
-- [x] [Review][Patch] ensure_kokoro_models skips individual download when OTHER URL is empty — OR guard should be per-file [src/cumadre/download.py:46] — fixed: extracted _ensure_file() for per-file URL check
-- [x] [Review][Defer] Download failure crashes startup with no retry or backoff [src/cumadre/main.py:49-60] — deferred, design trade-off for container workloads
-- [x] [Review][Defer] Empty cumadre-voices volume causes Qwen3 failure on first run [compose.yaml:10] — deferred, deployment concern (operator must pre-populate)
-- [x] [Review][Defer] No URL scheme validation on download URLs [src/cumadre/config.py:65-86] — deferred, operator-controlled config
+- [x] [Review][Patch] No timeout on urlretrieve — download hangs indefinitely on network issues [src/comadre/download.py:23] — fixed: replaced urlretrieve with urlopen(timeout=300) + shutil.copyfileobj
+- [x] [Review][Patch] ensure_kokoro_models skips individual download when OTHER URL is empty — OR guard should be per-file [src/comadre/download.py:46] — fixed: extracted _ensure_file() for per-file URL check
+- [x] [Review][Defer] Download failure crashes startup with no retry or backoff [src/comadre/main.py:49-60] — deferred, design trade-off for container workloads
+- [x] [Review][Defer] Empty comadre-voices volume causes Qwen3 failure on first run [compose.yaml:10] — deferred, deployment concern (operator must pre-populate)
+- [x] [Review][Defer] No URL scheme validation on download URLs [src/comadre/config.py:65-86] — deferred, operator-controlled config
 - [x] [Review][Defer] Dockerfile installs libsndfile1-dev instead of runtime libsndfile1 [Dockerfile:7] — deferred, pre-existing from Story 2.1
-- [x] [Review][Defer] Stale .tmp file with wrong ownership blocks subsequent downloads [src/cumadre/download.py:23-29] — deferred, unlikely edge case
+- [x] [Review][Defer] Stale .tmp file with wrong ownership blocks subsequent downloads [src/comadre/download.py:23-29] — deferred, unlikely edge case
 - [x] [Review][Defer] Healthcheck start_period may be insufficient for large downloads on slow connections [compose.yaml:35] — deferred, operator can tune
 - [x] [Review][Defer] Non-reproducible Docker build — espeak-ng cloned from unpinned master [Dockerfile:19] — deferred, pre-existing from Story 2.1
 - [x] [Review][Defer] Default voice set to Qwen3 bypasses schema char limit validation — deferred, pre-existing design issue

@@ -1,6 +1,6 @@
 # Local Testing Guide
 
-How to run CUMADRE end-to-end on your machine with all features working.
+How to run COMADRE end-to-end on your machine with all features working.
 
 ## Prerequisites
 
@@ -107,12 +107,12 @@ For the full conversion reference, see [quantizing-qwen3-models.md](quantizing-q
 
 ## Step 3: Load Qwen3 models into Docker volume
 
-The `models/` directory is not bind-mounted. Docker Compose uses a named volume (`cumadre-models`). Copy the models into it:
+The `models/` directory is not bind-mounted. Docker Compose uses a named volume (`comadre-models`). Copy the models into it:
 
 ```bash
-docker volume create cumadre-models
+docker volume create comadre-models
 docker run --rm \
-  -v cumadre-models:/models \
+  -v comadre-models:/models \
   -v "$(pwd)/models":/src:ro \
   alpine sh -c 'cp /src/qwen3-tts-0.6b-q8_0.gguf /src/qwen3-tts-tokenizer-f16.gguf /models/'
 ```
@@ -277,7 +277,7 @@ Common causes: network issue during Kokoro download, missing Qwen3 GGUF files, i
 Verify models are in the volume:
 
 ```bash
-docker run --rm -v cumadre-models:/models alpine ls -lh /models/
+docker run --rm -v comadre-models:/models alpine ls -lh /models/
 ```
 
 Expected: `qwen3-tts-0.6b-q8_0.gguf` (~1.3 GB) and `qwen3-tts-tokenizer-f16.gguf` (~326 MB).

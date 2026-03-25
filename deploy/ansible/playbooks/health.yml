@@ -1,14 +1,14 @@
 ---
-# CUMADRE Health Diagnostic Playbook
-# Read-only diagnostic tool for troubleshooting CUMADRE deployments:
+# COMADRE Health Diagnostic Playbook
+# Read-only diagnostic tool for troubleshooting COMADRE deployments:
 #   ansible-playbook playbooks/health.yml -i inventory/production.yml
 #
 # This playbook NEVER modifies anything. It checks container state, queries
 # the health endpoint, inspects disk usage and cron jobs, and reports warnings.
 # Entirely unprivileged — no become: true.
 
-- name: Diagnose CUMADRE TTS Service
-  hosts: cumadre_vps
+- name: Diagnose COMADRE TTS Service
+  hosts: comadre_vps
   gather_facts: false
 
   tasks:
@@ -16,20 +16,20 @@
     # Prerequisites
     # =========================================================================
 
-    - name: "[Prereq] Check CUMADRE directory exists"
+    - name: "[Prereq] Check COMADRE directory exists"
       ansible.builtin.stat:
-        path: "~/cumadre"
-      register: cumadre_dir
+        path: "~/comadre"
+      register: comadre_dir
 
-    - name: "[Prereq] Verify CUMADRE is deployed"
+    - name: "[Prereq] Verify COMADRE is deployed"
       ansible.builtin.assert:
         that:
-          - cumadre_dir.stat.exists
-          - cumadre_dir.stat.isdir
+          - comadre_dir.stat.exists
+          - comadre_dir.stat.isdir
         fail_msg: >-
-          ~/cumadre directory does not exist.
+          ~/comadre directory does not exist.
           Run bootstrap.yml first to deploy the service.
-        success_msg: "CUMADRE directory found."
+        success_msg: "COMADRE directory found."
 
     # =========================================================================
     # Container State
@@ -44,9 +44,9 @@
       when: not (tts_container.exists and (tts_container.container.State.Running | default(false)))
       ansible.builtin.debug:
         msg: >-
-          WARNING: CUMADRE container is not running.
-          Check logs with: cd ~/cumadre && docker compose logs
-          Restart with: cd ~/cumadre && docker compose up -d
+          WARNING: COMADRE container is not running.
+          Check logs with: cd ~/comadre && docker compose logs
+          Restart with: cd ~/comadre && docker compose up -d
 
     # =========================================================================
     # Health Endpoint
@@ -69,8 +69,8 @@
       ansible.builtin.debug:
         msg: >-
           WARNING: Memory usage is {{ health_check.json.memory_mb }} MB (threshold: 5 GB).
-          Consider restarting the container: cd ~/cumadre && docker compose restart
-          Verify daily restart cron is active: crontab -l | grep cumadre-daily-restart
+          Consider restarting the container: cd ~/comadre && docker compose restart
+          Verify daily restart cron is active: crontab -l | grep comadre-daily-restart
 
     - name: "[Health] Explain Qwen3 disabled status"
       when:
@@ -82,7 +82,7 @@
           INFO: Qwen3 engine is not loaded. Clone voice functionality is unavailable.
           This usually means the clone reference WAV is missing.
           Verify CLONE_REFERENCE configuration in .env and ensure the WAV file
-          exists in the cumadre-voices volume.
+          exists in the comadre-voices volume.
 
     # =========================================================================
     # Disk Usage
@@ -114,7 +114,7 @@
           WARNING: Root filesystem usage is
           {{ disk_usage.stdout | regex_search('([0-9]+%)', '\\1') | default(['unknown']) | first }}
           (threshold: 80%).
-          Verify audio cleanup cron is active: crontab -l | grep cumadre-audio-cleanup
+          Verify audio cleanup cron is active: crontab -l | grep comadre-audio-cleanup
           Expected: every 6h, deleting audio files older than 24h.
 
     # =========================================================================
@@ -143,17 +143,17 @@
         daily_restart_cron: >-
           {{ 'Active'
           if (crontab_check.stdout | default(''))
-          is search('cumadre-daily-restart')
+          is search('comadre-daily-restart')
           else 'NOT FOUND' }}
         audio_cleanup_cron: >-
           {{ 'Active'
           if (crontab_check.stdout | default(''))
-          is search('cumadre-audio-cleanup')
+          is search('comadre-audio-cleanup')
           else 'NOT FOUND' }}
       ansible.builtin.debug:
         msg: |
           ============================================
-          CUMADRE TTS Service — Health Diagnostic
+          COMADRE TTS Service — Health Diagnostic
           ============================================
 
           Container State: {{ 'Running' if (container_running | bool) else 'NOT RUNNING' }}

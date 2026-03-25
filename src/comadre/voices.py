@@ -4,7 +4,7 @@ import dataclasses
 import wave
 from pathlib import Path
 
-from cumadre.logging import get_logger
+from comadre.logging import get_logger
 
 MIN_VOICE_DURATION = 3.0
 MAX_VOICE_DURATION = 10.0

@@ -1,6 +1,6 @@
 """Tests for the pt-BR text preprocessing module."""
 
-from cumadre.preprocessing import (
+from comadre.preprocessing import (
     WORD_SIGLAS,
     chunk_text,
     expand_siglas,

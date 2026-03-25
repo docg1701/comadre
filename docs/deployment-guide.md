@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Full lifecycle management for CUMADRE TTS service using Ansible playbooks.
+Full lifecycle management for COMADRE TTS service using Ansible playbooks.
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ Full lifecycle management for CUMADRE TTS service using Ansible playbooks.
 - Ansible 2.14+ installed
 - `community.docker` Ansible collection installed
 - SSH access to the VPS
-- `CUMADRE_API_KEY` environment variable set
+- `COMADRE_API_KEY` environment variable set
 
 Install the required Ansible collection:
 
@@ -31,12 +31,12 @@ Edit `deploy/ansible/inventory/production.yml` with your server details:
 ```yaml
 all:
   hosts:
-    cumadre_vps:
+    comadre_vps:
       ansible_host: "YOUR_VPS_IP"
       ansible_user: "YOUR_SSH_USER"
 
   vars:
-    api_key_value: "{{ lookup('env', 'CUMADRE_API_KEY') }}"
+    api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
     clone_reference_wav: ""
     repo_url: "YOUR_REPO_URL"
     repo_branch: "master"
@@ -52,7 +52,7 @@ all:
 | --- | --- | --- |
 | `ansible_host` | Yes | VPS IP address |
 | `ansible_user` | Yes | SSH user with key-based auth |
-| `api_key_value` | Yes | API authentication key (reads from `CUMADRE_API_KEY` env var) |
+| `api_key_value` | Yes | API authentication key (reads from `COMADRE_API_KEY` env var) |
 | `repo_url` | Yes | Git repository URL |
 | `repo_branch` | No | Branch to deploy (default: `master`) |
 | `port` | No | Service port (default: `8000`) |
@@ -63,7 +63,7 @@ all:
 
 ## Bootstrap -- First Deployment
 
-Deploys CUMADRE on a clean Ubuntu VPS with a single command.
+Deploys COMADRE on a clean Ubuntu VPS with a single command.
 
 **What it does:**
 
@@ -71,7 +71,7 @@ Deploys CUMADRE on a clean Ubuntu VPS with a single command.
 2. Validates that `API_KEY` and `repo_url` are configured
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
-5. Clones the repository to `~/cumadre`
+5. Clones the repository to `~/comadre`
 6. Deploys clone reference WAV to voices volume (if configured)
 7. Creates `.env` with API_KEY, DEFAULT_VOICE, and PORT
 8. Builds the Docker image and starts the service
@@ -82,7 +82,7 @@ Deploys CUMADRE on a clean Ubuntu VPS with a single command.
 
 ```bash
 cd deploy/ansible
-export CUMADRE_API_KEY="your-secret-key-here"
+export COMADRE_API_KEY="your-secret-key-here"
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 ```
 
@@ -91,7 +91,7 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 ```text
 TASK [[Summary] Report deployment status]
 ============================================
-CUMADRE TTS Service -- Bootstrap Complete
+COMADRE TTS Service -- Bootstrap Complete
 ============================================
 
 Service Status:  healthy
@@ -114,11 +114,11 @@ The playbook is idempotent -- safe to run multiple times.
 
 ## Update -- Deploy New Version
 
-Updates a running CUMADRE deployment from the latest git commit.
+Updates a running COMADRE deployment from the latest git commit.
 
 **What it does:**
 
-1. Verifies `~/cumadre` exists and the service is running
+1. Verifies `~/comadre` exists and the service is running
 2. Pulls latest changes from git
 3. Rebuilds the Docker image and restarts the service
 4. Waits for the health endpoint to report `healthy`
@@ -139,10 +139,10 @@ ansible-playbook playbooks/update.yml -i inventory/production.yml
 
 **If the health check fails after update**, the playbook prints recovery steps:
 
-1. Check logs: `docker compose -f ~/cumadre/compose.yaml logs --tail=50`
-2. Check status: `docker compose -f ~/cumadre/compose.yaml ps`
-3. Try restart: `docker compose -f ~/cumadre/compose.yaml restart`
-4. Roll back: `cd ~/cumadre && git log --oneline -5` then `git checkout <previous-commit> && docker compose up -d --build`
+1. Check logs: `docker compose -f ~/comadre/compose.yaml logs --tail=50`
+2. Check status: `docker compose -f ~/comadre/compose.yaml ps`
+3. Try restart: `docker compose -f ~/comadre/compose.yaml restart`
+4. Roll back: `cd ~/comadre && git log --oneline -5` then `git checkout <previous-commit> && docker compose up -d --build`
 
 ## Health -- Diagnostic Report
 
@@ -170,13 +170,13 @@ ansible-playbook playbooks/health.yml -i inventory/production.yml
 
 ## Cleanup -- Full Decommission
 
-Removes all CUMADRE artifacts from the VPS. This is irreversible.
+Removes all COMADRE artifacts from the VPS. This is irreversible.
 
 **What it removes:**
 
 - Docker containers, images, and volumes (models, voices, audio)
 - Cron jobs (daily-restart, audio-cleanup)
-- `~/cumadre` directory
+- `~/comadre` directory
 
 **Run:**
 
@@ -185,7 +185,7 @@ cd deploy/ansible
 ansible-playbook playbooks/cleanup.yml -i inventory/production.yml
 ```
 
-After cleanup, the VPS has zero CUMADRE artifacts. To redeploy, run `bootstrap.yml` again.
+After cleanup, the VPS has zero COMADRE artifacts. To redeploy, run `bootstrap.yml` again.
 
 ## Model Deployment
 
@@ -211,12 +211,12 @@ cd deploy/ansible
 ansible-playbook playbooks/deploy-models.yml -i inventory/production.yml
 ```
 
-The playbook copies files to a staging directory on the VPS, then deploys them into the `cumadre-models` Docker volume using a temporary helper container. Staging files are cleaned up automatically.
+The playbook copies files to a staging directory on the VPS, then deploys them into the `comadre-models` Docker volume using a temporary helper container. Staging files are cleaned up automatically.
 
 After deployment, restart the service to load the new models:
 
 ```bash
-ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/cumadre && docker compose restart"
+ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose restart"
 ```
 
 **Alternative: auto-download.** If you set `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` in `.env`, the application downloads models automatically on first start. This is slower but requires no manual file transfer.
@@ -245,13 +245,13 @@ Voice cloning uses Qwen3-TTS with a pre-configured reference WAV file. The refer
 
     ```bash
     # SSH into VPS and edit .env
-    echo 'CLONE_REFERENCE_PATH=/voices/reference-voice.wav' >> ~/cumadre/.env
+    echo 'CLONE_REFERENCE_PATH=/voices/reference-voice.wav' >> ~/comadre/.env
     ```
 
 4. Restart the service:
 
     ```bash
-    ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/cumadre && docker compose restart"
+    ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose restart"
     ```
 
 **Seed reproducibility:** Qwen3-TTS supports seed values for consistent voice characteristics across generations. The same seed + reference WAV produces similar voice quality.
@@ -266,11 +266,11 @@ The bootstrap playbook configures a user-level crontab entry that restarts the s
 
 **Cron entries installed by bootstrap:**
 
-- `cumadre-daily-restart` -- restarts at the configured hour
-- `cumadre-audio-cleanup` -- every 6 hours, deletes audio files older than 24 hours
+- `comadre-daily-restart` -- restarts at the configured hour
+- `comadre-audio-cleanup` -- every 6 hours, deletes audio files older than 24 hours
 
 Verify cron is active:
 
 ```bash
-ssh YOUR_SSH_USER@YOUR_VPS_IP "crontab -l | grep cumadre"
+ssh YOUR_SSH_USER@YOUR_VPS_IP "crontab -l | grep comadre"
 ```

@@ -24,7 +24,7 @@ so that I can monitor the service and diagnose issues without SSH-ing into the V
 
 ## Tasks / Subtasks
 
-- [x] Task 1: Create `src/cumadre/health.py` — health response assembler module (AC: #1, #2, #4, #5)
+- [x] Task 1: Create `src/comadre/health.py` — health response assembler module (AC: #1, #2, #4, #5)
   - [x] 1.1 Define `HealthStatus` enum: `healthy`, `warming_up`, `degraded`
   - [x] 1.2 Implement `build_health_response(router, ready, start_time)` that aggregates runtime state into a dict with fixed field order
   - [x] 1.3 Implement `_get_memory_mb()` helper using `resource.getrusage` (stdlib — no new dependency)
@@ -45,20 +45,20 @@ so that I can monitor the service and diagnose issues without SSH-ing into the V
 
 ### What Already Exists (DO NOT recreate)
 
-**`src/cumadre/service.py`** — EngineRouter already provides everything health needs:
+**`src/comadre/service.py`** — EngineRouter already provides everything health needs:
 - `EngineRouter.engine_status()` → returns `{"kokoro": {"loaded": bool, "voices": [...]}, "qwen3": {"loaded": bool, "clone_configured": bool, "voices": [...]}}`
 - `EngineRouter.available_voices()` → returns sorted combined voice list from both engines
 - `EngineRouter._qwen.is_clone_configured` → bool for clone reference WAV status
 
-**`src/cumadre/__init__.py`** — `__version__ = "0.1.0"` — use this for the version field.
+**`src/comadre/__init__.py`** — `__version__ = "0.1.0"` — use this for the version field.
 
-**`src/cumadre/exceptions.py`** — `ServiceUnavailableError` (503) already exists. Health module does NOT raise exceptions — it returns dicts. The 503 status code for warming_up is set directly on the JSONResponse.
+**`src/comadre/exceptions.py`** — `ServiceUnavailableError` (503) already exists. Health module does NOT raise exceptions — it returns dicts. The 503 status code for warming_up is set directly on the JSONResponse.
 
-**`src/cumadre/logging.py`** — `get_logger("health")` for the component logger.
+**`src/comadre/logging.py`** — `get_logger("health")` for the component logger.
 
 ### What This Story Creates
 
-1. **New file `src/cumadre/health.py`** — Health response assembler. Pure data aggregation, no HTTP decorators, no FastAPI imports.
+1. **New file `src/comadre/health.py`** — Health response assembler. Pure data aggregation, no HTTP decorators, no FastAPI imports.
 2. **New file `tests/test_health.py`** — Unit tests with mocked EngineRouter.
 
 ### What This Story Does NOT Create
@@ -75,7 +75,7 @@ so that I can monitor the service and diagnose issues without SSH-ing into the V
 The module is a pure state assembler. It receives dependencies as parameters (no global state, no singletons). This makes testing trivial and follows the same dependency-injection pattern used in service.py.
 
 ```python
-"""Health response assembler for CUMADRE."""
+"""Health response assembler for COMADRE."""
 
 from __future__ import annotations
 
@@ -83,8 +83,8 @@ import resource
 import time
 from enum import StrEnum
 
-from cumadre import __version__
-from cumadre.logging import get_logger
+from comadre import __version__
+from comadre.logging import get_logger
 
 logger = get_logger("health")
 
@@ -127,7 +127,7 @@ The dict must be constructed with keys in this exact insertion order:
     "clone_configured": False,        # from engine_status()["qwen3"]["clone_configured"]
     "uptime_seconds": 1234,           # int(time.monotonic() - start_time)
     "memory_mb": 512,                 # _get_memory_mb()
-    "version": "0.1.0"               # from cumadre.__version__
+    "version": "0.1.0"               # from comadre.__version__
 }
 ```
 
@@ -200,7 +200,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cumadre.health import HealthStatus, build_health_response
+from comadre.health import HealthStatus, build_health_response
 
 
 @pytest.fixture()
@@ -221,7 +221,7 @@ def mock_router() -> MagicMock:
 3. **Voices always array:** Mock `available_voices()` returning `[]` → voices field is `[]`, not None
 4. **Engines field structure:** Verify kokoro and qwen3 sub-objects from `engine_status()`
 5. **Clone configured:** Extract from engines.qwen3.clone_configured
-6. **Version field:** Verify matches `cumadre.__version__`
+6. **Version field:** Verify matches `comadre.__version__`
 7. **Uptime:** Pass `start_time = time.monotonic() - 100` → uptime_seconds >= 100
 8. **Memory:** Patch `resource.getrusage` → verify memory_mb is positive int
 9. **Queue depth default:** No queue_depth passed → defaults to 0
@@ -230,7 +230,7 @@ def mock_router() -> MagicMock:
 
 **Testing memory:** Mock `resource.getrusage` to return a known value:
 ```python
-@patch("cumadre.health.resource")
+@patch("comadre.health.resource")
 def test_memory_mb(mock_resource, mock_router):
     mock_resource.getrusage.return_value.ru_maxrss = 512_000  # 512 MB in KB
     mock_resource.RUSAGE_SELF = 0
@@ -240,9 +240,9 @@ def test_memory_mb(mock_resource, mock_router):
 
 ### Project Structure Notes
 
-- `health.py` is a NEW file at `src/cumadre/health.py` — matches architecture spec
+- `health.py` is a NEW file at `src/comadre/health.py` — matches architecture spec
 - `test_health.py` is a NEW file at `tests/test_health.py` — matches architecture spec
-- Import graph position: `health.py` imports from `cumadre.__init__` (version), `cumadre.logging` (logger). It receives `EngineRouter` as a parameter but does NOT import it (uses duck typing / Protocol or runtime type).
+- Import graph position: `health.py` imports from `comadre.__init__` (version), `comadre.logging` (logger). It receives `EngineRouter` as a parameter but does NOT import it (uses duck typing / Protocol or runtime type).
 - For mypy strict compliance: use `TYPE_CHECKING` guard if you need the `EngineRouter` type hint, or accept a protocol/duck-typed parameter
 
 ### References
@@ -253,9 +253,9 @@ def test_memory_mb(mock_resource, mock_router):
 - [Source: _bmad-output/planning-artifacts/architecture.md — Data Flow: GET /health → health.py aggregate → JSON 200/503]
 - [Source: _bmad-output/planning-artifacts/architecture.md — Decision D4: FastAPI lifespan + health endpoint gating]
 - [Source: _bmad-output/planning-artifacts/ux-design-specification.md — UX-DR2: Health Response Assembler spec]
-- [Source: src/cumadre/service.py — EngineRouter.engine_status() at line 739, available_voices() at line 735]
-- [Source: src/cumadre/__init__.py — __version__ = "0.1.0"]
-- [Source: src/cumadre/exceptions.py — ServiceUnavailableError class at line 95]
+- [Source: src/comadre/service.py — EngineRouter.engine_status() at line 739, available_voices() at line 735]
+- [Source: src/comadre/__init__.py — __version__ = "0.1.0"]
+- [Source: src/comadre/exceptions.py — ServiceUnavailableError class at line 95]
 
 ### Previous Story Intelligence
 
@@ -290,7 +290,7 @@ None — clean implementation, no issues encountered.
 
 ### Completion Notes List
 
-- Implemented `src/cumadre/health.py` as a pure state assembler module with no HTTP/FastAPI concerns
+- Implemented `src/comadre/health.py` as a pure state assembler module with no HTTP/FastAPI concerns
 - `HealthStatus` StrEnum with `healthy`, `warming_up`, `degraded` values
 - `build_health_response()` returns `(dict, int)` tuple with contractual field order
 - `_get_memory_mb()` uses stdlib `resource.getrusage` (no psutil dependency)
@@ -307,5 +307,5 @@ None — clean implementation, no issues encountered.
 
 ### File List
 
-- `src/cumadre/health.py` (NEW) — Health response assembler module
+- `src/comadre/health.py` (NEW) — Health response assembler module
 - `tests/test_health.py` (NEW) — 22 unit tests for health module

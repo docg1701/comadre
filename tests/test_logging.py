@@ -6,7 +6,7 @@ from io import StringIO
 
 import pytest
 
-from cumadre.logging import PipeFormatter, get_logger, setup_logging
+from comadre.logging import PipeFormatter, get_logger, setup_logging
 
 ISO8601_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[")

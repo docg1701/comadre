@@ -26,7 +26,7 @@ so that I know which voices are available and get clear warnings about invalid f
 
 ## Tasks / Subtasks
 
-- [x] Task 1: Create `src/cumadre/voices.py` (AC: #1-#6)
+- [x] Task 1: Create `src/comadre/voices.py` (AC: #1-#6)
   - [x] 1.1: Define `VoiceInfo` frozen dataclass with `name: str`, `path: Path`, `duration_seconds: float`
   - [x] 1.2: Define constants `MIN_VOICE_DURATION = 3.0` and `MAX_VOICE_DURATION = 10.0`
   - [x] 1.3: Implement `_validate_wav(file_path: Path) -> VoiceInfo | None` — opens with `wave` stdlib, calculates duration from frames/framerate, returns `VoiceInfo` if valid or `None` if invalid (logs reason)
@@ -79,7 +79,7 @@ import dataclasses
 import wave
 from pathlib import Path
 
-from cumadre.logging import get_logger
+from comadre.logging import get_logger
 
 MIN_VOICE_DURATION = 3.0
 MAX_VOICE_DURATION = 10.0
@@ -166,7 +166,7 @@ Since we use a custom `PipeFormatter`, capture output from the `voice` logger. U
 ### Previous Story Intelligence
 
 **From Story 1.2 (done):**
-- `get_logger("voice")` from `cumadre.logging` provides the structured pipe-delimited logger with component tag `voice`
+- `get_logger("voice")` from `comadre.logging` provides the structured pipe-delimited logger with component tag `voice`
 - Logger output format: `timestamp | level | component | message` with fixed-width levels
 - `WARN ` (not `WARNING`) is the correct level name in log output
 - Logger has `propagate = False` set — for test assertions, either add a test handler or set propagate temporarily
@@ -187,22 +187,22 @@ Since we use a custom `PipeFormatter`, capture output from the `voice` logger. U
 
 **Files to create in this story:**
 ```
-src/cumadre/voices.py     (new)
+src/comadre/voices.py     (new)
 tests/test_voices.py      (new)
 ```
 
 **Files NOT to create or modify:**
-- `src/cumadre/config.py` — no changes needed (no VOICES_DIR setting)
-- `src/cumadre/logging.py` — already complete from Story 1.2
-- `src/cumadre/exceptions.py` — belongs to Story 1.5
-- `src/cumadre/main.py` — belongs to Story 1.7
-- `src/cumadre/service.py` — belongs to Story 1.4
-- `src/cumadre/health.py` — belongs to Story 1.6
+- `src/comadre/config.py` — no changes needed (no VOICES_DIR setting)
+- `src/comadre/logging.py` — already complete from Story 1.2
+- `src/comadre/exceptions.py` — belongs to Story 1.5
+- `src/comadre/main.py` — belongs to Story 1.7
+- `src/comadre/service.py` — belongs to Story 1.4
+- `src/comadre/health.py` — belongs to Story 1.6
 - `pyproject.toml` — no new dependencies needed (`wave` and `pathlib` are stdlib)
 
 **Existing files for reference (do not modify):**
-- `src/cumadre/config.py` — Settings class with `default_voice: str` field (the voice name, not directory)
-- `src/cumadre/logging.py` — `get_logger(component)` returns pipe-formatted logger
+- `src/comadre/config.py` — Settings class with `default_voice: str` field (the voice name, not directory)
+- `src/comadre/logging.py` — `get_logger(component)` returns pipe-formatted logger
 
 ### References
 
@@ -228,7 +228,7 @@ None — clean implementation with no blockers.
 
 ### Completion Notes List
 
-- Implemented `src/cumadre/voices.py` with VoiceInfo frozen dataclass, MIN/MAX duration constants, `_validate_wav()`, `discover_voices()`, and `list_voice_names()` functions
+- Implemented `src/comadre/voices.py` with VoiceInfo frozen dataclass, MIN/MAX duration constants, `_validate_wav()`, `discover_voices()`, and `list_voice_names()` functions
 - Used `wave` stdlib only (no soundfile dependency) for WAV header reading
 - `discover_voices()` takes a `Path` parameter (no env var access, no state storage)
 - All log messages use plain ASCII via `get_logger("voice")` with pipe-delimited format
@@ -243,5 +243,5 @@ None — clean implementation with no blockers.
 
 ### File List
 
-- `src/cumadre/voices.py` (new) — Voice discovery and validation module
+- `src/comadre/voices.py` (new) — Voice discovery and validation module
 - `tests/test_voices.py` (new) — 16 tests for voice module

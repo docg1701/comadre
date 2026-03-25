@@ -12,8 +12,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from cumadre.config import Settings, get_settings
-from cumadre.main import create_app
+from comadre.config import Settings, get_settings
+from comadre.main import create_app
 
 TEST_API_KEY = "test-key-12345"
 

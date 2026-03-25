@@ -37,7 +37,7 @@ sudo apt-get install cmake g++ make git
 
 ## Step-by-Step Build
 
-All steps run from the project root (`~/cumadre` or wherever the repo is cloned).
+All steps run from the project root (`~/comadre` or wherever the repo is cloned).
 
 ### 1. Clone the upstream source INSIDE the project
 

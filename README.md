@@ -1,7 +1,7 @@
-# CUMADRE
+# COMADRE
 
 <p align="center">
-  <img src="assets/logo-cumadre.webp" alt="CUMADRE Logo">
+  <img src="assets/logo-comadre.webp" alt="COMADRE Logo">
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
-**Cumadre Manda Audio Direto, Rapido e Eficiente**
+**Comadre Manda Audio Direto, Rapido e Eficiente**
 
 Self-hosted dual-engine TTS API for automated customer service in Brazilian Portuguese. Kokoro fp32 for fast built-in voices with perfect sigla pronunciation. Qwen3-TTS C++ Q8_0 for voice cloning. Integrates with n8n workflows to deliver voice messages on WhatsApp, Telegram, Instagram, and Messenger.
 
@@ -21,8 +21,8 @@ Self-hosted dual-engine TTS API for automated customer service in Brazilian Port
 
 ```bash
 # Clone and configure
-git clone git@github.com:docg1701/cumadre.git
-cd cumadre
+git clone git@github.com:docg1701/comadre.git
+cd comadre
 cp .env.example .env   # Set API_KEY
 
 # Build and run
@@ -52,7 +52,7 @@ n8n transcribes (Groq Whisper) + generates response (LLM)
     |
 POST /v1/audio/speech  { "input": "...", "voice": "santa" }
     |
-CUMADRE routes to engine --> preprocesses --> generates --> post-processes
+COMADRE routes to engine --> preprocesses --> generates --> post-processes
     |
 OGG Opus voice note sent back to customer
 ```
