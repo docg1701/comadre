@@ -283,6 +283,7 @@ All Qwen3 voices use x-vector cloning from reference WAV files. The 0.6B-Base mo
 |---|---|---|---|
 | `qwen-female` | `voices/female-reference.wav` | LibriVox pt-BR — Leni (Contos Brasileiros, track 02) | Public domain |
 | `qwen-male` | `voices/male-reference.wav` | LibriVox pt-BR — Lucas M. (Contos Brasileiros, track 04) | Public domain |
+| `clone` (galvani) | `voices/audio-galvani-01.wav` | Original recording — Galvani (project owner) | Private / owner consent |
 
 ### Custom clone reference (operator-provided at deploy time)
 
