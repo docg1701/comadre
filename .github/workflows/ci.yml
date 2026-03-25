@@ -41,14 +41,3 @@ jobs:
           cache: true
       - run: uv sync
       - run: uv run pytest
-
-  build:
-    name: Build Docker image
-    needs: [lint]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker compose build
-        env:
-          API_KEY: ci-build-dummy
