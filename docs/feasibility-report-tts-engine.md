@@ -40,6 +40,7 @@ Comprehensive feasibility testing across **10+ engine configurations**, **400+ a
 ## Testing Timeline
 
 ### Day 1: Engine evaluation
+
 - KokoClone model corrupted — REJECTED
 - Kanade voice conversion broken on CPU (FlashAttention required) — REJECTED
 - **Kokoro-onnx fp32 + pm_santa**: excellent diction, RTF 1.1x — CONFIRMED
@@ -49,6 +50,7 @@ Comprehensive feasibility testing across **10+ engine configurations**, **400+ a
 - Chatterbox Multilingual: best quality but sigla-broken
 
 ### Day 2: Deep Chatterbox testing
+
 - Chatterbox ONNX FP32: RTF 1.8x with TokenLoopDetector — fast but siglas broken
 - Chatterbox ONNX Q4: garbage for Portuguese — REJECTED
 - Chatterbox INT8: quality loss — REJECTED
@@ -57,6 +59,7 @@ Comprehensive feasibility testing across **10+ engine configurations**, **400+ a
 - **Chatterbox demoted due to unfixable sigla pronunciation**
 
 ### Day 3: Qwen3-TTS C++ & post-processing
+
 - **qwen3-tts.cpp** built from source with custom seed patch
 - Q8_0 quantization: 9% faster, 28% less RAM, quality ≈ F16
 - Sigla spaced format discovered: `C N P J` instead of `CNPJ`
@@ -165,6 +168,7 @@ ffmpeg -y -i _final.wav -c:a libopus -b:a 24k -ar 16000 -ac 1 output.ogg
 ### Qwen3 C++ seed patch
 
 Patch file saved at `docs/qwen3-tts-cpp-seed-patch.diff`. Apply with:
+
 ```bash
 cd qwen3-tts.cpp && git apply path/to/qwen3-tts-cpp-seed-patch.diff && cmake --build build -j4
 ```
@@ -223,7 +227,7 @@ The default voice (no reference audio) produces **better pt-BR accent** than the
 
 ## Production Architecture
 
-```
+```text
 Request arrives
     │
     ├── Has voice cloning reference?
@@ -255,6 +259,7 @@ Request arrives
 ## Key Discoveries
 
 ### 1. espeak-ng pt_extra dictionary (Kokoro sigla breakthrough)
+
 - Custom `pt_extra` file with 67 entries makes Kokoro pronounce ALL siglas perfectly
 - Uses `$abbrev` flag for spelled siglas (INSS, CPF, CNPJ) and custom phonemes for word-siglas (SUS, PIX, DETRAN)
 - Must compile from `dictsource/` directory using `--compile=pt`
@@ -262,12 +267,14 @@ Request arrives
 - See `docs/espeak-ng-custom-dictionary.md` for full details
 
 ### 2. Post-processing pipelines
+
 - **Kokoro**: vibrato_warm (micro-vibrato 4.5Hz + warmth + exciter + saturation + noise calibrated at 0.45/0.24)
 - **Qwen3**: whatsapp-subtle (EQ + compression + reverb + speed 1.15x + noise at 0.15/0.08)
 - Noise levels must be calibrated per engine (Kokoro needs 3x more noise than Qwen3 due to higher RMS)
 - Best overall effect: `whatsapp-subtle` for both, with `vibrato_warm` adding humanization to Kokoro
 
 ### 3. Qwen3-TTS C++ seed reproducibility
+
 - Custom patch adds `--seed` parameter for deterministic output
 - Same seed + same text = identical audio (verified with md5sum)
 - Some seeds produce bad output for specific phrases (e.g., seed 42 fails on STF)

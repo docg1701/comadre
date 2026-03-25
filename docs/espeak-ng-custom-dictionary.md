@@ -12,7 +12,7 @@ The `pt_extra` file is compiled LAST (after `pt_list`) and its entries take prec
 
 ## Compilation Order (from source code)
 
-```
+```text
 1. pt_roots     (if exists)
 2. pt_list      (main dictionary — PR #2344 improvements)
 3. pt_listx     (extensions, if exists)
@@ -24,7 +24,7 @@ The `pt_extra` file is compiled LAST (after `pt_list`) and its entries take prec
 
 ### File format
 
-```
+```text
 // Comments start with //
 WORD    $abbrev              ← spell out letter by letter
 WORD    phoneme_string       ← custom pronunciation
@@ -40,6 +40,7 @@ WORD    phoneme_string       ← custom pronunciation
 ### Phoneme notation (pt-BR)
 
 Key phonemes for Brazilian Portuguese:
+
 - Vowels: `a` (aberto), `E` (é), `i`, `O` (ó), `u`
 - Nasalized: `&~` (ã), `e~` (en), `i~` (in)
 - Stress: `'` (primary), `,` (secondary)
@@ -47,7 +48,7 @@ Key phonemes for Brazilian Portuguese:
 
 ## Current pt_extra Content
 
-```
+```text
 // ============================================================
 // SIGLAS SOLETRADAS ($abbrev — each letter pronounced individually)
 // ============================================================
@@ -141,6 +142,7 @@ wifi    wajf'aj    // Wireless Fidelity
 ## How to Recompile
 
 ### Prerequisites
+
 - espeak-ng source code cloned at `/tmp/espeak-ng/`
 - espeak-ng already built with cmake (build dir at `/tmp/espeak-ng/build/`)
 
@@ -181,6 +183,7 @@ RUN cd /tmp/espeak-ng/dictsource && \
 ## Testing
 
 Test all siglas with:
+
 ```bash
 for sigla in CPF CNPJ RG CNH STF STJ TRT TRF BPC CLT FGTS SUS PIX DETRAN ENEM SAMU; do
     ph=$(ESPEAK_DATA_PATH=/tmp/espeak-ng-install/share/espeak-ng-data \
@@ -217,7 +220,7 @@ done
 
 **Discovery:** The `misaki` library (used by Kokoro) uses `espeakng_loader` which bundles its own `pt_dict`. The `ESPEAK_DATA_PATH` environment variable is **IGNORED** by misaki. It always reads from:
 
-```
+```text
 .venv/lib/python3.12/site-packages/espeakng_loader/espeak-ng-data/pt_dict
 ```
 

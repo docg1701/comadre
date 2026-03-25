@@ -31,7 +31,7 @@ repos:
     rev: v0.17.2
     hooks:
       - id: markdownlint-cli2
-        exclude: ^(_bmad-output/|_bmad/|docs/|\.claude/)
+        exclude: ^(_bmad-output/|_bmad/|\.claude/)
 
   # Local hooks (use project venv for full dependency access)
   - repo: local

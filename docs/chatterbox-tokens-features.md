@@ -37,7 +37,7 @@ Supported: ar, da, de, el, en, es, fi, fr, he, hi, it, ja, ko, ms, nl, no, pl, *
 
 ### Paralinguistic Tags (Turbo model ONLY — NOT available in Multilingual)
 
-```
+```text
 [clear throat] [sigh] [shush] [cough] [groan]
 [sniff] [gasp] [chuckle] [laugh]
 ```
@@ -56,7 +56,7 @@ These are recognized by the Turbo model's GPT2 tokenizer. They do NOT work in th
 
 ### punc_norm() — Applied to ALL input text
 
-```
+```text
 1. Capitalize first letter
 2. Collapse multiple spaces
 3. Replace: ... → ,  : → ,  ; → ,  — → -  " → "  ' → '

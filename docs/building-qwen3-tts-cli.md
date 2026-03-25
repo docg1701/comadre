@@ -69,6 +69,7 @@ cd ../..
 ```
 
 This produces static archives in `ggml/build/src/`:
+
 - `libggml.a`
 - `libggml-base.a`
 - `libggml-cpu.a`
@@ -92,6 +93,7 @@ git apply ../../docs/qwen3-tts-cpp-seed-patch.diff
 3. **`src/qwen3_tts.h`** — Adds `int64_t seed = -1;` field to the `tts_params` struct (after `language_id`). Default -1 means random.
 
 4. **`src/qwen3_tts.cpp`** — In `synthesize_internal()`, after `transformer_.clear_kv_cache()` and before the `speech_codes` generation, adds:
+
    ```cpp
    if (params.seed >= 0) {
        transformer_.seed_rng(params.seed);
@@ -99,12 +101,15 @@ git apply ../../docs/qwen3-tts-cpp-seed-patch.diff
    ```
 
 5. **`src/tts_transformer.h`** — Adds a public method to the `TTSTransformer` class (after `get_error()`):
+
    ```cpp
    void seed_rng(int64_t seed) { rng_.seed(static_cast<uint32_t>(seed)); }
    ```
+
    This works because the class has a private `std::mt19937 rng_` member.
 
 After manual application, regenerate the patch:
+
 ```bash
 git diff > ../../docs/qwen3-tts-cpp-seed-patch.diff
 ```
@@ -143,7 +148,8 @@ ldd deploy/bin/qwen3-tts-cli
 ```
 
 Expected `ldd` output — only standard system libraries:
-```
+
+```text
 libgomp.so.1    (OpenMP runtime)
 libstdc++.so.6  (C++ standard library)
 libm.so.6       (math library)

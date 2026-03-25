@@ -160,6 +160,7 @@ For each subagent definition, verify:
 ### The Challenge
 
 Checkpoint prompts are loaded mid-conversation via the READ tool. By the time Claude reads them, the context window already contains:
+
 - The full CLAUDE.md (~12KB)
 - The pipeline-supervisor.md (~42KB, if loaded)
 - All prior conversation history
@@ -172,6 +173,7 @@ This means checkpoint prompts compete with potentially **100KB+ of existing cont
 **Put critical rules at the TOP and BOTTOM of the file** — research shows LLMs recall information better from the beginning and end of documents ("primacy and recency effects"). Rules buried in the middle are most likely to be ignored.
 
 **Use clear section hierarchy:**
+
 ```markdown
 ## CRITICAL RULES (read first)
 [The 3-5 most important rules that MUST NOT be violated]
@@ -344,6 +346,7 @@ This works because the system prompt says "These instructions OVERRIDE any defau
 **Strategy 2: Subagent Isolation**
 
 Subagents do NOT receive the full Claude Code system prompt. They only receive their own markdown body. This means subagents are NOT subject to:
+
 - "Be extra concise"
 - "Avoid over-engineering"
 - "Keep solutions simple"
@@ -357,6 +360,7 @@ For the most critical schema compliance, use PostToolUse hooks to validate JSON 
 **Strategy 4: Reduce Orchestrator Burden**
 
 Move as much generation work as possible to subagents (which have clean context) and reduce the orchestrator's role to:
+
 1. Reading state
 2. Running commands
 3. Spawning subagents
@@ -372,24 +376,28 @@ The less the orchestrator generates complex structured output, the fewer opportu
 Use this checklist to evaluate each of the 24 pipeline instruction files:
 
 ### A. Signal-to-Noise Ratio
+
 - [ ] Every line serves a purpose — no filler, no obvious instructions
 - [ ] No duplicated content across files
 - [ ] No information that Claude can derive from reading code
 - [ ] Total line count is proportional to the task complexity
 
 ### B. Structure and Readability
+
 - [ ] Critical rules are at the TOP and BOTTOM (not buried in the middle)
 - [ ] Clear section hierarchy with headers
 - [ ] Output schemas are placed NEAR the output instruction (not 300 lines away)
 - [ ] XML tags or markdown headers separate instructions from context from examples
 
 ### C. Schema Compliance
+
 - [ ] Every JSON output has a complete literal example (not just field names)
 - [ ] Required fields are explicitly listed
 - [ ] Self-verification instructions are provided
 - [ ] Value constraints (character counts, word counts, array lengths) are stated with the schema
 
 ### D. Instruction Quality
+
 - [ ] Instructions say what TO DO (not just what NOT to do)
 - [ ] Critical instructions include rationale (WHY)
 - [ ] 3-5 examples are provided for complex outputs
@@ -397,12 +405,14 @@ Use this checklist to evaluate each of the 24 pipeline instruction files:
 - [ ] No vague meta-instructions ("follow the protocol exactly") — specific rules instead
 
 ### E. Context Efficiency
+
 - [ ] File doesn't repeat rules from CLAUDE.md
 - [ ] File doesn't include background information that's already in the conversation
 - [ ] Progressive disclosure is used where possible (@imports, external references)
 - [ ] Total file size is proportional to the value it provides
 
 ### F. Conflict Awareness
+
 - [ ] No instructions that contradict the system prompt without providing rationale
 - [ ] No instructions that contradict other instruction files
 - [ ] Subagent definitions are self-contained (don't rely on external files being loaded)
@@ -415,6 +425,7 @@ Use this checklist to evaluate each of the 24 pipeline instruction files:
 Based on the research, here is the optimal instruction architecture for a complex pipeline like youtube-guru:
 
 ### Layer 1: CLAUDE.md (< 200 lines)
+
 - Identity and role (5 lines)
 - Pipeline overview with phase names only (10 lines)
 - Command reference table (20 lines)
@@ -425,24 +436,28 @@ Based on the research, here is the optimal instruction architecture for a comple
 - Data completeness override with rationale (5 lines)
 
 ### Layer 2: Pipeline Supervisor (loaded once per session, < 300 lines)
+
 - State management protocol
 - Step-by-step workflow (commands only, not detailed rules)
 - Edge case handling
 - Communication guidelines
 
 ### Layer 3: Checkpoint Prompts (loaded on demand, < 200 lines each)
+
 - Task-specific instructions only
 - Output schema with complete example
 - Self-verification checklist
 - NO repeated general rules from CLAUDE.md
 
 ### Layer 4: Subagent Definitions (isolated context)
+
 - Self-contained system prompts
 - Complete schema in the markdown body
 - Preloaded skills for any protocols they need to follow
 - Minimal tool access
 
 ### Enforcement Layer: Hooks (deterministic)
+
 - PostToolUse validation scripts for critical JSON schemas
 - PreToolUse guards for dangerous operations
 

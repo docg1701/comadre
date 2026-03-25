@@ -7,7 +7,7 @@
 
 Qwen3-TTS is an end-to-end TTS model. No separate text normalization or phoneme conversion stage.
 
-```
+```text
 Text → Qwen2Tokenizer (BPE) → Input IDs
                                     ↓
                         Text Embeddings + Codec Embeddings
@@ -65,6 +65,7 @@ Skips reasoning. The model guesses pronunciation without internal normalization.
 ## qwen3-tts.cpp Configuration
 
 The C++ implementation correctly implements THINK mode:
+
 - `-l pt` → sets `language_id = 2071` → activates THINK mode
 - Without `-l` → `language_id = -1` → NOTHINK mode (bad)
 - Token IDs loaded from GGUF metadata, defaults match model config
@@ -179,7 +180,7 @@ The C++ implementation uses `std::mt19937` for sampling randomness. By default i
 
 ### Verified: same seed = identical output
 
-```
+```bash
 $ ./qwen3-tts-cli ... --seed 42 -o run1.wav
 $ ./qwen3-tts-cli ... --seed 42 -o run2.wav
 $ md5sum run1.wav run2.wav
@@ -221,8 +222,9 @@ Using this as reference audio for cloning may improve sigla consistency across a
 Goal: make synthetic audio sound like a real WhatsApp voice message recorded on a phone.
 
 **Pipeline stages:**
+
 1. High-pass 100Hz (remove rumble)
-2. EQ: +1.5dB@200Hz (warmth), -2dB@700Hz (reduce boxiness), +3dB@3kHz (presence), -4dB@7kHz (reduce synthetic artifacts)
+2. EQ: `+1.5dB@200Hz` (warmth), `-2dB@700Hz` (reduce boxiness), `+3dB@3kHz` (presence), `-4dB@7kHz` (reduce synthetic artifacts)
 3. Compression: threshold 0.15, ratio 6:1, attack 15ms, release 200ms, makeup 5dB
 4. Low-pass 8kHz
 5. Room echo: aecho 0.8:0.85:40:0.12 (subtle office reflections)
@@ -273,9 +275,10 @@ processed.wav
 ```
 
 What it does:
+
 - **vibrato f=4.5 d=0.06** — micro pitch variation at 4.5Hz, 6% depth (humanizes)
 - **bass=g=3** — warmth boost
-- **EQ** — +1.5dB@200Hz (body), -2dB@700Hz (no boxiness), +2dB@2.5kHz (presence), -2dB@6kHz (no sibilance)
+- **EQ** — `+1.5dB@200Hz` (body), `-2dB@700Hz` (no boxiness), `+2dB@2.5kHz` (presence), `-2dB@6kHz` (no sibilance)
 - **aexciter** — subtle harmonic richness at 4.5kHz
 - **asoftclip=tanh** — analog warmth/saturation
 - **acompressor** — consistent dynamics
@@ -327,6 +330,7 @@ ffmpeg -y -i _final.wav -c:a libopus -b:a 24k -ar 16000 -ac 1 output.ogg
 ### Problem
 
 The model sometimes:
+
 1. Generates seconds of silence before/after the actual speech
 2. Enters infinite generation — fills all `max_tokens` (4096 = 5.5 min of silence)
 3. Produces noise artifacts in the silent tail

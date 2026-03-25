@@ -53,11 +53,13 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 #### Preprocessing (automatic, not configurable)
 
 **Kokoro path:**
+
 - `normalize_text()`: numbers, currency (R$), dates (dd/mm/yyyy), times (HH:MM) → pt-BR words
 - `chunk_text()`: split at sentence boundaries, max 200 tokens per chunk
 - Siglas handled natively by espeak-ng custom `pt_extra` dictionary (67 entries)
 
 **Qwen3 path:**
+
 - `expand_siglas()`: CNPJ → `C N P J`, INSS → `I N S S` (spaced format for spelled siglas)
 - Word acronyms kept as-is: SUS, PIX, PIS, LOAS, CEP, DETRAN, ENEM, SAMU, ANVISA
 - Siglas must be embedded between normal words (never start sentence with spelled sigla)
@@ -65,7 +67,8 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 #### Post-processing (`enhance=true`)
 
 **Kokoro pipeline (vibrato_warm):**
-```
+
+```text
 vibrato(4.5Hz, 6%) → highpass(80Hz) → bass(+3dB) →
 EQ(+1.5dB@200Hz, -2dB@700Hz, +2dB@2.5kHz, -2dB@6kHz) →
 exciter(4.5kHz, drive=3.5) → softclip(tanh) →
@@ -75,7 +78,8 @@ loudnorm(-17 LUFS) → OGG Opus 24kbps 16kHz mono
 ```
 
 **Qwen3 pipeline (whatsapp-subtle):**
-```
+
+```text
 highpass(100Hz) → EQ(+1.5dB@200Hz, -2dB@700Hz, +3dB@3kHz, -4dB@7kHz) →
 compressor(6:1) → lowpass(8kHz) → echo(40ms, 0.12) →
 atempo(1.15x) → loudnorm(-18 LUFS) →
@@ -87,7 +91,7 @@ OGG Opus 24kbps 16kHz mono
 
 #### Response
 
-```
+```text
 HTTP 200
 Content-Type: audio/ogg (or audio/wav)
 Body: [audio bytes]
@@ -118,7 +122,7 @@ Body: [audio bytes]
 
 ### Authentication
 
-```
+```text
 Authorization: Bearer <API_KEY>
 ```
 
@@ -162,6 +166,7 @@ async def speech(request: SpeechRequest):
 Requests don't arrive simultaneously — they're spread across time because WhatsApp conversations have natural pauses (user reading, typing, thinking). Each conversation generates ~1 request every 30-60 seconds.
 
 **Example: 15 conversations with Kokoro**
+
 - Average request arrival: 1 every 2-4 seconds
 - Kokoro processes 1 every 5.5 seconds
 - Queue depth oscillates between 0-3 (rarely peaks above 4)
@@ -169,6 +174,7 @@ Requests don't arrive simultaneously — they're spread across time because What
 - Burst scenario (rare): 5+ simultaneous → 27s max wait
 
 **Example: 8 conversations with Qwen3**
+
 - Average request arrival: 1 every 4-7 seconds
 - Qwen3 processes 1 every 12.5 seconds
 - Queue depth oscillates between 0-2
@@ -191,7 +197,7 @@ When a single instance isn't enough, add more VPS instances behind Caddy.
 
 ### Architecture
 
-```
+```text
 n8n (any server)
     │
     │ POST /v1/audio/speech
@@ -231,7 +237,7 @@ Each instance is independent — own model loaded, own queue, own processing. No
 
 When a cumadre instance times out, the n8n workflow handles failover — not the load balancer. This gives the workflow control over retry logic and alerting.
 
-```
+```text
 n8n workflow:
     │
     ├── HTTP Request to cumadre primary (timeout: 120s)
@@ -247,12 +253,14 @@ n8n workflow:
 ```
 
 **Why n8n-side failover (not Caddy):**
+
 - n8n can alert the sysop about overload
 - n8n can fall back to text message if both instances fail
 - n8n controls retry logic per conversation context
 - Caddy round-robin doesn't know about queue depth or overload
 
 **n8n timeout configuration:**
+
 - Primary request: 120 seconds (enough for ~20 in queue with Kokoro)
 - Backup request: 120 seconds
 - Total worst case: 240 seconds (within n8n's 300s workflow timeout)
