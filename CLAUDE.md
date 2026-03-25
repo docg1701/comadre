@@ -45,7 +45,8 @@ uv run pre-commit run --all-files  # All quality checks
 - `src/cumadre/` — application code (config, logging, voices, preprocessing, service, exceptions)
 - `tests/` — pytest suite (mocked, no real models)
 - `deploy/espeak-ng/pt_extra` — custom sigla dictionary for espeak-ng
-- `docs/` — technical research docs (feasibility report, engine internals, dictionary docs)
+- `docs/` — technical research docs (feasibility report, engine internals, dictionary docs, **qwen3-tts-cli build guide**, **qwen3 model quantization guide**)
+- `deploy/bin/qwen3-tts-cli` — pre-built Qwen3 C++ binary (see `docs/building-qwen3-tts-cli.md` to rebuild)
 - `_bmad-output/` — planning artifacts (PRD, architecture, epics, stories, sprint status)
 
 ## Non-Obvious Gotchas
@@ -55,3 +56,6 @@ uv run pre-commit run --all-files  # All quality checks
 - **Qwen3 4-core sweet spot** — beyond 4 CPU cores, diminishing returns (1.5% gain at 6 cores). GGML uses all threads per request.
 - **Noise calibration differs per engine** — Kokoro needs 3x more room/hiss noise than Qwen3 (RMS 0.063 vs 0.016).
 - **kokoclone dependency is legacy** — still in pyproject.toml but REJECTED. Will be replaced by kokoro-onnx in Story 1.4.
+- **qwen3-tts-cli build is non-trivial** — requires building ggml submodule first, patching OpenMP linking, and applying the seed patch. Full procedure in `docs/building-qwen3-tts-cli.md`.
+- **Qwen3 Q8_0 model must be converted locally** — no pre-built Q8_0 exists. Neither `llama-quantize` nor `gpt-2-quantize` supports the `qwen3-tts` architecture. Must convert from HuggingFace safetensors using upstream script (needs CPU-only PyTorch in a temp venv). Full procedure in `docs/quantizing-qwen3-models.md`.
+- **Models deploy to VPS via SSH, not git** — GGUF files (~1.6 GB) are too large for git. Copy via SCP + helper container into Docker volume. Ansible does NOT automate this yet.

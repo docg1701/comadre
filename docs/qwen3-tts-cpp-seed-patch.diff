@@ -1,3 +1,21 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ea06922..05c1155 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -183,9 +183,13 @@ target_link_libraries(qwen3tts_shared PRIVATE
+ add_executable(qwen3-tts-cli
+     src/main.cpp
+ )
++find_package(OpenMP)
+ target_link_libraries(qwen3-tts-cli PRIVATE
+     qwen3_tts
+ )
++if(OpenMP_CXX_FOUND)
++    target_link_libraries(qwen3-tts-cli PRIVATE OpenMP::OpenMP_CXX)
++endif()
+ 
+ # Test executable for tokenizer
+ add_executable(test_tokenizer
 diff --git a/src/main.cpp b/src/main.cpp
 index b609099..879ba2a 100644
 --- a/src/main.cpp
@@ -31,7 +49,7 @@ index c2f3434..7a6ff72 100644
          }
      }
      transformer_.clear_kv_cache();
--
+-    
 +
 +    // Seed RNG for reproducibility
 +    if (params.seed >= 0) {
@@ -48,26 +66,25 @@ index 623a272..e0286db 100644
 @@ -41,6 +41,9 @@ struct tts_params {
      // Language ID for codec (2050=en, 2069=ru, 2055=zh, 2058=ja, 2064=ko, 2053=de, 2061=fr, 2054=es)
      int32_t language_id = 2050;
-
+ 
 +    // Random seed (-1 = random device)
 +    int64_t seed = -1;
 +
  };
-
+ 
  // TTS generation result
 diff --git a/src/tts_transformer.h b/src/tts_transformer.h
-index 3b228da..077b244 100644
+index 3b228da..2933f29 100644
 --- a/src/tts_transformer.h
 +++ b/src/tts_transformer.h
-@@ -267,8 +267,10 @@ public:
-                   int32_t top_k = 50);
-
+@@ -269,7 +269,9 @@ public:
      const tts_transformer_config & get_config() const { return model_.config; }
--
-+
+     
      const std::string & get_error() const { return error_msg_; }
+-    
 +
 +    void seed_rng(int64_t seed) { rng_.seed(static_cast<uint32_t>(seed)); }
-
++
      // Legacy interface for compatibility
      bool forward(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
+                  std::vector<float> & output);

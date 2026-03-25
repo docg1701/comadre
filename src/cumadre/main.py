@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from cumadre import __version__
 from cumadre.api import api_router
 from cumadre.config import get_settings
+from cumadre.download import ensure_kokoro_models, ensure_qwen3_models
 from cumadre.exceptions import register_exception_handlers
 from cumadre.health import build_health_response
 from cumadre.logging import get_logger, setup_logging
@@ -42,6 +43,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Phase 2: Configure structured logging
     setup_logging()
     logger.info("Structured logging configured")
+
+    # Phase 2.5: Ensure models are downloaded
+    logger.info("Checking model files...")
+    ensure_kokoro_models(
+        model_path=settings.kokoro_model_path,
+        voices_path=settings.kokoro_voices_path,
+        model_url=settings.kokoro_model_url,
+        voices_url=settings.kokoro_voices_url,
+    )
+    ensure_qwen3_models(
+        model_path=settings.qwen3_model_path,
+        tokenizer_path=settings.qwen3_tokenizer_path,
+        model_url=settings.qwen3_model_url,
+        tokenizer_url=settings.qwen3_tokenizer_url,
+    )
+    logger.info("Model check complete")
+
+    # Phase 2.7: Verify noise directory
+    noise_path = Path(settings.noise_dir)
+    if not noise_path.is_dir():
+        logger.warning("Noise directory not found: %s", settings.noise_dir)
+    else:
+        logger.info("Noise directory found: %s", settings.noise_dir)
 
     # Phase 3: Verify espeak-ng pt_extra data
     logger.info("Verifying espeak-ng pt_extra dictionary...")

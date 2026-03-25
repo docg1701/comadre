@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -66,6 +67,22 @@ class TestSpeechSuccess:
         mock_router.generate_speech.assert_called_once()
         call_kwargs = mock_router.generate_speech.call_args
         assert call_kwargs.kwargs["voice_name"] == "santa"
+
+    async def test_noise_dir_passed_to_router(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        mock_router: MagicMock,
+    ) -> None:
+        response = await client.post(
+            "/v1/audio/speech",
+            json={"input": "Hello world", "voice": "santa"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        mock_router.generate_speech.assert_called_once()
+        call_kwargs = mock_router.generate_speech.call_args
+        assert call_kwargs.kwargs["noise_dir"] == Path("/app/noise")
 
 
 class TestSpeechAuth:

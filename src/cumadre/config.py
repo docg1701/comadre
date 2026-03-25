@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     api_key: SecretStr = Field(min_length=1)
     default_voice: str = "santa"
-    workers: int = Field(default=1, ge=1)
     port: int = Field(default=8000, ge=1, le=65535)
     espeak_data_path: str | None = Field(
         default=None,
@@ -53,10 +52,37 @@ class Settings(BaseSettings):
         default="voices/male-reference.wav",
         description="Path to bundled male reference WAV for Qwen3",
     )
+    noise_dir: str = Field(
+        default="/app/noise",
+        min_length=1,
+        description="Directory containing room/hiss noise WAV files",
+    )
     qwen3_threads: int = Field(
         default=4,
         ge=1,
         description="Number of CPU threads for Qwen3 inference",
+    )
+    kokoro_model_url: str = Field(
+        default=(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+            "model-files-v1.0/kokoro-v1.0.onnx"
+        ),
+        description="URL to download Kokoro ONNX model",
+    )
+    kokoro_voices_url: str = Field(
+        default=(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+            "model-files-v1.0/voices-v1.0.bin"
+        ),
+        description="URL to download Kokoro voices binary",
+    )
+    qwen3_model_url: str = Field(
+        default="",
+        description="URL to download Qwen3 GGUF model (empty = skip auto-download)",
+    )
+    qwen3_tokenizer_url: str = Field(
+        default="",
+        description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
     )
 
 

@@ -650,12 +650,14 @@ class QwenEngine:
         max_tokens: int = 100,
     ) -> list[str]:
         """Build the qwen3-tts-cli command arguments."""
+        assert self._model_path is not None
+        model_dir = str(Path(self._model_path).parent)
         cmd = [
             str(self._cli_path),
             "-m",
-            str(self._model_path),
+            model_dir,
             "-t",
-            str(self._tokenizer_path),
+            text,
             "-l",
             "pt",
             "--temperature",
@@ -674,7 +676,7 @@ class QwenEngine:
         ref_path = self._voice_references.get(voice_name)
         if ref_path is not None:
             cmd.extend(["-r", ref_path])
-        cmd.extend(["-o", output_path, "--", text])
+        cmd.extend(["-o", output_path])
         return cmd
 
 

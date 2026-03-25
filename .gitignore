@@ -52,6 +52,7 @@ Thumbs.db
 *.ogg
 *.mp3
 !voices/**/*.wav
+!noise/**/*.wav
 
 # Model cache
 models/

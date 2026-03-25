@@ -1,0 +1,24 @@
+all:
+  hosts:
+    cumadre_vps:
+      # VPS connection — set these to your server's IP and SSH user
+      ansible_host: "CHANGE_ME"
+      ansible_user: "CHANGE_ME"
+
+  vars:
+    # API authentication key — reads from CUMADRE_API_KEY env var, falls back to 'changeme'
+    api_key_value: "{{ lookup('env', 'CUMADRE_API_KEY') | default('changeme', true) }}"
+
+    # Optional: local path to a clone reference WAV file for Qwen3 voice cloning
+    # Leave empty to skip clone WAV deployment
+    clone_reference_wav: ""
+
+    # Git repository URL and branch to clone on the VPS
+    repo_url: "CHANGE_ME"
+    repo_branch: "master"
+
+    # Service port — must match compose.yaml PORT env var
+    port: 8000
+
+    # Daily restart hour (0-23) — safety net for potential memory leaks
+    restart_hour: 3

@@ -895,8 +895,8 @@ class TestQwenSubprocessInvocation:
         qwen_engine.generate_speech("Seu CNPJ é válido", "qwen-female", "ogg")
 
         cmd = mock_run.call_args[0][0]
-        # Last argument is the text, should have expanded CNPJ
-        assert cmd[-1] == "Seu C N P J é válido"
+        t_idx = cmd.index("-t")
+        assert cmd[t_idx + 1] == "Seu C N P J é válido"
 
     @patch("cumadre.service._apply_whatsapp_subtle")
     @patch("cumadre.service.subprocess.run")
@@ -940,16 +940,16 @@ class TestQwenSubprocessInvocation:
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "/usr/local/bin/qwen3-tts-cli"
         m_idx = cmd.index("-m")
-        assert cmd[m_idx + 1] == "models/qwen3-tts-0.6b-q8_0.gguf"
+        assert cmd[m_idx + 1] == "models"
         t_idx = cmd.index("-t")
-        assert cmd[t_idx + 1] == "models/qwen3-tts-tokenizer-f16.gguf"
+        assert cmd[t_idx + 1] == "Olá"
         assert "-o" in cmd
 
     @patch("cumadre.service._apply_whatsapp_subtle")
     @patch("cumadre.service.subprocess.run")
     @patch("cumadre.service.Path.read_bytes")
     @patch("cumadre.service.Path.unlink")
-    def test_double_dash_separator_before_text(
+    def test_text_passed_via_t_flag(
         self,
         _mock_unlink: MagicMock,
         mock_read: MagicMock,
@@ -964,10 +964,9 @@ class TestQwenSubprocessInvocation:
         qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
 
         cmd = mock_run.call_args[0][0]
-        assert "--" in cmd
-        dd_idx = cmd.index("--")
-        assert cmd[dd_idx + 1] == "Olá"
-        assert cmd[-1] == "Olá"
+        t_idx = cmd.index("-t")
+        assert cmd[t_idx + 1] == "Olá"
+        assert "--" not in cmd
 
     @patch("cumadre.service._apply_whatsapp_subtle")
     @patch("cumadre.service.subprocess.run")

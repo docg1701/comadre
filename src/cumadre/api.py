@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 
@@ -79,6 +80,7 @@ async def generate_speech(
                         text=body.input,
                         voice_name=voice,
                         response_format=body.response_format.value,
+                        noise_dir=Path(settings.noise_dir),
                     ),
                     timeout=120.0,
                 )

@@ -18,14 +18,12 @@ class TestSettings:
     def test_loads_from_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key-123")
         monkeypatch.setenv("DEFAULT_VOICE", "alloy")
-        monkeypatch.setenv("WORKERS", "4")
         monkeypatch.setenv("PORT", "9000")
 
         settings = Settings()
 
         assert settings.api_key.get_secret_value() == "test-key-123"
         assert settings.default_voice == "alloy"
-        assert settings.workers == 4
         assert settings.port == 9000
 
     def test_missing_api_key_raises_validation_error(
@@ -43,7 +41,6 @@ class TestSettings:
         settings = Settings()
 
         assert settings.default_voice == "santa"
-        assert settings.workers == 1
         assert settings.port == 8000
 
     def test_case_insensitive_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,18 +62,6 @@ class TestSettings:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("API_KEY", "")
-        with pytest.raises(ValidationError):
-            Settings()
-
-    def test_workers_rejects_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("WORKERS", "0")
-        with pytest.raises(ValidationError):
-            Settings()
-
-    def test_workers_rejects_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("WORKERS", "-1")
         with pytest.raises(ValidationError):
             Settings()
 
@@ -193,6 +178,23 @@ class TestSettings:
         settings = Settings()
         assert settings.qwen3_threads == 8
 
+    def test_noise_dir_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.noise_dir == "/app/noise"
+
+    def test_noise_dir_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("NOISE_DIR", "/custom/noise")
+        settings = Settings()
+        assert settings.noise_dir == "/custom/noise"
+
+    def test_noise_dir_rejects_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("NOISE_DIR", "")
+        with pytest.raises(ValidationError):
+            Settings()
+
     def test_qwen3_threads_rejects_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key")
         monkeypatch.setenv("QWEN3_THREADS", "0")
@@ -228,6 +230,30 @@ class TestSettings:
         monkeypatch.setenv("QWEN3_MALE_REFERENCE_PATH", "/custom/m.wav")
         settings = Settings()
         assert settings.qwen3_male_reference_path == "/custom/m.wav"
+
+    def test_kokoro_model_url_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert "kokoro-v1.0.onnx" in settings.kokoro_model_url
+
+    def test_kokoro_model_url_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KOKORO_MODEL_URL", "https://custom/model.onnx")
+        settings = Settings()
+        assert settings.kokoro_model_url == "https://custom/model.onnx"
+
+    def test_qwen3_model_url_default_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_model_url == ""
+
+    def test_qwen3_model_url_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_MODEL_URL", "https://hf.co/model.gguf")
+        settings = Settings()
+        assert settings.qwen3_model_url == "https://hf.co/model.gguf"
 
 
 class TestGetSettings:
