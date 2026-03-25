@@ -1,5 +1,5 @@
 # generated: 2026-03-21
-# last_updated: 2026-03-24 (story 3.1 done)
+# last_updated: 2026-03-25 (story 3.2 done)
 # project: cumadre
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # Renumbered 2026-03-23: 1.4a→1.5, 1.4b→1.6, old 1.5→1.7, 1.6→1.8, 1.7→1.9, 1.8→1.10.
 
 generated: 2026-03-21
-last_updated: 2026-03-24 (story 3.1 done)
+last_updated: 2026-03-25 (story 4.3 done)
 project: cumadre
 project_key: NOKEY
 tracking_system: file-system
@@ -71,12 +71,13 @@ development_status:
   # Epic 3: Deployment & Lifecycle Operations
   epic-3: in-progress
   3-1-ansible-project-structure-bootstrap-playbook: done
-  3-2-update-playbook: backlog
-  3-3-health-cleanup-playbooks: backlog
+  3-2-update-playbook: done
+  3-3-health-cleanup-playbooks: done
   epic-3-retrospective: optional
 
   # Epic 4: CI/CD Pipeline & Documentation
-  epic-4: backlog
-  4-1-github-actions-ci-pipeline: backlog
-  4-2-project-documentation: backlog
+  epic-4: in-progress
+  4-1-github-actions-ci-pipeline: done
+  4-2-hardening-deferred-fixes: done
+  4-3-project-documentation: done
   epic-4-retrospective: optional

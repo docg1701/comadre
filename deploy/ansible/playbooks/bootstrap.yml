@@ -34,11 +34,10 @@
     - name: "[Prereq] Validate API key is configured"
       ansible.builtin.assert:
         that:
-          - api_key_value != 'changeme'
+          - api_key_value | length > 0
         fail_msg: >-
-          API key is still set to the default 'changeme'.
-          Set the CUMADRE_API_KEY environment variable before running the playbook,
-          or override api_key_value in inventory.
+          CUMADRE_API_KEY environment variable is not set or is empty.
+          Set it before running the playbook: export CUMADRE_API_KEY="your-secret-key"
         success_msg: "API key is configured."
 
     - name: "[Prereq] Validate repository URL is configured"
@@ -149,7 +148,7 @@
         - name: "[Assets] Copy clone WAV into voices volume"
           community.docker.docker_container_copy_into:
             container: cumadre-volume-helper
-            path: "~/cumadre/deploy/staging/{{ clone_reference_wav | basename }}"
+            path: "{{ ansible_env.HOME }}/cumadre/deploy/staging/{{ clone_reference_wav | basename }}"
             container_path: "/voices/{{ clone_reference_wav | basename }}"
             owner_id: 0
             group_id: 0

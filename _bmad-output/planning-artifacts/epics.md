@@ -705,7 +705,31 @@ So that code quality, type safety, tests, and Docker build are validated before 
 **When** it builds the image
 **Then** the build succeeds despite the complexity of espeak-ng from source compilation, dual-engine binary assets, and pt_extra dictionary compilation
 
-### Story 4.2: Project Documentation
+### Story 4.2: Hardening & Deferred Fixes
+
+As a **developer and operator**,
+I want all deferred code review findings resolved before documentation is written,
+So that the documentation accurately reflects the final production behavior.
+
+**Acceptance Criteria:**
+
+**Given** compose.yaml volume definitions
+**When** Docker Compose v2 creates volumes
+**Then** each volume has an explicit `name:` preventing project-prefix mismatch with Ansible playbooks
+
+**Given** the CI workflow
+**When** jobs run
+**Then** uv and pre-commit caches are enabled, job timeouts are set, and espeak-ng is pinned to a commit SHA
+
+**Given** download.py, Dockerfile, and compose.yaml
+**When** the application runs in production
+**Then** cross-filesystem renames use shutil.move, libstdc++ is preserved, downloads are non-blocking with progress logging, URL configs are validated, and env var references are consistent
+
+**Given** Ansible playbooks
+**When** they run on the remote host
+**Then** path expansion works correctly and deploy failures produce actionable output
+
+### Story 4.3: Project Documentation
 
 As a **DevOps operator**,
 I want comprehensive documentation covering API reference, deployment, configuration, and troubleshooting,

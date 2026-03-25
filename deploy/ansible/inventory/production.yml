@@ -6,8 +6,9 @@ all:
       ansible_user: "CHANGE_ME"
 
   vars:
-    # API authentication key — reads from CUMADRE_API_KEY env var, falls back to 'changeme'
-    api_key_value: "{{ lookup('env', 'CUMADRE_API_KEY') | default('changeme', true) }}"
+    # API authentication key — reads from CUMADRE_API_KEY env var (required)
+    # Set it before running any playbook: export CUMADRE_API_KEY="your-secret-key"
+    api_key_value: "{{ lookup('env', 'CUMADRE_API_KEY') }}"
 
     # Optional: local path to a clone reference WAV file for Qwen3 voice cloning
     # Leave empty to skip clone WAV deployment
@@ -20,5 +21,11 @@ all:
     # Service port — must match compose.yaml PORT env var
     port: 8000
 
-    # Daily restart hour (0-23) — safety net for potential memory leaks
+    # Daily restart hour (0-23) — precaution against potential memory leaks
     restart_hour: 3
+
+    # Optional: local paths to pre-converted Qwen3 GGUF model files
+    # See docs/quantizing-qwen3-models.md for conversion procedure
+    # Leave empty to rely on auto-download via download URLs (slower first startup)
+    qwen3_model_local: ""
+    qwen3_tokenizer_local: ""
