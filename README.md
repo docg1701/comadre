@@ -15,7 +15,7 @@
 
 **Comadre Manda Audio Direto, Rapido e Eficiente**
 
-Self-hosted dual-engine TTS API for automated customer service in Brazilian Portuguese. Kokoro fp32 for fast built-in voices with perfect sigla pronunciation. Qwen3-TTS C++ Q8_0 for voice cloning. Integrates with n8n workflows to deliver voice messages on WhatsApp, Telegram, Instagram, and Messenger.
+Self-hosted dual-engine TTS API optimized for Brazilian Portuguese. Kokoro fp32 for fast built-in voices with perfect sigla pronunciation. Qwen3-TTS C++ Q8_0 for voice cloning. OpenAI-compatible endpoint, CPU-only, network-isolated.
 
 ## Quick Start
 
@@ -43,18 +43,20 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output test_clone.ogg
 ```
 
-## How it works
+## How It Works
 
 ```text
-Customer sends message (WhatsApp/Telegram/Instagram)
-    |
-n8n transcribes (Groq Whisper) + generates response (LLM)
-    |
 POST /v1/audio/speech  { "input": "...", "voice": "santa" }
     |
-COMADRE routes to engine --> preprocesses --> generates --> post-processes
+Route to engine by voice name
     |
-OGG Opus voice note sent back to customer
+Preprocess text (normalize, chunk, expand siglas)
+    |
+Generate speech (Kokoro ONNX or Qwen3 C++ binary)
+    |
+Post-process audio (EQ, compression, echo, noise mixing)
+    |
+Return OGG Opus or WAV
 ```
 
 ## Dual-Engine Architecture
@@ -72,32 +74,23 @@ Each engine has its own:
 
 - **Preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
 - **Post-processing**: Kokoro uses vibrato_warm (vibrato, EQ, exciter, compression, echo, noise). Qwen3 uses whatsapp-subtle (EQ, compression, atempo 1.15x, echo, noise).
-- **Output**: OGG Opus 24kbps 16kHz mono (WhatsApp/Telegram/Messenger) or AAC M4A (Instagram).
+- **Output**: OGG Opus 24kbps 16kHz mono (default) or WAV.
 
 ## Key Features
 
 - **Perfect sigla pronunciation** via custom espeak-ng pt_extra dictionary (CPF, CNPJ, FGTS, SUS, LOAS... 67 entries, 34/34 verified)
 - **Voice cloning** via Qwen3-TTS with pre-configured reference audio and seed reproducibility
-- **OpenAI-compatible API** (`POST /v1/audio/speech`) -- drop-in n8n integration
+- **OpenAI-compatible API** (`POST /v1/audio/speech`) -- works with any HTTP client or workflow tool
 - **Network-isolated** -- zero external API calls after deployment
 - **CPU-only** -- runs on a 4 vCPU / 8 GB RAM VPS or any PC
-- **n8n-side failover** -- alerting, text fallback, retry logic managed by workflow
+- **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally for concurrency
 
 ## Requirements
 
 - 4 vCPUs, 8 GB RAM (VPS or bare metal)
-- ~2 GB disk for models (auto-downloaded on first run)
+- ~2 GB disk for models (Kokoro auto-downloads; Qwen3 requires manual setup -- see [deployment guide](docs/deployment-guide.md))
 - Docker and Docker Compose v2
-- Optional: 5-10 second WAV recording for voice cloning (Qwen3 path)
-
-## Platform Compatibility
-
-| Platform | Format | Voice Note UX |
-|----------|--------|---------------|
-| WhatsApp | OGG Opus (default) | Yes (waveform) |
-| Telegram | OGG Opus (default) | Yes (waveform) |
-| Messenger | OGG Opus (default) | Audio player |
-| Instagram | AAC M4A (`destination: instagram`) | Audio player |
+- Optional: 5-10 second WAV recording for voice cloning (Qwen3 engine)
 
 ## Deployment
 
