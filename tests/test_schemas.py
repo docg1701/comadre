@@ -18,12 +18,12 @@ class TestSpeechRequestDefaults:
     def test_valid_with_all_fields(self) -> None:
         req = SpeechRequest(
             input="Test",
-            voice="santa",
+            voice="kokoro/pm_santa",
             response_format="wav",
             speed=2.0,
             destination="telegram",
         )
-        assert req.voice == "santa"
+        assert req.voice == "kokoro/pm_santa"
         assert req.response_format == ResponseFormat.wav
         assert req.speed == 2.0
         assert req.destination == Destination.telegram
@@ -38,58 +38,12 @@ class TestSpeechRequestInputValidation:
         req = SpeechRequest(input="A")
         assert req.input == "A"
 
-
-class TestSpeechRequestKokoroCharLimit:
-    def test_kokoro_at_limit_passes(self) -> None:
-        req = SpeechRequest(input="a" * 500, voice="santa")
-        assert len(req.input) == 500
-
-    def test_kokoro_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="500 characters"):
-            SpeechRequest(input="a" * 501, voice="santa")
-
-    def test_kokoro_dora_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="500 characters"):
-            SpeechRequest(input="a" * 501, voice="dora")
-
-    def test_kokoro_alex_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="500 characters"):
-            SpeechRequest(input="a" * 501, voice="alex")
-
-
-class TestSpeechRequestQwenCharLimit:
-    def test_qwen_at_limit_passes(self) -> None:
-        req = SpeechRequest(input="a" * 300, voice="clone")
-        assert len(req.input) == 300
-
-    def test_qwen_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="300 character limit"):
-            SpeechRequest(input="a" * 301, voice="clone")
-
-    def test_qwen_female_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="Qwen3"):
-            SpeechRequest(input="a" * 301, voice="qwen-female")
-
-    def test_qwen_male_over_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="Qwen3"):
-            SpeechRequest(input="a" * 301, voice="qwen-male")
-
-
-class TestSpeechRequestUnknownVoice:
-    def test_unknown_voice_at_global_limit_passes(self) -> None:
-        req = SpeechRequest(input="a" * 500, voice="future-voice")
-        assert len(req.input) == 500
-
-    def test_unknown_voice_over_global_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="500 characters"):
-            SpeechRequest(input="a" * 501, voice="future-voice")
-
-    def test_none_voice_at_global_limit_passes(self) -> None:
+    def test_at_global_limit_passes(self) -> None:
         req = SpeechRequest(input="a" * 500)
-        assert req.voice is None
+        assert len(req.input) == 500
 
-    def test_none_voice_over_global_limit_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="500 characters"):
+    def test_over_global_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError):
             SpeechRequest(input="a" * 501)
 
 
@@ -127,3 +81,45 @@ class TestSpeechRequestSpeed:
     def test_speed_above_max_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SpeechRequest(input="test", speed=5.0)
+
+
+class TestSpeechRequestVoiceFormat:
+    def test_kokoro_voice_accepted(self) -> None:
+        req = SpeechRequest(input="test", voice="kokoro/pm_santa")
+        assert req.voice == "kokoro/pm_santa"
+
+    def test_qwen_voice_accepted(self) -> None:
+        req = SpeechRequest(input="test", voice="qwen/galvani")
+        assert req.voice == "qwen/galvani"
+
+    def test_none_voice_accepted(self) -> None:
+        req = SpeechRequest(input="test")
+        assert req.voice is None
+
+    def test_any_string_accepted_at_schema_level(self) -> None:
+        """Schema allows any string — engine routing validates format."""
+        req = SpeechRequest(input="test", voice="anything")
+        assert req.voice == "anything"
+
+
+class TestSpeechRequestQwenCharLimit:
+    def test_qwen_at_limit_passes(self) -> None:
+        req = SpeechRequest(input="a" * 300, voice="qwen/galvani")
+        assert len(req.input) == 300
+
+    def test_qwen_over_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="300 character limit"):
+            SpeechRequest(input="a" * 301, voice="qwen/galvani")
+
+    def test_kokoro_at_500_passes(self) -> None:
+        req = SpeechRequest(input="a" * 500, voice="kokoro/pm_santa")
+        assert len(req.input) == 500
+
+    def test_kokoro_over_500_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SpeechRequest(input="a" * 501, voice="kokoro/pm_santa")
+
+    def test_non_qwen_prefix_uses_global_limit(self) -> None:
+        """Unknown prefix uses the global 500-char limit."""
+        req = SpeechRequest(input="a" * 500, voice="unknown/voice")
+        assert len(req.input) == 500

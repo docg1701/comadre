@@ -30,7 +30,7 @@ Generate speech audio from text input.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `input` | string | Yes | -- | Text to synthesize (1-500 chars for Kokoro, 1-300 chars for Qwen3) |
-| `voice` | string | No | per `DEFAULT_VOICE` env var (default: `santa`) | Voice name (see voice routing table below) |
+| `voice` | string | No | per `DEFAULT_VOICE` env var (default: `kokoro/pm_santa`) | Voice name in `engine/name` format (see voice routing table below and [voice-management.md](voice-management.md)) |
 | `response_format` | string | No | `ogg` | Output format: `ogg` or `wav` |
 | `speed` | float | No | `1.0` | Speed multiplier: 0.25 to 4.0. Accepted by schema but not yet applied by engines. |
 | `destination` | string | No | `whatsapp` | Target platform: `whatsapp`, `telegram`, `messenger`, or `instagram`. Accepted by schema but not yet applied -- all output currently uses OGG Opus regardless of destination. |
@@ -41,12 +41,13 @@ The `voice` parameter determines which TTS engine processes the request:
 
 | Voice | Engine | Character Limit | Typical Latency (4 vCPU) |
 | --- | --- | --- | --- |
-| `santa` (M) | Kokoro fp32 | 500 | 5-16s |
-| `dora` (F) | Kokoro fp32 | 500 | 5-16s |
-| `alex` (M) | Kokoro fp32 | 500 | 5-16s |
-| `clone` | Qwen3-TTS C++ Q8_0 | 300 | 12-37s |
-| `qwen-female` | Qwen3-TTS C++ Q8_0 | 300 | 12-37s |
-| `qwen-male` | Qwen3-TTS C++ Q8_0 | 300 | 12-37s |
+| `kokoro/pm_santa` (M) | Kokoro fp32 | 500 | 5-16s |
+| `kokoro/pf_dora` (F) | Kokoro fp32 | 500 | 5-16s |
+| `kokoro/pm_alex` (M) | Kokoro fp32 | 500 | 5-16s |
+| `kokoro/<name>` | Kokoro fp32 | 500 | 5-16s |
+| `qwen/<name>` | Qwen3-TTS C++ Q8_0 | 300 | 12-37s |
+
+Voices are discovered from the filesystem. See [voice-management.md](voice-management.md) for how to add or list voices.
 
 ### Engine-Specific Preprocessing
 
@@ -112,9 +113,9 @@ All errors return JSON with this structure:
 ```json
 {
   "error": {
-    "message": "Input exceeds 300 character limit for Qwen3 engine (voice 'clone')",
+    "message": "Input exceeds 300 character limit for Qwen3 engine (voice 'qwen/galvani')",
     "type": "invalid_request_error",
-    "hint": "Reduce text length or switch to a Kokoro voice (santa, dora, alex) which supports up to 500 characters."
+    "hint": "Reduce text length or switch to a Kokoro voice (kokoro/pm_santa, kokoro/pf_dora, kokoro/pm_alex) which supports up to 500 characters."
   }
 }
 ```
@@ -152,7 +153,7 @@ Wrong API key:
   "error": {
     "message": "Voice 'unknown' not found",
     "type": "not_found_error",
-    "hint": "Available voices: ['santa', 'dora', 'alex', 'clone', 'qwen-female', 'qwen-male']. Place WAV files (3-10s) in the /voices/ directory."
+    "hint": "Available voices: ['kokoro/pf_dora', 'kokoro/pm_alex', 'kokoro/pm_santa', 'qwen/female-reference', 'qwen/galvani']. Use engine/name format. See /health for the current list."
   }
 }
 ```
@@ -192,13 +193,12 @@ Returns service health status. No authentication required.
 ```json
 {
   "status": "healthy",
-  "voices": ["santa", "dora", "alex", "clone", "qwen-female", "qwen-male"],
+  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female-reference", "qwen/galvani"],
   "engines": {
-    "kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]},
-    "qwen3": {"loaded": true, "clone_configured": true, "voices": ["clone", "qwen-female", "qwen-male"]}
+    "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
+    "qwen3": {"loaded": true, "voices": ["qwen/female-reference", "qwen/galvani"]}
   },
   "queue_depth": 0,
-  "clone_configured": true,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
   "version": "1.0.0"
@@ -215,7 +215,6 @@ Returned while models are still loading after startup:
   "voices": [],
   "engines": {},
   "queue_depth": 0,
-  "clone_configured": false,
   "uptime_seconds": 15,
   "memory_mb": 800,
   "version": "1.0.0"
@@ -231,17 +230,17 @@ Returned while models are still loading after startup:
 
 ## Voice Cloning
 
-Voice cloning uses Qwen3-TTS with a pre-configured reference WAV file. The reference audio is placed on the server at deploy time, not uploaded per-request.
+Qwen3-TTS voices use reference WAV files for voice cloning. Voices are discovered from the `/voices/qwen/` directory -- no environment variable configuration needed. For detailed setup instructions, see [voice-management.md](voice-management.md).
 
 **How it works:**
 
-1. A reference WAV (3-10s of clear speech) is placed in the voices volume
-2. `CLONE_REFERENCE_PATH` environment variable points to the WAV file
-3. Requests with `"voice": "clone"` use this reference for synthesis
+1. Place a reference WAV (3-10s of clear speech) in `/voices/qwen/`
+2. The voice is immediately available as `qwen/<filename-without-extension>`
+3. No restart needed -- voices are discovered at request time
 
 **Seed reproducibility:** Qwen3-TTS uses a fixed seed for consistent voice characteristics. The same text + reference WAV + seed produces similar results across runs.
 
-**Clone disabled:** If `CLONE_REFERENCE_PATH` is not set, the `clone` voice is unavailable. The `/health` endpoint reports `clone_configured: false`. Requests for the `clone` voice return a 404 error.
+**No Qwen3 voices:** If no WAV files are present in `/voices/qwen/`, no Qwen3 voices will appear in the `/health` endpoint. Requests for missing voices return a 404 error.
 
 ## Examples
 
@@ -251,7 +250,7 @@ Voice cloning uses Qwen3-TTS with a pre-configured reference WAV file. The refer
 curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Bom dia, como posso ajudar?", "voice":"santa"}' \
+  -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
 ```
 
@@ -261,7 +260,7 @@ curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
 curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"clone"}' \
+  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
   --output test_clone.ogg
 ```
 
@@ -271,7 +270,7 @@ curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
 curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Confira nosso novo produto!", "voice":"dora", "destination":"instagram"}' \
+  -d '{"input":"Confira nosso novo produto!", "voice":"kokoro/pf_dora", "destination":"instagram"}' \
   --output test.m4a
 ```
 

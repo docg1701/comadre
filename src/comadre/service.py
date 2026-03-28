@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 import tempfile
 import wave
@@ -22,17 +23,14 @@ if TYPE_CHECKING:
 logger = get_logger("request")
 startup_logger = get_logger("startup")
 
-KOKORO_VOICES: dict[str, str] = {
-    "santa": "pm_santa",
-    "dora": "pf_dora",
-    "alex": "pm_alex",
-}
-
-KOKORO_CHAR_LIMIT = 500
+# Voice name must be safe for filesystem paths: alphanumeric, hyphens, underscores.
+_VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class KokoroEngine:
     """Wraps kokoro-onnx for TTS generation with built-in voices."""
+
+    CHAR_LIMIT = 500
 
     def __init__(self) -> None:
         self._kokoro: Any = None
@@ -79,10 +77,22 @@ class KokoroEngine:
         )
         startup_logger.info("Warm-up complete")
 
+    def get_builtin_voices(self) -> list[str]:
+        """Return sorted list of built-in voice names from the .npz archive."""
+        if self._kokoro is None:
+            return []
+        result: list[str] = self._kokoro.get_voices()
+        return result
+
+    def get_voice_style(self, name: str) -> NDArray[np.float32]:
+        """Return the voice style vector for a built-in voice name."""
+        style: NDArray[np.float32] = self._kokoro.get_voice_style(name)
+        return style
+
     def generate_speech(
         self,
         text: str,
-        voice_name: str,
+        voice: str | NDArray[np.float32],
         response_format: str,
         noise_dir: Path | None = None,
     ) -> bytes:
@@ -90,7 +100,7 @@ class KokoroEngine:
 
         Args:
             text: Input text to synthesize.
-            voice_name: User-facing voice name (santa/dora/alex).
+            voice: Built-in voice name (str) or custom voice style vector (NDArray).
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
 
@@ -98,7 +108,6 @@ class KokoroEngine:
             Audio bytes in the requested format.
 
         Raises:
-            VoiceNotFoundError: If voice_name is not a Kokoro voice.
             InvalidRequestError: If text exceeds the character limit.
             GenerationError: If TTS generation or encoding fails.
         """
@@ -108,25 +117,19 @@ class KokoroEngine:
                 hint="Supported formats: 'wav', 'ogg'.",
             )
 
-        kokoro_voice = KOKORO_VOICES.get(voice_name)
-        if kokoro_voice is None:
-            raise VoiceNotFoundError(
-                voice=voice_name, available=list(KOKORO_VOICES.keys())
-            )
-
         if not text.strip():
             raise InvalidRequestError(
                 message="Text must not be empty",
                 hint="Provide non-empty text for speech synthesis.",
             )
 
-        if len(text) > KOKORO_CHAR_LIMIT:
+        if len(text) > self.CHAR_LIMIT:
             raise InvalidRequestError(
                 message=(
-                    f"Text exceeds {KOKORO_CHAR_LIMIT} character limit"
+                    f"Text exceeds {self.CHAR_LIMIT} character limit"
                     f" ({len(text)} chars)"
                 ),
-                hint=f"Shorten your text to {KOKORO_CHAR_LIMIT} characters or fewer.",
+                hint=f"Shorten your text to {self.CHAR_LIMIT} characters or fewer.",
             )
 
         if self._kokoro is None:
@@ -141,7 +144,7 @@ class KokoroEngine:
             for chunk in chunks:
                 samples, sample_rate = self._kokoro.create(
                     text=chunk,
-                    voice=kokoro_voice,
+                    voice=voice,
                     speed=1.0,
                     lang="pt-br",
                 )
@@ -149,7 +152,7 @@ class KokoroEngine:
 
             wav_bytes = _concatenate_wavs(wav_parts)
             return _apply_vibrato_warm(wav_bytes, response_format, noise_dir)
-        except (VoiceNotFoundError, InvalidRequestError, GenerationError):
+        except (InvalidRequestError, GenerationError):
             raise
         except Exception as exc:
             logger.error("TTS generation failed: %s", exc, exc_info=True)
@@ -417,25 +420,16 @@ def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
 
 # --- Qwen3 TTS Engine ---
 
-# All Qwen3 voices use x-vector cloning via -r flag with different reference WAVs.
-# The 0.6B-Base model has no built-in voice presets.
-QWEN_VOICES: dict[str, str] = {
-    "clone": "clone",
-    "qwen-female": "female",
-    "qwen-male": "male",
-}
-
-QWEN_CHAR_LIMIT = 300
-
 
 class QwenEngine:
     """Wraps qwen3-tts-cli C++ binary for TTS generation with voice cloning."""
+
+    CHAR_LIMIT = 300
 
     def __init__(self) -> None:
         self._cli_path: str | None = None
         self._model_path: str | None = None
         self._tokenizer_path: str | None = None
-        self._voice_references: dict[str, str] = {}
         self._threads: int = 4
         self._loaded: bool = False
 
@@ -444,40 +438,14 @@ class QwenEngine:
         """Return True if the Qwen3 engine is loaded."""
         return self._loaded
 
-    @property
-    def is_clone_configured(self) -> bool:
-        """Return True if a clone reference WAV is configured."""
-        return "clone" in self._voice_references
-
-    def _validate_reference_wav(self, path: str, label: str) -> None:
-        """Validate a reference WAV file exists and is readable."""
-        if not Path(path).is_file():
-            msg = f"{label} WAV not found: {path}"
-            raise FileNotFoundError(msg)
-        try:
-            with wave.open(path, "rb") as wf:
-                duration = wf.getnframes() / wf.getframerate()
-                if not (3.0 <= duration <= 10.0):
-                    startup_logger.warning(
-                        "%s WAV duration %.1fs outside 3-10s range",
-                        label,
-                        duration,
-                    )
-        except wave.Error as exc:
-            msg = f"{label} is not a valid WAV: {path}"
-            raise ValueError(msg) from exc
-
     def load_model(
         self,
         cli_path: str,
         model_path: str,
         tokenizer_path: str,
-        female_reference_path: str,
-        male_reference_path: str,
-        clone_reference_path: str | None = None,
         threads: int = 4,
     ) -> None:
-        """Verify Qwen3 binary, model files, and reference WAVs exist."""
+        """Verify Qwen3 binary, model files exist."""
         if not Path(cli_path).is_file():
             msg = f"qwen3-tts-cli binary not found: {cli_path}"
             raise FileNotFoundError(msg)
@@ -491,45 +459,25 @@ class QwenEngine:
             msg = f"Qwen3 tokenizer file not found: {tokenizer_path}"
             raise FileNotFoundError(msg)
 
-        # Validate all reference WAVs before assigning any state
-        self._validate_reference_wav(female_reference_path, "Female reference")
-        self._validate_reference_wav(male_reference_path, "Male reference")
-
-        validated_refs: dict[str, str] = {
-            "qwen-female": female_reference_path,
-            "qwen-male": male_reference_path,
-        }
-
-        if clone_reference_path is not None:
-            self._validate_reference_wav(clone_reference_path, "Clone reference")
-            validated_refs["clone"] = clone_reference_path
-
-        # All validation passed — assign state atomically
         self._cli_path = cli_path
         self._model_path = model_path
         self._tokenizer_path = tokenizer_path
         self._threads = threads
-        self._voice_references = validated_refs
-
-        startup_logger.info(
-            "Qwen3 voices configured: %s",
-            list(validated_refs.keys()),
-        )
-        if "clone" not in validated_refs:
-            startup_logger.info("No clone reference — clone voice disabled")
-
         self._loaded = True
         startup_logger.info("Qwen3 engine loaded (threads=%d)", threads)
 
-    def warm_up(self) -> None:
+    def warm_up(self, reference_path: Path | None = None) -> None:
         """Run a dummy subprocess invocation to verify binary works."""
         if not self._loaded:
             raise GenerationError("Engine not loaded — call load_model() first")
+        if reference_path is None:
+            startup_logger.info("No Qwen3 reference WAV available, skipping warm-up")
+            return
         startup_logger.info("Running Qwen3 warm-up...")
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            cmd = self._build_command("Teste.", "qwen-female", tmp_path, seed=42)
+            cmd = self._build_command("Teste.", reference_path, tmp_path, seed=42)
             subprocess.run(
                 cmd,
                 capture_output=True,
@@ -549,7 +497,7 @@ class QwenEngine:
     def generate_speech(
         self,
         text: str,
-        voice_name: str,
+        reference_path: Path,
         response_format: str,
         noise_dir: Path | None = None,
         seed: int = -1,
@@ -558,7 +506,7 @@ class QwenEngine:
 
         Args:
             text: Input text to synthesize.
-            voice_name: User-facing voice name (clone/qwen-female/qwen-male).
+            reference_path: Path to the reference WAV file for voice cloning.
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
             seed: Random seed (-1 = random, N = deterministic).
@@ -567,7 +515,6 @@ class QwenEngine:
             Audio bytes in the requested format.
 
         Raises:
-            VoiceNotFoundError: If voice_name is not a Qwen3 voice.
             InvalidRequestError: If text exceeds the character limit.
             GenerationError: If TTS generation fails.
         """
@@ -577,30 +524,19 @@ class QwenEngine:
                 hint="Supported formats: 'wav', 'ogg'.",
             )
 
-        if voice_name not in QWEN_VOICES:
-            raise VoiceNotFoundError(
-                voice=voice_name, available=list(QWEN_VOICES.keys())
-            )
-
-        if voice_name == "clone" and not self.is_clone_configured:
-            raise VoiceNotFoundError(
-                voice=voice_name,
-                available=[v for v in QWEN_VOICES if v != "clone"],
-            )
-
         if not text.strip():
             raise InvalidRequestError(
                 message="Text must not be empty",
                 hint="Provide non-empty text for speech synthesis.",
             )
 
-        if len(text) > QWEN_CHAR_LIMIT:
+        if len(text) > self.CHAR_LIMIT:
             raise InvalidRequestError(
                 message=(
-                    f"Text exceeds {QWEN_CHAR_LIMIT} character limit"
+                    f"Text exceeds {self.CHAR_LIMIT} character limit"
                     f" ({len(text)} chars)"
                 ),
-                hint=f"Shorten your text to {QWEN_CHAR_LIMIT} characters or fewer.",
+                hint=f"Shorten your text to {self.CHAR_LIMIT} characters or fewer.",
             )
 
         if not self._loaded:
@@ -615,7 +551,7 @@ class QwenEngine:
 
         try:
             cmd = self._build_command(
-                preprocessed, voice_name, tmp_path, seed, max_tokens
+                preprocessed, reference_path, tmp_path, seed, max_tokens
             )
             subprocess.run(
                 cmd,
@@ -625,7 +561,7 @@ class QwenEngine:
             )
             wav_bytes = Path(tmp_path).read_bytes()
             return _apply_whatsapp_subtle(wav_bytes, response_format, noise_dir)
-        except (VoiceNotFoundError, InvalidRequestError, GenerationError):
+        except (InvalidRequestError, GenerationError):
             raise
         except subprocess.TimeoutExpired as exc:
             logger.error("qwen3-tts-cli timed out after 60s")
@@ -644,13 +580,14 @@ class QwenEngine:
     def _build_command(
         self,
         text: str,
-        voice_name: str,
+        reference_path: Path,
         output_path: str,
         seed: int,
         max_tokens: int = 100,
     ) -> list[str]:
         """Build the qwen3-tts-cli command arguments."""
-        assert self._model_path is not None
+        if self._model_path is None:
+            raise GenerationError("Model path not set — call load_model() first")
         model_dir = str(Path(self._model_path).parent)
         cmd = [
             str(self._cli_path),
@@ -672,32 +609,78 @@ class QwenEngine:
             str(seed),
             "-j",
             str(self._threads),
+            "-r",
+            str(reference_path),
+            "-o",
+            output_path,
         ]
-        ref_path = self._voice_references.get(voice_name)
-        if ref_path is not None:
-            cmd.extend(["-r", ref_path])
-        cmd.extend(["-o", output_path])
         return cmd
 
 
 class EngineRouter:
-    """Routes voice requests to the correct TTS engine."""
+    """Routes voice requests to the correct TTS engine via filesystem discovery."""
 
-    def __init__(self, kokoro: KokoroEngine, qwen: QwenEngine) -> None:
+    def __init__(
+        self, kokoro: KokoroEngine, qwen: QwenEngine, voices_dir: Path
+    ) -> None:
         self._kokoro = kokoro
         self._qwen = qwen
+        self._voices_dir = voices_dir
 
-    def _resolve_engine(self, voice_name: str) -> KokoroEngine | QwenEngine:
-        """Return the engine instance that handles the given voice."""
-        if voice_name in KOKORO_VOICES:
-            return self._kokoro
-        if voice_name in QWEN_VOICES:
-            if voice_name == "clone" and not self._qwen.is_clone_configured:
-                raise VoiceNotFoundError(
-                    voice=voice_name, available=self.available_voices()
-                )
-            return self._qwen
-        raise VoiceNotFoundError(voice=voice_name, available=self.available_voices())
+    def _parse_voice(self, voice_name: str) -> tuple[str, str]:
+        """Parse 'engine/name' voice string into (engine_prefix, voice_name).
+
+        Raises InvalidRequestError for malformed voice strings or path traversal.
+        """
+        parts = voice_name.split("/", 1)
+        if len(parts) != 2 or not parts[1]:
+            raise InvalidRequestError(
+                message=f"Invalid voice format: '{voice_name}'",
+                hint=(
+                    "Voice must be 'kokoro/<name>' or 'qwen/<name>'."
+                    " Example: 'kokoro/pm_santa', 'qwen/galvani'."
+                ),
+            )
+        engine, name = parts
+        if engine not in ("kokoro", "qwen"):
+            raise InvalidRequestError(
+                message=f"Unknown engine prefix: '{engine}'",
+                hint="Voice must start with 'kokoro/' or 'qwen/'.",
+            )
+        if not _VOICE_NAME_RE.match(name):
+            raise InvalidRequestError(
+                message=f"Invalid voice name: '{name}'",
+                hint=(
+                    "Voice name may only contain letters, digits,"
+                    " hyphens, and underscores."
+                ),
+            )
+        return engine, name
+
+    def _resolve_kokoro_voice(self, name: str) -> str | NDArray[np.float32]:
+        """Resolve a Kokoro voice by name.
+
+        Checks for a custom .npy file first, then falls back to built-in voices.
+        """
+        npy_path = self._voices_dir / "kokoro" / f"{name}.npy"
+        if npy_path.is_file():
+            voice_data: NDArray[np.float32] = np.load(npy_path, allow_pickle=False)
+            return voice_data
+        # Fall back to built-in voice from .npz archive
+        if self._kokoro.is_loaded and name in self._kokoro.get_builtin_voices():
+            return self._kokoro.get_voice_style(name)
+        raise VoiceNotFoundError(
+            voice=f"kokoro/{name}", available=self.available_voices()
+        )
+
+    def _resolve_qwen_voice(self, name: str) -> Path:
+        """Resolve a Qwen3 voice by name. The .wav file must exist."""
+        wav_path = self._voices_dir / "qwen" / f"{name}.wav"
+        if wav_path.is_file():
+            return wav_path
+        raise VoiceNotFoundError(
+            voice=f"qwen/{name}", available=self.available_voices()
+        )
 
     def generate_speech(
         self,
@@ -711,7 +694,7 @@ class EngineRouter:
 
         Args:
             text: Input text to synthesize.
-            voice_name: User-facing voice name.
+            voice_name: Voice identifier as 'engine/name' (e.g. 'kokoro/pm_santa').
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
             seed: Random seed (forwarded to Qwen3 only).
@@ -719,36 +702,53 @@ class EngineRouter:
         Returns:
             Audio bytes in the requested format.
         """
-        engine = self._resolve_engine(voice_name)
-        if isinstance(engine, QwenEngine):
-            return engine.generate_speech(
-                text, voice_name, response_format, noise_dir, seed
-            )
-        return engine.generate_speech(text, voice_name, response_format, noise_dir)
+        engine, name = self._parse_voice(voice_name)
 
-    def _active_qwen_voices(self) -> list[str]:
-        """Return sorted Qwen3 voice names, excluding clone if not configured."""
-        return sorted(
-            name
-            for name in QWEN_VOICES
-            if name != "clone" or self._qwen.is_clone_configured
+        if engine == "kokoro":
+            voice = self._resolve_kokoro_voice(name)
+            return self._kokoro.generate_speech(text, voice, response_format, noise_dir)
+        # engine == "qwen"
+        ref_path = self._resolve_qwen_voice(name)
+        return self._qwen.generate_speech(
+            text, ref_path, response_format, noise_dir, seed
         )
 
     def available_voices(self) -> list[str]:
-        """Return sorted combined voice list from both engines."""
-        return sorted(list(KOKORO_VOICES.keys()) + self._active_qwen_voices())
+        """Return sorted list of all available voices from filesystem + builtins."""
+        voices: set[str] = set()
+
+        # Kokoro built-in voices from .npz archive
+        if self._kokoro.is_loaded:
+            for name in self._kokoro.get_builtin_voices():
+                voices.add(f"kokoro/{name}")
+
+        # Kokoro custom voices from .npy files
+        kokoro_dir = self._voices_dir / "kokoro"
+        if kokoro_dir.is_dir():
+            for f in kokoro_dir.iterdir():
+                if f.suffix == ".npy" and f.is_file():
+                    voices.add(f"kokoro/{f.stem}")
+
+        # Qwen3 voices from .wav files
+        qwen_dir = self._voices_dir / "qwen"
+        if qwen_dir.is_dir():
+            for f in qwen_dir.iterdir():
+                if f.suffix == ".wav" and f.is_file():
+                    voices.add(f"qwen/{f.stem}")
+
+        return sorted(voices)
 
     def engine_status(self) -> dict[str, dict[str, object]]:
         """Return per-engine status for health endpoint."""
+        all_voices = self.available_voices()
         return {
             "kokoro": {
                 "loaded": self._kokoro.is_loaded,
-                "voices": sorted(KOKORO_VOICES.keys()),
+                "voices": [v for v in all_voices if v.startswith("kokoro/")],
             },
             "qwen3": {
                 "loaded": self._qwen.is_loaded,
-                "clone_configured": self._qwen.is_clone_configured,
-                "voices": self._active_qwen_voices(),
+                "voices": [v for v in all_voices if v.startswith("qwen/")],
             },
         }
 

@@ -79,10 +79,9 @@
         - not (health_check.json.engines.qwen3.loaded | default(false))
       ansible.builtin.debug:
         msg: >-
-          INFO: Qwen3 engine is not loaded. Clone voice functionality is unavailable.
-          This usually means the clone reference WAV is missing.
-          Verify CLONE_REFERENCE configuration in .env and ensure the WAV file
-          exists in the comadre-voices volume.
+          INFO: Qwen3 engine is not loaded.
+          Check that the qwen3-tts-cli binary, model, and tokenizer files
+          are correctly deployed. See docs for troubleshooting.
 
     # =========================================================================
     # Disk Usage
@@ -162,7 +161,7 @@
           Loaded Voices:   {{ hc.voices | default([]) | join(', ') }}
           Kokoro Engine:   {{ 'Loaded' if (hc.engines.kokoro.loaded | default(false)) else 'Not loaded' }}
           Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
-          Clone Configured:{{ 'Yes' if (hc.clone_configured | default(false)) else 'No' }}
+          Voice Count:     {{ hc.voices | default([]) | length }}
           Queue Depth:     {{ hc.queue_depth | default('N/A') }}
           Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
           Memory Usage:    {{ hc.memory_mb | default('N/A') }} MB

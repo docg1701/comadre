@@ -49,7 +49,7 @@ This is the only required variable. All others have sensible defaults.
 
 ## Step 2: Obtain Qwen3 models
 
-Skip this step if you only want to test Kokoro voices (santa, dora, alex). Qwen3 voices (clone, qwen-female, qwen-male) require the GGUF models.
+Skip this step if you only want to test Kokoro voices (`kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`). Qwen3 voices (`qwen/<name>`) require the GGUF models.
 
 ### Option A: Copy existing models (if you already have them)
 
@@ -153,13 +153,12 @@ Expected response when fully ready:
 ```json
 {
     "status": "healthy",
-    "voices": ["alex", "clone", "dora", "qwen-female", "qwen-male", "santa"],
+    "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female-reference", "qwen/galvani"],
     "engines": {
-        "kokoro": {"loaded": true, "voices": ["alex", "dora", "santa"]},
-        "qwen3": {"loaded": true, "clone_configured": true, "voices": ["clone", "qwen-female", "qwen-male"]}
+        "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
+        "qwen3": {"loaded": true, "voices": ["qwen/female-reference", "qwen/galvani"]}
     },
-    "queue_depth": 0,
-    "clone_configured": true
+    "queue_depth": 0
 }
 ```
 
@@ -170,51 +169,51 @@ If you skipped Qwen3 models, `qwen3.loaded` will be `false` and only Kokoro voic
 ### Kokoro voices (5-16 seconds latency)
 
 ```bash
-# santa (male, default)
+# kokoro/pm_santa (male, default)
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Bom dia, como posso ajudar?", "voice":"santa"}' \
+  -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test-santa.ogg
 
-# dora (female)
+# kokoro/pf_dora (female)
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"dora"}' \
+  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"kokoro/pf_dora"}' \
   --output test-dora.ogg
 
-# alex (male)
+# kokoro/pm_alex (male)
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"O FGTS foi depositado na sua conta.", "voice":"alex"}' \
+  -d '{"input":"O FGTS foi depositado na sua conta.", "voice":"kokoro/pm_alex"}' \
   --output test-alex.ogg
 ```
 
 ### Qwen3 voices (12-37 seconds latency)
 
 ```bash
-# qwen-female
+# qwen/female-reference
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen-female"}' \
+  -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen/female-reference"}' \
   --output test-qwen-female.ogg
 
-# qwen-male
+# qwen/male-reference
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen-male"}' \
+  -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen/male-reference"}' \
   --output test-qwen-male.ogg
 
-# clone (uses pre-configured reference WAV)
+# qwen/galvani (uses galvani.wav reference)
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Esta e a voz clonada falando.", "voice":"clone"}' \
-  --output test-clone.ogg
+  -d '{"input":"Esta e a voz clonada falando.", "voice":"qwen/galvani"}' \
+  --output test-galvani.ogg
 ```
 
 ### WAV output (instead of OGG Opus)
@@ -223,7 +222,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Teste em formato WAV.", "voice":"santa", "response_format":"wav"}' \
+  -d '{"input":"Teste em formato WAV.", "voice":"kokoro/pm_santa", "response_format":"wav"}' \
   --output test.wav
 ```
 

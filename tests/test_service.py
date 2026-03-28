@@ -1,4 +1,4 @@
-"""Tests for the Kokoro TTS engine service."""
+"""Tests for the TTS engine services."""
 
 import io
 import logging
@@ -10,12 +10,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from comadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
+from comadre.exceptions import GenerationError, InvalidRequestError
 from comadre.service import (
-    KOKORO_CHAR_LIMIT,
-    KOKORO_VOICES,
-    QWEN_CHAR_LIMIT,
-    QWEN_VOICES,
     KokoroEngine,
     QwenEngine,
     _apply_vibrato_warm,
@@ -44,6 +40,7 @@ def engine() -> KokoroEngine:
     mock_kokoro = MagicMock()
     mock_kokoro.create.return_value = (np.zeros(24000, dtype=np.float32), 24000)
     mock_kokoro.get_voices.return_value = ["pm_santa", "pf_dora", "pm_alex"]
+    mock_kokoro.get_voice_style.return_value = np.zeros((510, 1, 256), dtype=np.float32)
     svc._kokoro = mock_kokoro
     return svc
 
@@ -66,24 +63,7 @@ def startup_logger(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
     log.propagate = False
 
 
-# --- Test voice mapping (AC #1) ---
-
-
-class TestVoiceMapping:
-    def test_kokoro_voices_contains_santa(self) -> None:
-        assert KOKORO_VOICES["santa"] == "pm_santa"
-
-    def test_kokoro_voices_contains_dora(self) -> None:
-        assert KOKORO_VOICES["dora"] == "pf_dora"
-
-    def test_kokoro_voices_contains_alex(self) -> None:
-        assert KOKORO_VOICES["alex"] == "pm_alex"
-
-    def test_kokoro_voices_only_three(self) -> None:
-        assert len(KOKORO_VOICES) == 3
-
-
-# --- Test generate_speech with WAV format (AC #1) ---
+# --- Test generate_speech with WAV format ---
 
 
 class TestGenerateSpeechWav:
@@ -92,7 +72,7 @@ class TestGenerateSpeechWav:
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
         mock_pipeline.return_value = b"processed_wav"
-        result = engine.generate_speech("hello", "santa", "wav")
+        result = engine.generate_speech("hello", "pm_santa", "wav")
         assert result == b"processed_wav"
 
     @patch("comadre.service._apply_vibrato_warm")
@@ -100,29 +80,23 @@ class TestGenerateSpeechWav:
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
         mock_pipeline.return_value = b"audio"
-        engine.generate_speech("hello world", "santa", "wav")
+        engine.generate_speech("hello world", "pm_santa", "wav")
         engine._kokoro.create.assert_called_once()  # type: ignore[union-attr]
         call_kwargs = engine._kokoro.create.call_args  # type: ignore[union-attr]
         assert call_kwargs.kwargs["voice"] == "pm_santa"
         assert call_kwargs.kwargs["lang"] == "pt-br"
 
     @patch("comadre.service._apply_vibrato_warm")
-    def test_dora_maps_to_pf_dora(
+    def test_accepts_numpy_voice(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
+        """Voice can be a numpy array (custom voice profile)."""
         mock_pipeline.return_value = b"audio"
-        engine.generate_speech("hello", "dora", "wav")
+        voice_array = np.zeros((510, 1, 256), dtype=np.float32)
+        result = engine.generate_speech("hello", voice_array, "wav")
+        assert result == b"audio"
         call_kwargs = engine._kokoro.create.call_args  # type: ignore[union-attr]
-        assert call_kwargs.kwargs["voice"] == "pf_dora"
-
-    @patch("comadre.service._apply_vibrato_warm")
-    def test_alex_maps_to_pm_alex(
-        self, mock_pipeline: MagicMock, engine: KokoroEngine
-    ) -> None:
-        mock_pipeline.return_value = b"audio"
-        engine.generate_speech("hello", "alex", "wav")
-        call_kwargs = engine._kokoro.create.call_args  # type: ignore[union-attr]
-        assert call_kwargs.kwargs["voice"] == "pm_alex"
+        assert isinstance(call_kwargs.kwargs["voice"], np.ndarray)
 
 
 # --- Test response_format validation ---
@@ -131,18 +105,18 @@ class TestGenerateSpeechWav:
 class TestResponseFormatValidation:
     def test_rejects_unsupported_format(self, engine: KokoroEngine) -> None:
         with pytest.raises(InvalidRequestError) as exc_info:
-            engine.generate_speech("hello", "santa", "mp3")
+            engine.generate_speech("hello", "pm_santa", "mp3")
         assert "mp3" in exc_info.value.message
         assert exc_info.value.status_code == 400
 
     def test_accepts_wav(self, engine: KokoroEngine) -> None:
         with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
-            result = engine.generate_speech("hello", "santa", "wav")
+            result = engine.generate_speech("hello", "pm_santa", "wav")
         assert result == b"audio"
 
     def test_accepts_ogg(self, engine: KokoroEngine) -> None:
         with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
-            result = engine.generate_speech("hello", "santa", "ogg")
+            result = engine.generate_speech("hello", "pm_santa", "ogg")
         assert result == b"audio"
 
 
@@ -152,54 +126,37 @@ class TestResponseFormatValidation:
 class TestEmptyTextValidation:
     def test_rejects_empty_string(self, engine: KokoroEngine) -> None:
         with pytest.raises(InvalidRequestError) as exc_info:
-            engine.generate_speech("", "santa", "wav")
+            engine.generate_speech("", "pm_santa", "wav")
         assert "empty" in exc_info.value.message.lower()
         assert exc_info.value.status_code == 400
 
     def test_rejects_whitespace_only(self, engine: KokoroEngine) -> None:
         with pytest.raises(InvalidRequestError):
-            engine.generate_speech("   \n\t  ", "santa", "wav")
+            engine.generate_speech("   \n\t  ", "pm_santa", "wav")
 
 
-# --- Test char limit validation (AC #4) ---
+# --- Test char limit validation ---
 
 
 class TestCharLimitValidation:
     def test_text_at_limit_passes(self, engine: KokoroEngine) -> None:
-        text = "a" * KOKORO_CHAR_LIMIT
+        text = "a" * KokoroEngine.CHAR_LIMIT
         with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
-            result = engine.generate_speech(text, "santa", "wav")
+            result = engine.generate_speech(text, "pm_santa", "wav")
         assert result == b"audio"
 
     def test_text_over_limit_raises_invalid_request(self, engine: KokoroEngine) -> None:
-        text = "a" * (KOKORO_CHAR_LIMIT + 1)
+        text = "a" * (KokoroEngine.CHAR_LIMIT + 1)
         with pytest.raises(InvalidRequestError) as exc_info:
-            engine.generate_speech(text, "santa", "wav")
-        assert str(KOKORO_CHAR_LIMIT) in exc_info.value.message
+            engine.generate_speech(text, "pm_santa", "wav")
+        assert str(KokoroEngine.CHAR_LIMIT) in exc_info.value.message
         assert exc_info.value.status_code == 400
 
     def test_error_hint_mentions_limit(self, engine: KokoroEngine) -> None:
-        text = "a" * (KOKORO_CHAR_LIMIT + 1)
+        text = "a" * (KokoroEngine.CHAR_LIMIT + 1)
         with pytest.raises(InvalidRequestError) as exc_info:
-            engine.generate_speech(text, "santa", "wav")
-        assert str(KOKORO_CHAR_LIMIT) in exc_info.value.hint
-
-
-# --- Test voice not found ---
-
-
-class TestVoiceNotFound:
-    def test_raises_voice_not_found_error(self, engine: KokoroEngine) -> None:
-        with pytest.raises(VoiceNotFoundError) as exc_info:
-            engine.generate_speech("hello", "ghost", "wav")
-        assert exc_info.value.voice == "ghost"
-
-    def test_error_contains_available_voices(self, engine: KokoroEngine) -> None:
-        with pytest.raises(VoiceNotFoundError) as exc_info:
-            engine.generate_speech("hello", "ghost", "wav")
-        assert "santa" in exc_info.value.available
-        assert "dora" in exc_info.value.available
-        assert "alex" in exc_info.value.available
+            engine.generate_speech(text, "pm_santa", "wav")
+        assert str(KokoroEngine.CHAR_LIMIT) in exc_info.value.hint
 
 
 # --- Test model not loaded guard ---
@@ -210,7 +167,7 @@ class TestModelNotLoaded:
         svc = KokoroEngine()
         assert not svc.is_loaded
         with pytest.raises(GenerationError, match="Model not loaded"):
-            svc.generate_speech("hello", "santa", "wav")
+            svc.generate_speech("hello", "pm_santa", "wav")
 
     def test_warm_up_raises_when_not_loaded(self) -> None:
         svc = KokoroEngine()
@@ -218,7 +175,7 @@ class TestModelNotLoaded:
             svc.warm_up()
 
 
-# --- Test vibrato_warm pipeline invocation (AC #6) ---
+# --- Test vibrato_warm pipeline invocation ---
 
 
 class TestVibratoWarmPipeline:
@@ -273,7 +230,7 @@ class TestVibratoWarmPipeline:
         assert mock_run.call_count == 2
 
 
-# --- Test OGG output path (AC #7) ---
+# --- Test OGG output path ---
 
 
 class TestOggOutput:
@@ -376,7 +333,7 @@ class TestNoiseMixing:
         )
 
 
-# --- Test multi-chunk generation (AC #5) ---
+# --- Test multi-chunk generation ---
 
 
 class TestMultiChunkGeneration:
@@ -393,7 +350,7 @@ class TestMultiChunkGeneration:
         mock_normalize.return_value = "chunk one. chunk two."
         mock_chunk.return_value = ["chunk one.", "chunk two."]
         mock_pipeline.return_value = b"audio"
-        engine.generate_speech("chunk one. chunk two.", "santa", "wav")
+        engine.generate_speech("chunk one. chunk two.", "pm_santa", "wav")
         assert engine._kokoro.create.call_count == 2  # type: ignore[union-attr]
 
     @patch("comadre.service._apply_vibrato_warm")
@@ -409,7 +366,7 @@ class TestMultiChunkGeneration:
         mock_normalize.return_value = "short text"
         mock_chunk.return_value = ["short text"]
         mock_pipeline.return_value = b"audio"
-        engine.generate_speech("short text", "santa", "wav")
+        engine.generate_speech("short text", "pm_santa", "wav")
         assert engine._kokoro.create.call_count == 1  # type: ignore[union-attr]
 
     @patch("comadre.service._apply_vibrato_warm")
@@ -421,7 +378,7 @@ class TestMultiChunkGeneration:
     ) -> None:
         mock_pipeline.return_value = b"audio"
         with request_logger.at_level(logging.DEBUG, logger="request"):
-            engine.generate_speech("hello world", "santa", "wav")
+            engine.generate_speech("hello world", "pm_santa", "wav")
         info_records = [r for r in request_logger.records if r.levelno == logging.INFO]
         assert any("chunk" in r.message.lower() for r in info_records)
 
@@ -442,7 +399,7 @@ class TestGenerationError:
             request_logger.at_level(logging.DEBUG, logger="request"),
             pytest.raises(GenerationError) as exc_info,
         ):
-            svc.generate_speech("hello", "santa", "wav")
+            svc.generate_speech("hello", "pm_santa", "wav")
         assert "ONNX inference failed" in exc_info.value.message
 
     def test_logs_traceback_at_error_level(
@@ -457,7 +414,7 @@ class TestGenerationError:
             request_logger.at_level(logging.DEBUG, logger="request"),
             pytest.raises(GenerationError),
         ):
-            svc.generate_speech("hello", "santa", "wav")
+            svc.generate_speech("hello", "pm_santa", "wav")
         error_records = [
             r for r in request_logger.records if r.levelno == logging.ERROR
         ]
@@ -516,6 +473,25 @@ class TestWarmUp:
         assert call_kwargs["lang"] == "pt-br"
 
 
+# --- Test Kokoro builtin voice methods ---
+
+
+class TestKokoroBuiltinVoices:
+    def test_get_builtin_voices(self, engine: KokoroEngine) -> None:
+        voices = engine.get_builtin_voices()
+        assert "pm_santa" in voices
+        assert "pf_dora" in voices
+        assert "pm_alex" in voices
+
+    def test_get_builtin_voices_when_not_loaded(self) -> None:
+        engine = KokoroEngine()
+        assert engine.get_builtin_voices() == []
+
+    def test_get_voice_style(self, engine: KokoroEngine) -> None:
+        result = engine.get_voice_style("pm_santa")
+        assert isinstance(result, np.ndarray)
+
+
 # --- Test _samples_to_wav ---
 
 
@@ -542,7 +518,7 @@ class TestSamplesToWav:
         values = np.frombuffer(raw, dtype=np.int16)
         assert values[0] == 32767  # clipped to max
         assert values[1] == -32767  # clipped to min
-        assert values[2] == 16383  # 0.5 * 32767 ≈ 16383
+        assert values[2] == 16383  # 0.5 * 32767 ~ 16383
 
 
 # --- Test _concatenate_wavs ---
@@ -563,6 +539,8 @@ class TestConcatenateWavs:
 
 # ===== Qwen3 TTS Engine Tests =====
 
+FAKE_REF_PATH = Path("/voices/qwen/female-reference.wav")
+
 
 @pytest.fixture()
 def qwen_engine() -> QwenEngine:
@@ -571,142 +549,8 @@ def qwen_engine() -> QwenEngine:
     engine._cli_path = "/usr/local/bin/qwen3-tts-cli"
     engine._model_path = "models/qwen3-tts-0.6b-q8_0.gguf"
     engine._tokenizer_path = "models/qwen3-tts-tokenizer-f16.gguf"
-    engine._voice_references = {
-        "qwen-female": "/voices/female-reference.wav",
-        "qwen-male": "/voices/male-reference.wav",
-    }
     engine._loaded = True
     return engine
-
-
-# --- Qwen3 voice mapping ---
-
-
-class TestQwenVoiceMapping:
-    def test_qwen_voices_contains_clone(self) -> None:
-        assert QWEN_VOICES["clone"] == "clone"
-
-    def test_qwen_voices_contains_female(self) -> None:
-        assert QWEN_VOICES["qwen-female"] == "female"
-
-    def test_qwen_voices_contains_male(self) -> None:
-        assert QWEN_VOICES["qwen-male"] == "male"
-
-    def test_qwen_voices_only_three(self) -> None:
-        assert len(QWEN_VOICES) == 3
-
-
-# --- Qwen3 voice not found ---
-
-
-class TestQwenVoiceNotFound:
-    def test_unknown_voice_raises(self, qwen_engine: QwenEngine) -> None:
-        with pytest.raises(VoiceNotFoundError) as exc_info:
-            qwen_engine.generate_speech("hello", "ghost", "wav")
-        assert exc_info.value.voice == "ghost"
-
-    def test_error_lists_available_qwen_voices(self, qwen_engine: QwenEngine) -> None:
-        with pytest.raises(VoiceNotFoundError) as exc_info:
-            qwen_engine.generate_speech("hello", "ghost", "wav")
-        assert "clone" in exc_info.value.available
-        assert "qwen-female" in exc_info.value.available
-        assert "qwen-male" in exc_info.value.available
-
-
-# --- Qwen3 clone reference handling ---
-
-
-class TestQwenCloneReference:
-    def test_clone_without_reference_raises(self, qwen_engine: QwenEngine) -> None:
-        assert "clone" not in qwen_engine._voice_references
-        with pytest.raises(VoiceNotFoundError) as exc_info:
-            qwen_engine.generate_speech("Olá", "clone", "ogg")
-        assert exc_info.value.voice == "clone"
-
-    def test_clone_without_reference_excludes_clone_from_available(
-        self, qwen_engine: QwenEngine
-    ) -> None:
-        assert "clone" not in qwen_engine._voice_references
-        with pytest.raises(VoiceNotFoundError) as exc_info:
-            qwen_engine.generate_speech("Olá", "clone", "ogg")
-        assert "clone" not in exc_info.value.available
-
-    @patch("comadre.service._apply_whatsapp_subtle")
-    @patch("comadre.service.subprocess.run")
-    @patch("comadre.service.Path.read_bytes")
-    @patch("comadre.service.Path.unlink")
-    def test_clone_with_reference_includes_r_flag(
-        self,
-        _mock_unlink: MagicMock,
-        mock_read: MagicMock,
-        mock_run: MagicMock,
-        mock_pipeline: MagicMock,
-        qwen_engine: QwenEngine,
-    ) -> None:
-        qwen_engine._voice_references["clone"] = "/voices/clone-ref.wav"
-        mock_run.return_value = MagicMock(returncode=0)
-        mock_read.return_value = _create_wav_bytes()
-        mock_pipeline.return_value = b"audio"
-
-        qwen_engine.generate_speech("Olá", "clone", "ogg")
-
-        cmd = mock_run.call_args[0][0]
-        assert "-r" in cmd
-        r_idx = cmd.index("-r")
-        assert cmd[r_idx + 1] == "/voices/clone-ref.wav"
-
-    @patch("comadre.service._apply_whatsapp_subtle")
-    @patch("comadre.service.subprocess.run")
-    @patch("comadre.service.Path.read_bytes")
-    @patch("comadre.service.Path.unlink")
-    def test_female_voice_passes_female_reference(
-        self,
-        _mock_unlink: MagicMock,
-        mock_read: MagicMock,
-        mock_run: MagicMock,
-        mock_pipeline: MagicMock,
-        qwen_engine: QwenEngine,
-    ) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        mock_read.return_value = _create_wav_bytes()
-        mock_pipeline.return_value = b"audio"
-
-        qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
-
-        cmd = mock_run.call_args[0][0]
-        assert "-r" in cmd
-        r_idx = cmd.index("-r")
-        assert cmd[r_idx + 1] == "/voices/female-reference.wav"
-
-    @patch("comadre.service._apply_whatsapp_subtle")
-    @patch("comadre.service.subprocess.run")
-    @patch("comadre.service.Path.read_bytes")
-    @patch("comadre.service.Path.unlink")
-    def test_male_voice_passes_male_reference(
-        self,
-        _mock_unlink: MagicMock,
-        mock_read: MagicMock,
-        mock_run: MagicMock,
-        mock_pipeline: MagicMock,
-        qwen_engine: QwenEngine,
-    ) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        mock_read.return_value = _create_wav_bytes()
-        mock_pipeline.return_value = b"audio"
-
-        qwen_engine.generate_speech("Olá", "qwen-male", "ogg")
-
-        cmd = mock_run.call_args[0][0]
-        assert "-r" in cmd
-        r_idx = cmd.index("-r")
-        assert cmd[r_idx + 1] == "/voices/male-reference.wav"
-
-    def test_is_clone_configured_true(self, qwen_engine: QwenEngine) -> None:
-        qwen_engine._voice_references["clone"] = "/voices/ref.wav"
-        assert qwen_engine.is_clone_configured is True
-
-    def test_is_clone_configured_false(self, qwen_engine: QwenEngine) -> None:
-        assert qwen_engine.is_clone_configured is False
 
 
 # --- Qwen3 char limit validation ---
@@ -714,7 +558,7 @@ class TestQwenCloneReference:
 
 class TestQwenCharLimit:
     def test_char_limit_is_300(self) -> None:
-        assert QWEN_CHAR_LIMIT == 300
+        assert QwenEngine.CHAR_LIMIT == 300
 
     @patch("comadre.service._apply_whatsapp_subtle")
     @patch("comadre.service.subprocess.run")
@@ -731,22 +575,22 @@ class TestQwenCharLimit:
         mock_run.return_value = MagicMock(returncode=0)
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
-        text = "a" * QWEN_CHAR_LIMIT
-        result = qwen_engine.generate_speech(text, "qwen-female", "wav")
+        text = "a" * QwenEngine.CHAR_LIMIT
+        result = qwen_engine.generate_speech(text, FAKE_REF_PATH, "wav")
         assert result == b"audio"
 
     def test_text_over_limit_raises(self, qwen_engine: QwenEngine) -> None:
-        text = "a" * (QWEN_CHAR_LIMIT + 1)
+        text = "a" * (QwenEngine.CHAR_LIMIT + 1)
         with pytest.raises(InvalidRequestError) as exc_info:
-            qwen_engine.generate_speech(text, "qwen-female", "wav")
-        assert str(QWEN_CHAR_LIMIT) in exc_info.value.message
+            qwen_engine.generate_speech(text, FAKE_REF_PATH, "wav")
+        assert str(QwenEngine.CHAR_LIMIT) in exc_info.value.message
         assert exc_info.value.status_code == 400
 
     def test_error_hint_mentions_limit(self, qwen_engine: QwenEngine) -> None:
-        text = "a" * (QWEN_CHAR_LIMIT + 1)
+        text = "a" * (QwenEngine.CHAR_LIMIT + 1)
         with pytest.raises(InvalidRequestError) as exc_info:
-            qwen_engine.generate_speech(text, "qwen-female", "wav")
-        assert str(QWEN_CHAR_LIMIT) in exc_info.value.hint
+            qwen_engine.generate_speech(text, FAKE_REF_PATH, "wav")
+        assert str(QwenEngine.CHAR_LIMIT) in exc_info.value.hint
 
 
 # --- Qwen3 empty text validation ---
@@ -755,12 +599,12 @@ class TestQwenCharLimit:
 class TestQwenEmptyText:
     def test_rejects_empty_string(self, qwen_engine: QwenEngine) -> None:
         with pytest.raises(InvalidRequestError) as exc_info:
-            qwen_engine.generate_speech("", "qwen-female", "wav")
+            qwen_engine.generate_speech("", FAKE_REF_PATH, "wav")
         assert "empty" in exc_info.value.message.lower()
 
     def test_rejects_whitespace_only(self, qwen_engine: QwenEngine) -> None:
         with pytest.raises(InvalidRequestError):
-            qwen_engine.generate_speech("   \n\t  ", "qwen-female", "wav")
+            qwen_engine.generate_speech("   \n\t  ", FAKE_REF_PATH, "wav")
 
 
 # --- Qwen3 response format validation ---
@@ -769,7 +613,7 @@ class TestQwenEmptyText:
 class TestQwenResponseFormat:
     def test_rejects_unsupported_format(self, qwen_engine: QwenEngine) -> None:
         with pytest.raises(InvalidRequestError) as exc_info:
-            qwen_engine.generate_speech("hello", "qwen-female", "mp3")
+            qwen_engine.generate_speech("hello", FAKE_REF_PATH, "mp3")
         assert "mp3" in exc_info.value.message
 
 
@@ -793,7 +637,7 @@ class TestQwenSubprocessInvocation:
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
 
-        qwen_engine.generate_speech("Olá mundo", "qwen-female", "ogg")
+        qwen_engine.generate_speech("Ola mundo", FAKE_REF_PATH, "ogg")
 
         cmd = mock_run.call_args[0][0]
         # Verify mandatory flags
@@ -813,6 +657,30 @@ class TestQwenSubprocessInvocation:
     @patch("comadre.service.subprocess.run")
     @patch("comadre.service.Path.read_bytes")
     @patch("comadre.service.Path.unlink")
+    def test_reference_path_passed_via_r_flag(
+        self,
+        _mock_unlink: MagicMock,
+        mock_read: MagicMock,
+        mock_run: MagicMock,
+        mock_pipeline: MagicMock,
+        qwen_engine: QwenEngine,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_read.return_value = _create_wav_bytes()
+        mock_pipeline.return_value = b"audio"
+
+        ref = Path("/voices/qwen/galvani.wav")
+        qwen_engine.generate_speech("Ola", ref, "ogg")
+
+        cmd = mock_run.call_args[0][0]
+        assert "-r" in cmd
+        r_idx = cmd.index("-r")
+        assert cmd[r_idx + 1] == "/voices/qwen/galvani.wav"
+
+    @patch("comadre.service._apply_whatsapp_subtle")
+    @patch("comadre.service.subprocess.run")
+    @patch("comadre.service.Path.read_bytes")
+    @patch("comadre.service.Path.unlink")
     def test_seed_parameter_passed(
         self,
         _mock_unlink: MagicMock,
@@ -825,7 +693,7 @@ class TestQwenSubprocessInvocation:
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
 
-        qwen_engine.generate_speech("Olá", "qwen-female", "ogg", seed=42)
+        qwen_engine.generate_speech("Ola", FAKE_REF_PATH, "ogg", seed=42)
 
         cmd = mock_run.call_args[0][0]
         seed_idx = cmd.index("--seed")
@@ -847,7 +715,7 @@ class TestQwenSubprocessInvocation:
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
 
-        qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
+        qwen_engine.generate_speech("Ola", FAKE_REF_PATH, "ogg")
 
         cmd = mock_run.call_args[0][0]
         seed_idx = cmd.index("--seed")
@@ -870,7 +738,7 @@ class TestQwenSubprocessInvocation:
         mock_pipeline.return_value = b"audio"
 
         text = "a" * 100  # 100 chars -> min(4096, max(100, 800)) = 800
-        qwen_engine.generate_speech(text, "qwen-female", "ogg")
+        qwen_engine.generate_speech(text, FAKE_REF_PATH, "ogg")
 
         cmd = mock_run.call_args[0][0]
         mt_idx = cmd.index("--max-tokens")
@@ -892,32 +760,11 @@ class TestQwenSubprocessInvocation:
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
 
-        qwen_engine.generate_speech("Seu CNPJ é válido", "qwen-female", "ogg")
+        qwen_engine.generate_speech("Seu CNPJ e valido", FAKE_REF_PATH, "ogg")
 
         cmd = mock_run.call_args[0][0]
         t_idx = cmd.index("-t")
-        assert cmd[t_idx + 1] == "Seu C N P J é válido"
-
-    @patch("comadre.service._apply_whatsapp_subtle")
-    @patch("comadre.service.subprocess.run")
-    @patch("comadre.service.Path.read_bytes")
-    @patch("comadre.service.Path.unlink")
-    def test_all_voices_pass_r_flag(
-        self,
-        _mock_unlink: MagicMock,
-        mock_read: MagicMock,
-        mock_run: MagicMock,
-        mock_pipeline: MagicMock,
-        qwen_engine: QwenEngine,
-    ) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        mock_read.return_value = _create_wav_bytes()
-        mock_pipeline.return_value = b"audio"
-
-        qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
-
-        cmd = mock_run.call_args[0][0]
-        assert "-r" in cmd
+        assert cmd[t_idx + 1] == "Seu C N P J e valido"
 
     @patch("comadre.service._apply_whatsapp_subtle")
     @patch("comadre.service.subprocess.run")
@@ -935,38 +782,13 @@ class TestQwenSubprocessInvocation:
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
 
-        qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
+        qwen_engine.generate_speech("Ola", FAKE_REF_PATH, "ogg")
 
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "/usr/local/bin/qwen3-tts-cli"
         m_idx = cmd.index("-m")
         assert cmd[m_idx + 1] == "models"
-        t_idx = cmd.index("-t")
-        assert cmd[t_idx + 1] == "Olá"
         assert "-o" in cmd
-
-    @patch("comadre.service._apply_whatsapp_subtle")
-    @patch("comadre.service.subprocess.run")
-    @patch("comadre.service.Path.read_bytes")
-    @patch("comadre.service.Path.unlink")
-    def test_text_passed_via_t_flag(
-        self,
-        _mock_unlink: MagicMock,
-        mock_read: MagicMock,
-        mock_run: MagicMock,
-        mock_pipeline: MagicMock,
-        qwen_engine: QwenEngine,
-    ) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        mock_read.return_value = _create_wav_bytes()
-        mock_pipeline.return_value = b"audio"
-
-        qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
-
-        cmd = mock_run.call_args[0][0]
-        t_idx = cmd.index("-t")
-        assert cmd[t_idx + 1] == "Olá"
-        assert "--" not in cmd
 
     @patch("comadre.service._apply_whatsapp_subtle")
     @patch("comadre.service.subprocess.run")
@@ -985,13 +807,11 @@ class TestQwenSubprocessInvocation:
         mock_read.return_value = _create_wav_bytes()
         mock_pipeline.return_value = b"audio"
 
-        # "CNPJ" is 4 raw chars → max_tokens = max(100, 4*8) = 100
-        # After expand_siglas: "C N P J" is 7 chars → would be 56 if used
-        qwen_engine.generate_speech("CNPJ", "qwen-female", "ogg")
+        # "CNPJ" is 4 raw chars -> max_tokens = max(100, 4*8) = 100
+        qwen_engine.generate_speech("CNPJ", FAKE_REF_PATH, "ogg")
 
         cmd = mock_run.call_args[0][0]
         mt_idx = cmd.index("--max-tokens")
-        # 4 raw chars * 8 = 32, max(100, 32) = 100, min(4096, 100) = 100
         assert cmd[mt_idx + 1] == "100"
 
 
@@ -1015,7 +835,7 @@ class TestQwenSubprocessErrors:
             request_logger.at_level(logging.ERROR, logger="request"),
             pytest.raises(GenerationError, match="timed out"),
         ):
-            qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
+            qwen_engine.generate_speech("Ola", FAKE_REF_PATH, "ogg")
 
     @patch("comadre.service.subprocess.run")
     @patch("comadre.service.Path.unlink")
@@ -1033,7 +853,7 @@ class TestQwenSubprocessErrors:
             request_logger.at_level(logging.ERROR, logger="request"),
             pytest.raises(GenerationError, match="failed"),
         ):
-            qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
+            qwen_engine.generate_speech("Ola", FAKE_REF_PATH, "ogg")
 
     def test_subprocess_timeout_is_60s(self, qwen_engine: QwenEngine) -> None:
         with (
@@ -1043,7 +863,7 @@ class TestQwenSubprocessErrors:
             patch("comadre.service.Path.unlink"),
         ):
             mock_run.return_value = MagicMock(returncode=0)
-            qwen_engine.generate_speech("Olá", "qwen-female", "ogg")
+            qwen_engine.generate_speech("Ola", FAKE_REF_PATH, "ogg")
             assert mock_run.call_args.kwargs["timeout"] == 60
 
 
@@ -1055,7 +875,7 @@ class TestQwenModelNotLoaded:
         engine = QwenEngine()
         assert not engine.is_loaded
         with pytest.raises(GenerationError, match="Engine not loaded"):
-            engine.generate_speech("hello", "qwen-female", "wav")
+            engine.generate_speech("hello", FAKE_REF_PATH, "wav")
 
     def test_warm_up_raises_when_not_loaded(self) -> None:
         engine = QwenEngine()
@@ -1066,19 +886,8 @@ class TestQwenModelNotLoaded:
 # --- Qwen3 load_model ---
 
 
-def _create_ref_wav(path: Path, duration_s: int = 5) -> None:
-    """Create a valid reference WAV file at the given path."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(16000)
-        wf.writeframes(b"\x00\x00" * 16000 * duration_s)
-    path.write_bytes(buf.getvalue())
-
-
-def _setup_qwen_files(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
-    """Create CLI binary, model, tokenizer, and reference WAVs in tmp_path."""
+def _setup_qwen_files(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create CLI binary, model, and tokenizer in tmp_path."""
     cli = tmp_path / "qwen3-tts-cli"
     cli.write_bytes(b"#!/bin/sh\n")
     cli.chmod(0o755)
@@ -1086,191 +895,62 @@ def _setup_qwen_files(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     model.write_bytes(b"GGUF")
     tokenizer = tmp_path / "tokenizer.gguf"
     tokenizer.write_bytes(b"GGUF")
-    female_ref = tmp_path / "female-reference.wav"
-    _create_ref_wav(female_ref)
-    male_ref = tmp_path / "male-reference.wav"
-    _create_ref_wav(male_ref)
-    return cli, model, tokenizer, female_ref, male_ref
+    return cli, model, tokenizer
 
 
 class TestQwenLoadModel:
     def test_load_model_sets_loaded(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, mref = _setup_qwen_files(tmp_path)
+        cli, model, tok = _setup_qwen_files(tmp_path)
         engine = QwenEngine()
-        engine.load_model(str(cli), str(model), str(tok), str(fref), str(mref))
+        engine.load_model(str(cli), str(model), str(tok))
         assert engine.is_loaded
 
-    def test_load_model_configures_female_and_male(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, mref = _setup_qwen_files(tmp_path)
-        engine = QwenEngine()
-        engine.load_model(str(cli), str(model), str(tok), str(fref), str(mref))
-        assert "qwen-female" in engine._voice_references
-        assert "qwen-male" in engine._voice_references
-        assert not engine.is_clone_configured
-
     def test_load_model_missing_cli_raises(self, tmp_path: Path) -> None:
-        _, model, tok, fref, mref = _setup_qwen_files(tmp_path)
+        _, model, tok = _setup_qwen_files(tmp_path)
         engine = QwenEngine()
         with pytest.raises(FileNotFoundError, match="binary not found"):
-            engine.load_model(
-                str(tmp_path / "nonexistent"),
-                str(model),
-                str(tok),
-                str(fref),
-                str(mref),
-            )
+            engine.load_model(str(tmp_path / "nonexistent"), str(model), str(tok))
 
     def test_load_model_non_executable_cli_raises(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, mref = _setup_qwen_files(tmp_path)
+        cli, model, tok = _setup_qwen_files(tmp_path)
         cli.chmod(0o644)
         engine = QwenEngine()
         with pytest.raises(PermissionError, match="not executable"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(fref),
-                str(mref),
-            )
+            engine.load_model(str(cli), str(model), str(tok))
 
     def test_load_model_missing_model_raises(self, tmp_path: Path) -> None:
-        cli, _, tok, fref, mref = _setup_qwen_files(tmp_path)
+        cli, _, tok = _setup_qwen_files(tmp_path)
         engine = QwenEngine()
         with pytest.raises(FileNotFoundError, match="model file not found"):
-            engine.load_model(
-                str(cli),
-                str(tmp_path / "x.gguf"),
-                str(tok),
-                str(fref),
-                str(mref),
-            )
+            engine.load_model(str(cli), str(tmp_path / "x.gguf"), str(tok))
 
     def test_load_model_missing_tokenizer_raises(self, tmp_path: Path) -> None:
-        cli, model, _, fref, mref = _setup_qwen_files(tmp_path)
+        cli, model, _ = _setup_qwen_files(tmp_path)
         engine = QwenEngine()
         with pytest.raises(FileNotFoundError, match="tokenizer file not found"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tmp_path / "x.gguf"),
-                str(fref),
-                str(mref),
-            )
+            engine.load_model(str(cli), str(model), str(tmp_path / "x.gguf"))
 
-    def test_load_model_missing_female_ref_raises(self, tmp_path: Path) -> None:
-        cli, model, tok, _, mref = _setup_qwen_files(tmp_path)
+    def test_load_model_with_custom_threads(self, tmp_path: Path) -> None:
+        cli, model, tok = _setup_qwen_files(tmp_path)
         engine = QwenEngine()
-        with pytest.raises(FileNotFoundError, match="Female reference"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(tmp_path / "missing.wav"),
-                str(mref),
-            )
+        engine.load_model(str(cli), str(model), str(tok), threads=8)
+        assert engine._threads == 8
 
-    def test_load_model_missing_male_ref_raises(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, _ = _setup_qwen_files(tmp_path)
-        engine = QwenEngine()
-        with pytest.raises(FileNotFoundError, match="Male reference"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(fref),
-                str(tmp_path / "missing.wav"),
-            )
 
-    def test_load_model_with_clone_reference(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, mref = _setup_qwen_files(tmp_path)
-        clone_ref = tmp_path / "clone-ref.wav"
-        _create_ref_wav(clone_ref)
+# --- Qwen3 warm_up ---
 
-        engine = QwenEngine()
-        engine.load_model(
-            str(cli),
-            str(model),
-            str(tok),
-            str(fref),
-            str(mref),
-            clone_reference_path=str(clone_ref),
-        )
-        assert engine.is_clone_configured
-        assert "clone" in engine._voice_references
 
-    def test_load_model_missing_clone_ref_raises(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, mref = _setup_qwen_files(tmp_path)
-        engine = QwenEngine()
-        with pytest.raises(FileNotFoundError, match="Clone reference"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(fref),
-                str(mref),
-                clone_reference_path=str(tmp_path / "missing.wav"),
-            )
-
-    def test_load_model_corrupt_ref_raises(self, tmp_path: Path) -> None:
-        cli, model, tok, _, mref = _setup_qwen_files(tmp_path)
-        corrupt = tmp_path / "corrupt.wav"
-        corrupt.write_bytes(b"not a wav file at all")
-        engine = QwenEngine()
-        with pytest.raises(ValueError, match="not a valid WAV"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(corrupt),
-                str(mref),
-            )
-
-    def test_load_model_short_duration_warns(
+class TestQwenWarmUp:
+    def test_warm_up_skips_when_no_reference(
         self,
-        tmp_path: Path,
+        qwen_engine: QwenEngine,
         startup_logger: pytest.LogCaptureFixture,
     ) -> None:
-        cli, model, tok, _, mref = _setup_qwen_files(tmp_path)
-        short = tmp_path / "short.wav"
-        _create_ref_wav(short, duration_s=1)
-        engine = QwenEngine()
-        with startup_logger.at_level(logging.WARNING, logger="startup"):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(short),
-                str(mref),
-            )
-        assert any("outside 3-10s range" in r.message for r in startup_logger.records)
-
-    def test_load_model_failure_leaves_no_partial_state(self, tmp_path: Path) -> None:
-        cli, model, tok, _, mref = _setup_qwen_files(tmp_path)
-        corrupt = tmp_path / "corrupt.wav"
-        corrupt.write_bytes(b"not a wav")
-        engine = QwenEngine()
-        with pytest.raises(ValueError):
-            engine.load_model(
-                str(cli),
-                str(model),
-                str(tok),
-                str(corrupt),
-                str(mref),
-            )
-        assert not engine.is_loaded
-        assert engine._cli_path is None
-
-    def test_load_model_no_clone_disables_clone(self, tmp_path: Path) -> None:
-        cli, model, tok, fref, mref = _setup_qwen_files(tmp_path)
-        engine = QwenEngine()
-        engine.load_model(
-            str(cli),
-            str(model),
-            str(tok),
-            str(fref),
-            str(mref),
+        with startup_logger.at_level(logging.INFO, logger="startup"):
+            qwen_engine.warm_up(reference_path=None)
+        assert any(
+            "skipping warm-up" in r.message.lower() for r in startup_logger.records
         )
-        assert not engine.is_clone_configured
 
 
 # --- whatsapp-subtle pipeline ---

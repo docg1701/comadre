@@ -10,9 +10,10 @@ all:
     # Set it before running any playbook: export COMADRE_API_KEY="your-secret-key"
     api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
 
-    # Optional: local path to a clone reference WAV file for Qwen3 voice cloning
-    # Leave empty to skip clone WAV deployment
-    clone_reference_wav: ""
+    # Optional: local directory containing kokoro/ and qwen/ subdirs with voice files
+    # Used by deploy-voices.yml playbook. Leave empty to skip voice deployment.
+    # See docs/voice-management.md for directory structure.
+    voices_local_dir: ""
 
     # Git repository URL and branch to clone on the VPS
     repo_url: "CHANGE_ME"

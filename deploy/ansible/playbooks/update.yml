@@ -126,9 +126,9 @@
 
           Service Status:  {{ hc.status }}
           Loaded Voices:   {{ hc.voices | join(', ') }}
+          Voice Count:     {{ hc.voices | length }}
           Kokoro Engine:   {{ hc.engines.kokoro | default('unknown') }}
           Qwen3 Engine:    {{ hc.engines.qwen3 | default('unknown') }}
-          Clone Config:    {{ 'Yes' if hc.clone_configured | default(false) else 'No' }}
           Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
 
           Data preserved:  Volumes (models, voices, audio) intact

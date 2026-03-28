@@ -37,7 +37,7 @@ all:
 
   vars:
     api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
-    clone_reference_wav: ""
+    voices_local_dir: ""
     repo_url: "YOUR_REPO_URL"
     repo_branch: "master"
     port: 8000
@@ -57,7 +57,7 @@ all:
 | `repo_branch` | No | Branch to deploy (default: `master`) |
 | `port` | No | Service port (default: `8000`) |
 | `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
-| `clone_reference_wav` | No | Local path to clone reference WAV (empty to skip) |
+| `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
 | `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model (empty to skip) |
 | `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF (empty to skip) |
 
@@ -72,7 +72,7 @@ Deploys COMADRE on a clean Ubuntu VPS with a single command.
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
 5. Clones the repository to `~/comadre`
-6. Deploys clone reference WAV to voices volume (if configured)
+6. Deploys voice files to voices volume (if `voices_local_dir` is configured)
 7. Creates `.env` with API_KEY, DEFAULT_VOICE, and PORT
 8. Builds the Docker image and starts the service
 9. Configures cron jobs (daily restart, audio cleanup)
@@ -95,7 +95,7 @@ COMADRE TTS Service -- Bootstrap Complete
 ============================================
 
 Service Status:  healthy
-Loaded Voices:   santa, dora, alex, clone, qwen-female, qwen-male
+Loaded Voices:   kokoro/pf_dora, kokoro/pm_alex, kokoro/pm_santa, qwen/female-reference, qwen/galvani
 Endpoint URL:    http://YOUR_VPS_IP:8000
 ============================================
 ```
@@ -106,7 +106,7 @@ Endpoint URL:    http://YOUR_VPS_IP:8000
 curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Ola mundo", "voice":"santa"}' \
+  -d '{"input":"Ola mundo", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
 ```
 
@@ -159,7 +159,7 @@ Read-only diagnostic tool for troubleshooting. Never modifies anything.
 
 - Memory usage above 5 GB
 - Disk usage above 80%
-- Qwen3 engine not loaded (missing clone reference WAV)
+- Qwen3 engine not loaded (missing GGUF models or voice files)
 
 **Run:**
 
@@ -221,42 +221,44 @@ ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose restart"
 
 **Alternative: auto-download.** If you set `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` in `.env`, the application downloads models automatically on first start. This is slower but requires no manual file transfer.
 
-## Voice Cloning Setup
+## Voice Deployment
 
-Voice cloning uses Qwen3-TTS with a pre-configured reference WAV file. The reference audio is placed on the server at deploy time, not uploaded per-request.
+Voices are discovered from the filesystem at runtime. No environment variable configuration is needed for individual voices -- just place files in the correct directory. For full details, see [voice-management.md](voice-management.md).
 
-**Requirements for the reference WAV:**
+**Deploy voices via Ansible:**
+
+1. Set `voices_local_dir` in inventory to a local directory containing `kokoro/` and/or `qwen/` subdirectories:
+
+    ```yaml
+    voices_local_dir: "/path/to/my-voices"
+    ```
+
+    Directory structure:
+
+    ```text
+    /path/to/my-voices/
+      kokoro/          # .npy voice profiles (optional)
+      qwen/            # .wav reference audio (optional)
+        galvani.wav
+        female-reference.wav
+    ```
+
+2. Run bootstrap (for first deploy) or the `deploy-voices.yml` playbook:
+
+    ```bash
+    cd deploy/ansible
+    ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
+    ```
+
+3. Voices are available immediately -- no restart needed.
+
+**Requirements for Qwen3 reference WAVs:**
 
 - Duration: 3-10 seconds
 - Format: WAV, mono, 16kHz or higher sample rate
 - Content: clear speech in the target voice, minimal background noise
 
-**Deploy the reference WAV:**
-
-1. Set `clone_reference_wav` in inventory to the local path of your WAV file:
-
-    ```yaml
-    clone_reference_wav: "/path/to/reference-voice.wav"
-    ```
-
-2. Run bootstrap (for first deploy) or manually copy using `deploy-models.yml` pattern
-
-3. Set `CLONE_REFERENCE_PATH` in `.env` on the VPS:
-
-    ```bash
-    # SSH into VPS and edit .env
-    echo 'CLONE_REFERENCE_PATH=/voices/reference-voice.wav' >> ~/comadre/.env
-    ```
-
-4. Restart the service:
-
-    ```bash
-    ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose restart"
-    ```
-
 **Seed reproducibility:** Qwen3-TTS supports seed values for consistent voice characteristics across generations. The same seed + reference WAV produces similar voice quality.
-
-**Clone disabled:** If no reference WAV is configured (`CLONE_REFERENCE_PATH` is not set), the `clone` voice is disabled. The `/health` endpoint reports `clone_configured: false`.
 
 ## Daily Restart
 

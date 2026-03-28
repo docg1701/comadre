@@ -43,7 +43,8 @@ class VoiceNotFoundError(ComadreError):
             error_type="not_found_error",
             hint=(
                 f"Available voices: {available}."
-                " Place WAV files (3-10s) in the /voices/ directory."
+                " Use 'kokoro/<name>' for Kokoro voices (.npy files or built-ins)"
+                " or 'qwen/<name>' for Qwen3 voices (.wav files in /voices/)."
             ),
         )
         self.voice = voice

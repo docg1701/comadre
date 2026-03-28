@@ -19,7 +19,7 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 ```json
 {
   "input": "O INSS confirmou que o seu benefício BPC LOAS foi concedido.",
-  "voice": "santa",
+  "voice": "kokoro/pm_santa",
   "response_format": "ogg",
   "speed": 1.0,
   "enhance": true,
@@ -32,23 +32,24 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 | Parameter | Type | Required | Default | Values | Description |
 |---|---|---|---|---|---|
 | `input` | string | Yes | — | max 500 chars (Kokoro) / 300 chars (Qwen3) | Text to synthesize in pt-BR |
-| `voice` | string | Yes | — | `santa`, `dora`, `alex`, `clone`, `qwen-female`, `qwen-male` | Voice selection (determines engine) |
+| `voice` | string | Yes | — | `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/<name>` | Voice selection (engine/name format, see [voice-management.md](voice-management.md)) |
 | `response_format` | string | No | `"ogg"` | `ogg`, `wav` | Output format |
 | `speed` | float | No | `1.0` | 0.5 — 2.0 | Speed multiplier (stacks with enhance speed) |
 | `enhance` | bool | No | `true` | true/false | Apply post-processing pipeline |
 | `seed` | int | No | `-1` | -1 or any positive int | Qwen3 random seed (-1 = random). Ignored for Kokoro. |
 | `destination` | string | No | `"whatsapp"` | `whatsapp`, `telegram`, `messenger`, `instagram` | Target platform. When `instagram`, encode as AAC M4A instead of OGG Opus. |
 
-#### Engine routing (fixed, based on `voice`)
+#### Engine routing (based on `voice` prefix)
 
-| voice | Engine | Behavior |
+Voice names use the `engine/name` format. The engine prefix determines the TTS backend. Voices are discovered from the filesystem at runtime -- see [voice-management.md](voice-management.md) for details.
+
+| Voice pattern | Engine | Behavior |
 |---|---|---|
-| `santa` | Kokoro fp32 + pm_santa | Fast (RTF 1.1x), perfect siglas via espeak-ng pt_extra |
-| `dora` | Kokoro fp32 + pf_dora | Female voice, fast |
-| `alex` | Kokoro fp32 + pm_alex | Male alternative, fast |
-| `clone` | Qwen3 C++ Q8_0 + operator-provided reference WAV | Custom voice cloning (RTF 2.5x) |
-| `qwen-female` | Qwen3 C++ Q8_0 + bundled `voices/female-reference.wav` | Female voice via x-vector cloning (RTF 2.5x) |
-| `qwen-male` | Qwen3 C++ Q8_0 + bundled `voices/male-reference.wav` | Male voice via x-vector cloning (RTF 2.5x) |
+| `kokoro/pm_santa` | Kokoro fp32 | Fast (RTF 1.1x), perfect siglas via espeak-ng pt_extra |
+| `kokoro/pf_dora` | Kokoro fp32 | Female voice, fast |
+| `kokoro/pm_alex` | Kokoro fp32 | Male alternative, fast |
+| `kokoro/<name>` | Kokoro fp32 | Any built-in or custom .npy voice profile |
+| `qwen/<name>` | Qwen3 C++ Q8_0 | Voice cloning from reference WAV in `/voices/qwen/` (RTF 2.5x) |
 
 #### Preprocessing (automatic, not configurable)
 
@@ -112,9 +113,10 @@ Body: [audio bytes]
 ```json
 {
   "status": "healthy",
+  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female-reference", "qwen/galvani"],
   "engines": {
-    "kokoro": {"loaded": true, "voices": ["santa", "dora", "alex"]},
-    "qwen3": {"loaded": true, "model": "q8_0", "clone_reference": "configured"}
+    "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
+    "qwen3": {"loaded": true, "voices": ["qwen/female-reference", "qwen/galvani"]}
   },
   "queue_depth": 3
 }
@@ -275,21 +277,23 @@ n8n workflow:
 
 ## Qwen3 Voice Configuration
 
-All Qwen3 voices use x-vector cloning from reference WAV files. The 0.6B-Base model has no built-in voice presets — voice identity is determined entirely by the reference audio's speaker embedding.
+All Qwen3 voices use x-vector cloning from reference WAV files. The 0.6B-Base model has no built-in voice presets — voice identity is determined entirely by the reference audio's speaker embedding. Voices are discovered from the `/voices/qwen/` directory at runtime.
 
-### Bundled references (ship with the project)
+For detailed voice setup instructions, see [voice-management.md](voice-management.md).
+
+### Reference voices (ship with the project)
 
 | Voice | File | Source | License |
 |---|---|---|---|
-| `qwen-female` | `voices/female-reference.wav` | LibriVox pt-BR — Leni (Contos Brasileiros, track 02) | Public domain |
-| `qwen-male` | `voices/male-reference.wav` | LibriVox pt-BR — Lucas M. (Contos Brasileiros, track 04) | Public domain |
-| `clone` (galvani) | `voices/audio-galvani-01.wav` | Original recording — Galvani (project owner) | Private / owner consent |
+| `qwen/female-reference` | `/voices/qwen/female-reference.wav` | LibriVox pt-BR — Leni (Contos Brasileiros, track 02) | Public domain |
+| `qwen/male-reference` | `/voices/qwen/male-reference.wav` | LibriVox pt-BR — Lucas M. (Contos Brasileiros, track 04) | Public domain |
+| `qwen/galvani` | `/voices/qwen/galvani.wav` | Original recording — Galvani (project owner) | Private / owner consent |
 
-### Custom clone reference (operator-provided at deploy time)
+### Adding a custom voice
 
-1. Place reference WAV in `/app/voices/clone-reference.wav` (3-10s, clean speech, mono, 24kHz)
-2. Set `CLONE_REFERENCE_PATH=/app/voices/clone-reference.wav` in environment
-3. When `voice=clone` is requested, Qwen3 uses this reference
+1. Place a reference WAV in `/voices/qwen/` (3-10s, clean speech, mono, 24kHz)
+2. The voice is immediately available as `qwen/<filename-without-extension>`
+3. No restart or environment variable configuration needed
 
 ### Consistency
 
@@ -307,11 +311,11 @@ services:
       - "8000:8000"
     environment:
       - API_KEY=${API_KEY}
-      - DEFAULT_VOICE=santa
-      - CLONE_REFERENCE=/app/voices/clone-reference.wav
+      - DEFAULT_VOICE=kokoro/pm_santa
+      - VOICES_DIR=/voices
       - ESPEAK_DATA_PATH=/usr/local/share/espeak-ng-data
     volumes:
-      - ./voices:/app/voices:ro
+      - comadre-voices:/voices:ro
     restart: unless-stopped
 ```
 

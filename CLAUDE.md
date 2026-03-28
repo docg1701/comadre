@@ -23,7 +23,7 @@ uv run pre-commit run --all-files  # All quality checks
 
 ## Architecture — What You Must Know
 
-- **Dual-engine**: voice name routes to engine. `santa`/`dora`/`alex` → Kokoro. `clone`/`qwen-female`/`qwen-male` → Qwen3.
+- **Dual-engine + filesystem voice discovery**: voice param format is `engine/name` (e.g. `kokoro/pm_santa`, `qwen/galvani`). Kokoro voices: `.npy` files in `/voices/kokoro/` or built-in from `.npz`. Qwen3 voices: `.wav` files in `/voices/qwen/`. Drop a file → available immediately, no restart. See `docs/voice-management.md`.
 - **Single FIFO queue** per instance (`asyncio.Lock`). No multi-worker model. Scale horizontally via Caddy.
 - **Engine-specific preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
 - **Engine-specific post-processing**: Kokoro → vibrato_warm pipeline. Qwen3 → whatsapp-subtle pipeline. Both output OGG Opus.
@@ -45,7 +45,7 @@ uv run pre-commit run --all-files  # All quality checks
 - `src/comadre/` — application code (config, logging, voices, preprocessing, service, exceptions)
 - `tests/` — pytest suite (mocked, no real models)
 - `deploy/espeak-ng/pt_extra` — custom sigla dictionary for espeak-ng
-- `docs/` — technical research docs (feasibility report, engine internals, dictionary docs, **qwen3-tts-cli build guide**, **qwen3 model quantization guide**)
+- `docs/` — technical research docs (feasibility report, engine internals, dictionary docs, **qwen3-tts-cli build guide**, **qwen3 model quantization guide**, **voice management guide**)
 - `deploy/bin/qwen3-tts-cli` — pre-built Qwen3 C++ binary (see `docs/building-qwen3-tts-cli.md` to rebuild)
 - `_bmad-output/` — planning artifacts (PRD, architecture, epics, stories, sprint status)
 

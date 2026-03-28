@@ -11,19 +11,17 @@ services:
       - comadre-audio:/audio:rw
     environment:
       API_KEY: ${API_KEY:?API_KEY must be set}
-      DEFAULT_VOICE: santa
+      DEFAULT_VOICE: kokoro/pm_santa
       PORT: "${PORT:-8000}"
       ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
       NOISE_DIR: /app/noise
+      VOICES_DIR: /voices
       KOKORO_MODEL_PATH: /models/kokoro-v1.0.onnx
       KOKORO_VOICES_PATH: /models/voices-v1.0.bin
       QWEN3_MODEL_PATH: /models/qwen3-tts-0.6b-q8_0.gguf
       QWEN3_TOKENIZER_PATH: /models/qwen3-tts-tokenizer-f16.gguf
       QWEN3_CLI_PATH: /usr/local/bin/qwen3-tts-cli
       QWEN3_THREADS: "4"
-      QWEN3_FEMALE_REFERENCE_PATH: /voices/female-reference.wav
-      QWEN3_MALE_REFERENCE_PATH: /voices/male-reference.wav
-      # CLONE_REFERENCE_PATH: /voices/audio-referencia-01.wav  # uncomment when clone WAV is placed in voices volume
     deploy:
       resources:
         limits:

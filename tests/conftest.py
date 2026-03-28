@@ -43,18 +43,20 @@ def mock_router() -> MagicMock:
     router = MagicMock()
     router.generate_speech.return_value = b"fake-audio-bytes"
     router.available_voices.return_value = [
-        "alex",
-        "dora",
-        "qwen-female",
-        "qwen-male",
-        "santa",
+        "kokoro/pm_alex",
+        "kokoro/pf_dora",
+        "kokoro/pm_santa",
+        "qwen/female-reference",
+        "qwen/male-reference",
     ]
     router.engine_status.return_value = {
-        "kokoro": {"loaded": True, "voices": ["alex", "dora", "santa"]},
+        "kokoro": {
+            "loaded": True,
+            "voices": ["kokoro/pm_alex", "kokoro/pf_dora", "kokoro/pm_santa"],
+        },
         "qwen3": {
             "loaded": True,
-            "clone_configured": False,
-            "voices": ["qwen-female", "qwen-male"],
+            "voices": ["qwen/female-reference", "qwen/male-reference"],
         },
     }
     return router

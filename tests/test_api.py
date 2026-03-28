@@ -20,7 +20,11 @@ class TestSpeechSuccess:
     ) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa", "response_format": "ogg"},
+            json={
+                "input": "Hello world",
+                "voice": "kokoro/pm_santa",
+                "response_format": "ogg",
+            },
             headers=auth_headers,
         )
         assert response.status_code == 200
@@ -32,7 +36,11 @@ class TestSpeechSuccess:
     ) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa", "response_format": "ogg"},
+            json={
+                "input": "Hello world",
+                "voice": "kokoro/pm_santa",
+                "response_format": "ogg",
+            },
             headers=auth_headers,
         )
         expected = 'attachment; filename="speech.ogg"'
@@ -43,7 +51,11 @@ class TestSpeechSuccess:
     ) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa", "response_format": "wav"},
+            json={
+                "input": "Hello world",
+                "voice": "kokoro/pm_santa",
+                "response_format": "wav",
+            },
             headers=auth_headers,
         )
         assert response.status_code == 200
@@ -63,10 +75,10 @@ class TestSpeechSuccess:
             headers=auth_headers,
         )
         assert response.status_code == 200
-        # Default voice is "santa" from Settings defaults
+        # Default voice is "kokoro/pm_santa" from Settings defaults
         mock_router.generate_speech.assert_called_once()
         call_kwargs = mock_router.generate_speech.call_args
-        assert call_kwargs.kwargs["voice_name"] == "santa"
+        assert call_kwargs.kwargs["voice_name"] == "kokoro/pm_santa"
 
     async def test_noise_dir_passed_to_router(
         self,
@@ -76,7 +88,7 @@ class TestSpeechSuccess:
     ) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa"},
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
             headers=auth_headers,
         )
         assert response.status_code == 200
@@ -91,7 +103,7 @@ class TestSpeechAuth:
     async def test_missing_auth_header_returns_401(self, client: AsyncClient) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa"},
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
         )
         assert response.status_code == 401
         body = response.json()
@@ -100,7 +112,7 @@ class TestSpeechAuth:
     async def test_invalid_bearer_token_returns_401(self, client: AsyncClient) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa"},
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
             headers={"Authorization": "Bearer wrong-key"},
         )
         assert response.status_code == 401
@@ -116,7 +128,7 @@ class TestSpeechValidation:
     ) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"voice": "santa"},
+            json={"voice": "kokoro/pm_santa"},
             headers=auth_headers,
         )
         assert response.status_code == 400
@@ -128,7 +140,7 @@ class TestSpeechValidation:
     ) -> None:
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "", "voice": "santa"},
+            json={"input": "", "voice": "kokoro/pm_santa"},
             headers=auth_headers,
         )
         assert response.status_code == 400
@@ -182,7 +194,7 @@ class TestSpeechWarmUp:
     ) -> None:
         response = await warmup_client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa"},
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
             headers=auth_headers,
         )
         assert response.status_code == 503
@@ -196,7 +208,7 @@ class TestSpeechWarmUp:
         """503 warm-up fires before 401 auth check (dependency ordering)."""
         response = await warmup_client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa"},
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
             headers={"Authorization": "Bearer wrong-key"},
         )
         assert response.status_code == 503
@@ -216,7 +228,7 @@ class TestSpeechTimeout:
         mock_router.generate_speech.side_effect = TimeoutError("generation timed out")
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello world", "voice": "santa"},
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
             headers=auth_headers,
         )
         assert response.status_code == 500
@@ -243,7 +255,7 @@ class TestSpeechUnhandledException:
         ) as c:
             response = await c.post(
                 "/v1/audio/speech",
-                json={"input": "Hello world", "voice": "santa"},
+                json={"input": "Hello world", "voice": "kokoro/pm_santa"},
                 headers=auth_headers,
             )
         assert response.status_code == 500

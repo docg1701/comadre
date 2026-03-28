@@ -7,7 +7,7 @@ COMADRE is configured via environment variables. All variables are loaded at sta
 | Variable | Default | Description | Example |
 | --- | --- | --- | --- |
 | `API_KEY` | *(required)* | API authentication key. Startup fails if not set. Uses `SecretStr` internally. | `my-secret-key-2024` |
-| `DEFAULT_VOICE` | `santa` | Voice used when request omits the `voice` field. | `dora` |
+| `DEFAULT_VOICE` | `kokoro/pm_santa` | Voice used when request omits the `voice` field. Uses `engine/name` format. | `kokoro/pf_dora` |
 | `PORT` | `8000` | HTTP port for the FastAPI server. Range: 1-65535. | `9000` |
 | `ESPEAK_DATA_PATH` | `None` | Override bundled espeak-ng data path for custom pt-BR pronunciation. | `/usr/local/share/espeak-ng-data` |
 | `NOISE_DIR` | `/app/noise` | Directory containing room/hiss noise WAV files for post-processing pipelines. | `/app/noise` |
@@ -16,9 +16,7 @@ COMADRE is configured via environment variables. All variables are loaded at sta
 | `QWEN3_CLI_PATH` | `/usr/local/bin/qwen3-tts-cli` | Path to the qwen3-tts-cli binary. | `/usr/local/bin/qwen3-tts-cli` |
 | `QWEN3_MODEL_PATH` | `models/qwen3-tts-0.6b-q8_0.gguf` | Path to the Qwen3 TTS Q8_0 GGUF model file. | `/models/qwen3-tts-0.6b-q8_0.gguf` |
 | `QWEN3_TOKENIZER_PATH` | `models/qwen3-tts-tokenizer-f16.gguf` | Path to the Qwen3 TTS tokenizer GGUF file. | `/models/qwen3-tts-tokenizer-f16.gguf` |
-| `CLONE_REFERENCE_PATH` | `None` | Path to clone reference WAV for Qwen3 voice cloning. If not set, clone voice is disabled. | `/voices/audio-referencia-01.wav` |
-| `QWEN3_FEMALE_REFERENCE_PATH` | `voices/female-reference.wav` | Path to bundled female reference WAV for Qwen3 default female voice. | `/voices/female-reference.wav` |
-| `QWEN3_MALE_REFERENCE_PATH` | `voices/male-reference.wav` | Path to bundled male reference WAV for Qwen3 default male voice. | `/voices/male-reference.wav` |
+| `VOICES_DIR` | `/voices` | Root directory for voice discovery. Must contain `kokoro/` (`.npy` files) and/or `qwen/` (`.wav` files) subdirectories. See [voice-management.md](voice-management.md). | `/voices` |
 | `QWEN3_THREADS` | `4` | Number of CPU threads for Qwen3 inference. Minimum: 1. Beyond 4 cores, diminishing returns. | `4` |
 | `KOKORO_MODEL_URL` | *(GitHub release URL)* | URL to download Kokoro ONNX model on first start. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx` |
 | `KOKORO_VOICES_URL` | *(GitHub release URL)* | URL to download Kokoro voices binary on first start. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin` |
@@ -61,7 +59,7 @@ The `API_KEY` uses the `?` syntax, which causes Docker Compose to error immediat
 API_KEY=your-secret-api-key-here
 
 # Default voice for TTS when none specified
-DEFAULT_VOICE=santa
+DEFAULT_VOICE=kokoro/pm_santa
 
 # HTTP port
 PORT=8000
@@ -88,9 +86,7 @@ PORT=8000
 # QWEN3_MODEL_URL=
 # QWEN3_TOKENIZER_URL=
 
-# --- Qwen3 voice reference WAVs ---
-# Bundled female/male references have defaults; clone requires explicit config
-# QWEN3_FEMALE_REFERENCE_PATH=voices/female-reference.wav
-# QWEN3_MALE_REFERENCE_PATH=voices/male-reference.wav
-# CLONE_REFERENCE_PATH=voices/audio-referencia-01.wav
+# --- Voice directory ---
+# Root directory for filesystem-based voice discovery (see docs/voice-management.md)
+# VOICES_DIR=/voices
 ```

@@ -1,0 +1,179 @@
+---
+# COMADRE Voice Deployment Playbook
+# Deploys voice files (Kokoro .npy + Qwen3 .wav) into the comadre-voices Docker volume:
+#   ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
+#
+# Requires voices_local_dir inventory variable pointing to a local directory
+# with kokoro/ and qwen/ subdirectories containing voice files.
+# See docs/voice-management.md for directory structure.
+#
+# Can be run independently: initial deploy, add new voices, or replace existing ones.
+# No service restart needed — voices are discovered per-request.
+# Entirely unprivileged — no become: true.
+
+- name: Deploy Voice Files
+  hosts: comadre_vps
+  gather_facts: true
+
+  tasks:
+    # =========================================================================
+    # Prerequisites
+    # =========================================================================
+
+    - name: "[Prereq] Check COMADRE directory exists"
+      ansible.builtin.stat:
+        path: "~/comadre"
+      register: comadre_dir
+
+    - name: "[Prereq] Verify COMADRE is deployed"
+      ansible.builtin.assert:
+        that:
+          - comadre_dir.stat.exists
+          - comadre_dir.stat.isdir
+        fail_msg: >-
+          ~/comadre directory does not exist.
+          Run bootstrap.yml first to deploy the service.
+        success_msg: "COMADRE directory found."
+
+    - name: "[Prereq] Validate voices directory is set"
+      ansible.builtin.assert:
+        that:
+          - voices_local_dir | default('') | length > 0
+        fail_msg: >-
+          voices_local_dir is not configured.
+          Set it in inventory/production.yml to the local path of your
+          voices directory (containing kokoro/ and qwen/ subdirs).
+          See docs/voice-management.md for details.
+        success_msg: "Voices directory: {{ voices_local_dir }}"
+
+    # =========================================================================
+    # Discover Voice Files
+    # =========================================================================
+
+    - name: "[Voices] Find Kokoro .npy files"
+      ansible.builtin.find:
+        paths: "{{ voices_local_dir }}/kokoro"
+        patterns: "*.npy"
+      register: kokoro_files
+      delegate_to: localhost
+
+    - name: "[Voices] Find Qwen3 .wav files"
+      ansible.builtin.find:
+        paths: "{{ voices_local_dir }}/qwen"
+        patterns: "*.wav"
+      register: qwen_files
+      delegate_to: localhost
+
+    - name: "[Voices] Report discovered files"
+      ansible.builtin.debug:
+        msg: >-
+          Found {{ kokoro_files.files | length }} Kokoro .npy file(s)
+          and {{ qwen_files.files | length }} Qwen3 .wav file(s)
+
+    # =========================================================================
+    # Stage Files on VPS
+    # =========================================================================
+
+    - name: "[Voices] Create staging directories"
+      ansible.builtin.file:
+        path: "~/comadre/deploy/staging/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - kokoro
+        - qwen
+
+    - name: "[Voices] Stage Kokoro .npy files"
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "~/comadre/deploy/staging/kokoro/{{ item.path | basename }}"
+        mode: "0644"
+      loop: "{{ kokoro_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: "[Voices] Stage Qwen3 .wav files"
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "~/comadre/deploy/staging/qwen/{{ item.path | basename }}"
+        mode: "0644"
+      loop: "{{ qwen_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    # =========================================================================
+    # Deploy into Docker Volume
+    # =========================================================================
+
+    - name: "[Voices] Deploy files into volume"
+      block:
+        - name: "[Voices] Create helper container for volume access"
+          community.docker.docker_container:
+            name: comadre-volume-helper
+            image: alpine:3.21
+            command: "sh -c 'mkdir -p /voices/kokoro /voices/qwen && sleep 3600'"
+            volumes:
+              - "comadre-voices:/voices"
+            state: started
+            auto_remove: false
+
+        - name: "[Voices] Copy Kokoro .npy files into volume"
+          community.docker.docker_container_copy_into:
+            container: comadre-volume-helper
+            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/kokoro/{{ item.path | basename }}"
+            container_path: "/voices/kokoro/{{ item.path | basename }}"
+            owner_id: 0
+            group_id: 0
+            mode: "0644"
+          loop: "{{ kokoro_files.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+
+        - name: "[Voices] Copy Qwen3 .wav files into volume"
+          community.docker.docker_container_copy_into:
+            container: comadre-volume-helper
+            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/qwen/{{ item.path | basename }}"
+            container_path: "/voices/qwen/{{ item.path | basename }}"
+            owner_id: 0
+            group_id: 0
+            mode: "0644"
+          loop: "{{ qwen_files.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+
+      always:
+        - name: "[Voices] Remove helper container"
+          community.docker.docker_container:
+            name: comadre-volume-helper
+            state: absent
+
+        - name: "[Voices] Clean up staging directory"
+          ansible.builtin.file:
+            path: "~/comadre/deploy/staging"
+            state: absent
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+
+    - name: "[Summary] Report voice deployment status"
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          COMADRE — Voice Deployment Complete
+          ============================================
+
+          Kokoro voices deployed: {{ kokoro_files.files | length }}
+          {% for f in kokoro_files.files %}
+            - kokoro/{{ f.path | basename | regex_replace('\.npy$', '') }}
+          {% endfor %}
+
+          Qwen3 voices deployed: {{ qwen_files.files | length }}
+          {% for f in qwen_files.files %}
+            - qwen/{{ f.path | basename | regex_replace('\.wav$', '') }}
+          {% endfor %}
+
+          No restart needed — voices are available immediately.
+          Verify with: curl -s http://localhost:{{ port }}/health | jq '.voices'
+
+          ============================================

@@ -1,25 +1,40 @@
 """Tests for EngineRouter voice routing and unified API."""
 
+import io
+import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-from comadre.exceptions import VoiceNotFoundError
+from comadre.exceptions import InvalidRequestError, VoiceNotFoundError
 from comadre.service import (
-    KOKORO_VOICES,
     EngineRouter,
     KokoroEngine,
     QwenEngine,
 )
 
 
+def _create_ref_wav(path: Path, duration_s: int = 5) -> None:
+    """Create a valid reference WAV file at the given path."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 16000 * duration_s)
+    path.write_bytes(buf.getvalue())
+
+
 @pytest.fixture()
 def kokoro() -> KokoroEngine:
     """Return a KokoroEngine with mocked internals."""
     engine = KokoroEngine()
-    engine._kokoro = MagicMock()
+    mock = MagicMock()
+    mock.get_voices.return_value = ["pm_santa", "pf_dora", "pm_alex"]
+    mock.get_voice_style.return_value = np.zeros((510, 1, 256), dtype=np.float32)
+    engine._kokoro = mock
     return engine
 
 
@@ -28,336 +43,223 @@ def qwen() -> QwenEngine:
     """Return a QwenEngine with mocked internals."""
     engine = QwenEngine()
     engine._loaded = True
-    engine._voice_references = {
-        "qwen-female": "/fake/female.wav",
-        "qwen-male": "/fake/male.wav",
-        "clone": "/fake/clone.wav",
-    }
+    engine._cli_path = "/usr/local/bin/qwen3-tts-cli"
+    engine._model_path = "models/qwen3-tts-0.6b-q8_0.gguf"
     return engine
 
 
 @pytest.fixture()
-def qwen_no_clone() -> QwenEngine:
-    """Return a QwenEngine without clone configured."""
-    engine = QwenEngine()
-    engine._loaded = True
-    engine._voice_references = {
-        "qwen-female": "/fake/female.wav",
-        "qwen-male": "/fake/male.wav",
-    }
-    return engine
+def voices_dir(tmp_path: Path) -> Path:
+    """Create voices directory with kokoro/ and qwen/ subdirs and test files."""
+    kokoro_dir = tmp_path / "kokoro"
+    kokoro_dir.mkdir()
+    qwen_dir = tmp_path / "qwen"
+    qwen_dir.mkdir()
+
+    # Create a custom kokoro voice .npy file
+    custom_voice = np.zeros((510, 1, 256), dtype=np.float32)
+    np.save(kokoro_dir / "custom_voice.npy", custom_voice)
+
+    # Create qwen reference WAVs
+    _create_ref_wav(qwen_dir / "female-reference.wav")
+    _create_ref_wav(qwen_dir / "male-reference.wav")
+
+    return tmp_path
 
 
 @pytest.fixture()
-def router(kokoro: KokoroEngine, qwen: QwenEngine) -> EngineRouter:
-    """Return an EngineRouter with both mocked engines."""
-    return EngineRouter(kokoro, qwen)
+def router(kokoro: KokoroEngine, qwen: QwenEngine, voices_dir: Path) -> EngineRouter:
+    """Return an EngineRouter with both mocked engines and test voices dir."""
+    return EngineRouter(kokoro, qwen, voices_dir)
 
 
-@pytest.fixture()
-def router_no_clone(kokoro: KokoroEngine, qwen_no_clone: QwenEngine) -> EngineRouter:
-    """Return an EngineRouter without clone configured."""
-    return EngineRouter(kokoro, qwen_no_clone)
+# --- Voice parsing ---
 
 
-# --- Task 3.1: Kokoro voice routing ---
+class TestParseVoice:
+    def test_parses_kokoro_voice(self, router: EngineRouter) -> None:
+        engine, name = router._parse_voice("kokoro/pm_santa")
+        assert engine == "kokoro"
+        assert name == "pm_santa"
+
+    def test_parses_qwen_voice(self, router: EngineRouter) -> None:
+        engine, name = router._parse_voice("qwen/galvani")
+        assert engine == "qwen"
+        assert name == "galvani"
+
+    def test_rejects_no_slash(self, router: EngineRouter) -> None:
+        with pytest.raises(InvalidRequestError, match="Invalid voice format"):
+            router._parse_voice("santa")
+
+    def test_rejects_unknown_engine(self, router: EngineRouter) -> None:
+        with pytest.raises(InvalidRequestError, match="Unknown engine prefix"):
+            router._parse_voice("chatterbox/voice")
+
+    def test_rejects_empty_name(self, router: EngineRouter) -> None:
+        with pytest.raises(InvalidRequestError, match="Invalid voice format"):
+            router._parse_voice("kokoro/")
+
+    def test_rejects_path_traversal(self, router: EngineRouter) -> None:
+        with pytest.raises(InvalidRequestError, match="Invalid voice name"):
+            router._parse_voice("kokoro/../etc/passwd")
+
+    def test_rejects_special_chars(self, router: EngineRouter) -> None:
+        with pytest.raises(InvalidRequestError, match="Invalid voice name"):
+            router._parse_voice("kokoro/voice.npy")
+
+    def test_allows_hyphens_and_underscores(self, router: EngineRouter) -> None:
+        _engine, name = router._parse_voice("qwen/my-voice_01")
+        assert name == "my-voice_01"
 
 
-@pytest.mark.parametrize("voice", ["santa", "dora", "alex"])
-def test_kokoro_voice_routes_to_kokoro_engine(router: EngineRouter, voice: str) -> None:
-    """Each Kokoro voice should resolve to KokoroEngine."""
-    engine = router._resolve_engine(voice)
-    assert isinstance(engine, KokoroEngine)
+# --- Kokoro voice resolution ---
 
 
-@pytest.mark.parametrize("voice", ["santa", "dora", "alex"])
-def test_kokoro_voice_calls_kokoro_generate(
-    router: EngineRouter, kokoro: KokoroEngine, voice: str
-) -> None:
-    """generate_speech() dispatches to KokoroEngine for Kokoro voices."""
-    with patch.object(kokoro, "generate_speech", return_value=b"wav-data") as mock_gen:
-        result = router.generate_speech("Olá", voice, "ogg", None)
-        mock_gen.assert_called_once_with("Olá", voice, "ogg", None)
-        assert result == b"wav-data"
+class TestResolveKokoroVoice:
+    def test_resolves_builtin_voice(self, router: EngineRouter) -> None:
+        """Built-in voices from .npz work without .npy files."""
+        voice = router._resolve_kokoro_voice("pm_santa")
+        assert isinstance(voice, np.ndarray)
+
+    def test_resolves_custom_npy_file(self, router: EngineRouter) -> None:
+        """Custom .npy files in voices/kokoro/ take precedence."""
+        voice = router._resolve_kokoro_voice("custom_voice")
+        assert isinstance(voice, np.ndarray)
+
+    def test_unknown_voice_raises(self, router: EngineRouter) -> None:
+        with pytest.raises(VoiceNotFoundError) as exc_info:
+            router._resolve_kokoro_voice("nonexistent")
+        assert "kokoro/nonexistent" in str(exc_info.value)
 
 
-# --- Task 3.2: Qwen3 voice routing ---
+# --- Qwen voice resolution ---
 
 
-@pytest.mark.parametrize("voice", ["clone", "qwen-female", "qwen-male"])
-def test_qwen_voice_routes_to_qwen_engine(router: EngineRouter, voice: str) -> None:
-    """Each Qwen3 voice should resolve to QwenEngine."""
-    engine = router._resolve_engine(voice)
-    assert isinstance(engine, QwenEngine)
+class TestResolveQwenVoice:
+    def test_resolves_existing_wav(self, router: EngineRouter) -> None:
+        path = router._resolve_qwen_voice("female-reference")
+        assert path.is_file()
+        assert path.name == "female-reference.wav"
+
+    def test_missing_wav_raises(self, router: EngineRouter) -> None:
+        with pytest.raises(VoiceNotFoundError) as exc_info:
+            router._resolve_qwen_voice("nonexistent")
+        assert "qwen/nonexistent" in str(exc_info.value)
 
 
-@pytest.mark.parametrize("voice", ["clone", "qwen-female", "qwen-male"])
-def test_qwen_voice_calls_qwen_generate(
-    router: EngineRouter, qwen: QwenEngine, voice: str
-) -> None:
-    """generate_speech() dispatches to QwenEngine for Qwen3 voices."""
-    with patch.object(qwen, "generate_speech", return_value=b"qwen-data") as mock_gen:
-        result = router.generate_speech("Olá", voice, "ogg", None, seed=42)
-        mock_gen.assert_called_once_with("Olá", voice, "ogg", None, 42)
-        assert result == b"qwen-data"
+# --- generate_speech dispatching ---
 
 
-# --- Task 3.3: Unknown voice raises VoiceNotFoundError ---
-
-
-def test_unknown_voice_raises_voice_not_found(router: EngineRouter) -> None:
-    """Unknown voice should raise VoiceNotFoundError with available voices."""
-    with pytest.raises(VoiceNotFoundError) as exc_info:
-        router.generate_speech("test", "unknown-voice", "ogg")
-    assert "unknown-voice" in str(exc_info.value)
-    assert exc_info.value.available == router.available_voices()
-
-
-def test_resolve_unknown_voice_raises_error(router: EngineRouter) -> None:
-    """_resolve_engine with unknown voice raises VoiceNotFoundError."""
-    with pytest.raises(VoiceNotFoundError) as exc_info:
-        router._resolve_engine("nonexistent")
-    assert "nonexistent" in str(exc_info.value)
-
-
-# --- Task 3.4: available_voices() returns sorted combined list ---
-
-
-def test_available_voices_sorted_with_clone(router: EngineRouter) -> None:
-    """available_voices() returns sorted list including clone when configured."""
-    voices = router.available_voices()
-    assert voices == sorted(voices)
-    for kokoro_voice in KOKORO_VOICES:
-        assert kokoro_voice in voices
-    assert "qwen-female" in voices
-    assert "qwen-male" in voices
-    assert "clone" in voices
-
-
-def test_available_voices_sorted_without_clone(
-    router_no_clone: EngineRouter,
-) -> None:
-    """available_voices() excludes clone when not configured."""
-    voices = router_no_clone.available_voices()
-    assert voices == sorted(voices)
-    assert "clone" not in voices
-    assert "qwen-female" in voices
-    assert "qwen-male" in voices
-
-
-# --- Task 3.5: engine_status() returns correct per-engine status ---
-
-
-def test_engine_status_both_loaded(router: EngineRouter) -> None:
-    """engine_status() returns correct shape with both engines loaded."""
-    status = router.engine_status()
-    assert status["kokoro"]["loaded"] is True
-    assert sorted(status["kokoro"]["voices"]) == ["alex", "dora", "santa"]  # type: ignore[call-overload]
-    assert status["qwen3"]["loaded"] is True
-    assert status["qwen3"]["clone_configured"] is True
-    assert "clone" in status["qwen3"]["voices"]  # type: ignore[operator]
-
-
-def test_engine_status_clone_not_configured(
-    router_no_clone: EngineRouter,
-) -> None:
-    """engine_status() excludes clone when not configured."""
-    status = router_no_clone.engine_status()
-    assert status["qwen3"]["clone_configured"] is False
-    assert "clone" not in status["qwen3"]["voices"]  # type: ignore[operator]
-
-
-def test_engine_status_not_loaded() -> None:
-    """engine_status() reports loaded=False for unloaded engines."""
-    kokoro = KokoroEngine()
-    qwen = QwenEngine()
-    router = EngineRouter(kokoro, qwen)
-    status = router.engine_status()
-    assert status["kokoro"]["loaded"] is False
-    assert status["qwen3"]["loaded"] is False
-
-
-# --- Task 3.6: Clone voice raises error when not configured ---
-
-
-def test_clone_voice_raises_when_not_configured(
-    router_no_clone: EngineRouter,
-) -> None:
-    """Clone voice should raise VoiceNotFoundError when clone not configured."""
-    with pytest.raises(VoiceNotFoundError) as exc_info:
-        router_no_clone.generate_speech("test", "clone", "ogg")
-    assert "clone" in str(exc_info.value)
-    assert "clone" not in exc_info.value.available
-
-
-def test_clone_resolve_raises_when_not_configured(
-    router_no_clone: EngineRouter,
-) -> None:
-    """_resolve_engine rejects clone when not configured."""
-    with pytest.raises(VoiceNotFoundError) as exc_info:
-        router_no_clone._resolve_engine("clone")
-    assert exc_info.value.available == router_no_clone.available_voices()
-
-
-# --- Task 3.7: Seed parameter forwarded to Qwen3 only ---
-
-
-def test_seed_forwarded_to_qwen_engine(router: EngineRouter, qwen: QwenEngine) -> None:
-    """Seed parameter should be forwarded to QwenEngine.generate_speech()."""
-    with patch.object(qwen, "generate_speech", return_value=b"data") as mock_gen:
-        router.generate_speech("text", "qwen-female", "ogg", seed=123)
-        mock_gen.assert_called_once_with("text", "qwen-female", "ogg", None, 123)
-
-
-def test_seed_not_forwarded_to_kokoro_engine(
-    router: EngineRouter, kokoro: KokoroEngine
-) -> None:
-    """Seed parameter should NOT be forwarded to KokoroEngine."""
-    with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
-        router.generate_speech("text", "santa", "ogg", seed=123)
-        # KokoroEngine.generate_speech() does not accept seed
-        mock_gen.assert_called_once_with("text", "santa", "ogg", None)
-
-
-def test_default_seed_forwarded_to_qwen(router: EngineRouter, qwen: QwenEngine) -> None:
-    """Default seed (-1) should be forwarded when no seed specified."""
-    with patch.object(qwen, "generate_speech", return_value=b"data") as mock_gen:
-        router.generate_speech("text", "qwen-male", "ogg")
-        mock_gen.assert_called_once_with("text", "qwen-male", "ogg", None, -1)
-
-
-# --- noise_dir parameter forwarding ---
-
-
-def test_noise_dir_forwarded_to_kokoro(
-    router: EngineRouter, kokoro: KokoroEngine
-) -> None:
-    """noise_dir should be forwarded to KokoroEngine."""
-    noise = Path("/fake/noise")
-    with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
-        router.generate_speech("text", "santa", "ogg", noise_dir=noise)
-        mock_gen.assert_called_once_with("text", "santa", "ogg", noise)
-
-
-def test_noise_dir_forwarded_to_qwen(router: EngineRouter, qwen: QwenEngine) -> None:
-    """noise_dir should be forwarded to QwenEngine."""
-    noise = Path("/fake/noise")
-    with patch.object(qwen, "generate_speech", return_value=b"data") as mock_gen:
-        router.generate_speech("text", "qwen-female", "ogg", noise_dir=noise)
-        mock_gen.assert_called_once_with("text", "qwen-female", "ogg", noise, -1)
-
-
-# --- Story 1.10: Preprocessing/post-processing pipeline tests ---
-
-
-class TestKokoroPreprocessingPipeline:
-    """Verify Kokoro engine calls normalize_text() then chunk_text()."""
-
-    @patch("comadre.service._apply_vibrato_warm", return_value=b"processed")
-    @patch("comadre.service._concatenate_wavs", return_value=b"concat-wav")
-    @patch("comadre.service._samples_to_wav", return_value=b"wav-data")
-    def test_kokoro_calls_normalize_then_chunk(
-        self,
-        mock_wav: MagicMock,
-        mock_concat: MagicMock,
-        mock_vibrato: MagicMock,
-        kokoro: KokoroEngine,
+class TestGenerateSpeechDispatch:
+    def test_kokoro_voice_dispatches_to_kokoro(
+        self, router: EngineRouter, kokoro: KokoroEngine
     ) -> None:
-        """KokoroEngine.generate_speech() calls normalize_text then chunk_text."""
-        kokoro._kokoro.create.return_value = (np.zeros(100), 24000)
-        with (
-            patch(
-                "comadre.service.normalize_text", return_value="normalized"
-            ) as mock_normalize,
-            patch("comadre.service.chunk_text", return_value=["chunk1"]) as mock_chunk,
-        ):
-            kokoro.generate_speech("raw text", "santa", "ogg")
-            mock_normalize.assert_called_once_with("raw text")
-            mock_chunk.assert_called_once_with("normalized")
+        with patch.object(kokoro, "generate_speech", return_value=b"audio") as mock_gen:
+            result = router.generate_speech("Ola", "kokoro/pm_santa", "ogg", None)
+            mock_gen.assert_called_once()
+            assert result == b"audio"
 
-
-class TestKokoroPostProcessingPipeline:
-    """Verify Kokoro engine calls _apply_vibrato_warm()."""
-
-    @patch("comadre.service._apply_vibrato_warm", return_value=b"processed")
-    @patch("comadre.service._concatenate_wavs", return_value=b"concat-wav")
-    @patch("comadre.service._samples_to_wav", return_value=b"wav-data")
-    def test_kokoro_uses_vibrato_warm_pipeline(
-        self,
-        mock_wav: MagicMock,
-        mock_concat: MagicMock,
-        mock_vibrato: MagicMock,
-        kokoro: KokoroEngine,
+    def test_qwen_voice_dispatches_to_qwen(
+        self, router: EngineRouter, qwen: QwenEngine
     ) -> None:
-        """KokoroEngine.generate_speech() calls _apply_vibrato_warm on output."""
-        kokoro._kokoro.create.return_value = (np.zeros(100), 24000)
-        kokoro.generate_speech("test", "santa", "ogg")
-        mock_vibrato.assert_called_once()
+        with patch.object(qwen, "generate_speech", return_value=b"audio") as mock_gen:
+            result = router.generate_speech("Ola", "qwen/female-reference", "ogg", None)
+            mock_gen.assert_called_once()
+            assert result == b"audio"
+            # Verify reference path was passed
+            call_args = mock_gen.call_args
+            assert isinstance(call_args[0][1], Path)
 
+    def test_unknown_voice_raises(self, router: EngineRouter) -> None:
+        with pytest.raises(InvalidRequestError):
+            router.generate_speech("test", "invalid", "ogg")
 
-class TestQwenPreprocessingPipeline:
-    """Verify Qwen3 engine calls expand_siglas()."""
-
-    @patch("comadre.service._apply_whatsapp_subtle", return_value=b"processed")
-    @patch("comadre.service.subprocess.run")
-    def test_qwen_calls_expand_siglas(
-        self,
-        mock_run: MagicMock,
-        mock_whatsapp: MagicMock,
-        qwen: QwenEngine,
+    def test_seed_forwarded_to_qwen(
+        self, router: EngineRouter, qwen: QwenEngine
     ) -> None:
-        """QwenEngine.generate_speech() calls expand_siglas on input."""
-        mock_run.return_value = MagicMock(returncode=0)
-        with (
-            patch(
-                "comadre.service.expand_siglas", return_value="expanded"
-            ) as mock_expand,
-            patch.object(
-                qwen, "_build_command", return_value=["fake-cli", "-t", "expanded"]
-            ),
-            patch("comadre.service.Path") as mock_path,
-            patch("comadre.service.tempfile") as mock_tempfile,
-        ):
-            mock_tempfile.NamedTemporaryFile.return_value.__enter__ = MagicMock(
-                return_value=MagicMock(name="/tmp/fake.wav")
-            )
-            mock_tempfile.NamedTemporaryFile.return_value.__exit__ = MagicMock(
-                return_value=False
-            )
-            mock_path.return_value.read_bytes.return_value = b"wav-data"
-            mock_path.return_value.unlink = MagicMock()
-            qwen.generate_speech("CNPJ test", "qwen-female", "ogg")
-            mock_expand.assert_called_once_with("CNPJ test")
+        with patch.object(qwen, "generate_speech", return_value=b"data") as mock_gen:
+            router.generate_speech("text", "qwen/female-reference", "ogg", seed=42)
+            assert mock_gen.call_args[0][4] == 42  # seed is 5th positional arg
 
-
-class TestQwenPostProcessingPipeline:
-    """Verify Qwen3 engine calls _apply_whatsapp_subtle()."""
-
-    @patch("comadre.service._apply_whatsapp_subtle", return_value=b"processed")
-    @patch("comadre.service.subprocess.run")
-    def test_qwen_uses_whatsapp_subtle_pipeline(
-        self,
-        mock_run: MagicMock,
-        mock_whatsapp: MagicMock,
-        qwen: QwenEngine,
+    def test_seed_not_forwarded_to_kokoro(
+        self, router: EngineRouter, kokoro: KokoroEngine
     ) -> None:
-        """QwenEngine.generate_speech() calls _apply_whatsapp_subtle on output."""
-        mock_run.return_value = MagicMock(returncode=0)
-        with (
-            patch("comadre.service.expand_siglas", return_value="expanded"),
-            patch.object(
-                qwen, "_build_command", return_value=["fake-cli", "-t", "expanded"]
-            ),
-            patch("comadre.service.Path") as mock_path,
-            patch("comadre.service.tempfile") as mock_tempfile,
-        ):
-            mock_tempfile.NamedTemporaryFile.return_value.__enter__ = MagicMock(
-                return_value=MagicMock(name="/tmp/fake.wav")
-            )
-            mock_tempfile.NamedTemporaryFile.return_value.__exit__ = MagicMock(
-                return_value=False
-            )
-            mock_path.return_value.read_bytes.return_value = b"wav-data"
-            mock_path.return_value.unlink = MagicMock()
-            qwen.generate_speech("test", "qwen-female", "ogg")
-            mock_whatsapp.assert_called_once()
+        with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
+            router.generate_speech("text", "kokoro/pm_santa", "ogg", seed=42)
+            # KokoroEngine.generate_speech() does not accept seed
+            assert len(mock_gen.call_args[0]) == 4  # text, voice, format, noise_dir
+
+    def test_noise_dir_forwarded(
+        self, router: EngineRouter, kokoro: KokoroEngine
+    ) -> None:
+        noise = Path("/fake/noise")
+        with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
+            router.generate_speech("text", "kokoro/pm_santa", "ogg", noise_dir=noise)
+            assert mock_gen.call_args[0][3] == noise
+
+
+# --- available_voices ---
+
+
+class TestAvailableVoices:
+    def test_includes_builtins_and_files(self, router: EngineRouter) -> None:
+        voices = router.available_voices()
+        # Built-in Kokoro voices
+        assert "kokoro/pm_santa" in voices
+        assert "kokoro/pf_dora" in voices
+        assert "kokoro/pm_alex" in voices
+        # Custom Kokoro .npy
+        assert "kokoro/custom_voice" in voices
+        # Qwen .wav files
+        assert "qwen/female-reference" in voices
+        assert "qwen/male-reference" in voices
+
+    def test_sorted(self, router: EngineRouter) -> None:
+        voices = router.available_voices()
+        assert voices == sorted(voices)
+
+    def test_no_duplicates(
+        self, kokoro: KokoroEngine, qwen: QwenEngine, voices_dir: Path
+    ) -> None:
+        """If a .npy file has the same name as a built-in, it appears once."""
+        # Create pm_santa.npy to overlap with built-in
+        np.save(
+            voices_dir / "kokoro" / "pm_santa.npy",
+            np.zeros((510, 1, 256), dtype=np.float32),
+        )
+        router = EngineRouter(kokoro, qwen, voices_dir)
+        voices = router.available_voices()
+        assert voices.count("kokoro/pm_santa") == 1
+
+
+# --- engine_status ---
+
+
+class TestEngineStatus:
+    def test_returns_both_engines(self, router: EngineRouter) -> None:
+        status = router.engine_status()
+        assert "kokoro" in status
+        assert "qwen3" in status
+
+    def test_kokoro_loaded_and_voices(self, router: EngineRouter) -> None:
+        status = router.engine_status()
+        assert status["kokoro"]["loaded"] is True
+        assert any("kokoro/" in v for v in status["kokoro"]["voices"])  # type: ignore[union-attr]
+
+    def test_qwen_loaded_and_voices(self, router: EngineRouter) -> None:
+        status = router.engine_status()
+        assert status["qwen3"]["loaded"] is True
+        assert any("qwen/" in v for v in status["qwen3"]["voices"])  # type: ignore[union-attr]
+
+    def test_no_clone_configured_field(self, router: EngineRouter) -> None:
+        """clone_configured field no longer exists in engine status."""
+        status = router.engine_status()
+        assert "clone_configured" not in status["qwen3"]
+
+    def test_unloaded_engines(self, voices_dir: Path) -> None:
+        kokoro = KokoroEngine()
+        qwen = QwenEngine()
+        router = EngineRouter(kokoro, qwen, voices_dir)
+        status = router.engine_status()
+        assert status["kokoro"]["loaded"] is False
+        assert status["qwen3"]["loaded"] is False

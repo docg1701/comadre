@@ -26,7 +26,7 @@ logger = get_logger("startup")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan: 9-phase startup sequence."""
+    """Application lifespan: startup sequence."""
     settings = get_settings()
 
     # Initialize state early (health endpoint needs these during startup)
@@ -82,17 +82,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("No custom espeak-ng data path configured")
 
-    # Phase 4: Detect clone reference WAV
-    logger.info("Detecting clone reference WAV...")
-    if settings.clone_reference_path:
-        if Path(settings.clone_reference_path).is_file():
-            logger.info("Clone reference found: %s", settings.clone_reference_path)
-        else:
+    # Phase 4: Verify voices directory
+    voices_dir = Path(settings.voices_dir)
+    kokoro_voices_dir = voices_dir / "kokoro"
+    qwen_voices_dir = voices_dir / "qwen"
+    if voices_dir.is_dir():
+        logger.info("Voices directory found: %s", settings.voices_dir)
+        if not kokoro_voices_dir.is_dir():
             logger.warning(
-                "Clone reference not found: %s", settings.clone_reference_path
+                "Kokoro voices subdirectory not found: %s", kokoro_voices_dir
             )
+        if not qwen_voices_dir.is_dir():
+            logger.warning("Qwen3 voices subdirectory not found: %s", qwen_voices_dir)
     else:
-        logger.info("No clone reference configured — clone voice disabled")
+        logger.warning("Voices directory not found: %s", settings.voices_dir)
 
     try:
         # Phase 5: Load Kokoro model
@@ -111,9 +114,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cli_path=settings.qwen3_cli_path,
             model_path=settings.qwen3_model_path,
             tokenizer_path=settings.qwen3_tokenizer_path,
-            female_reference_path=settings.qwen3_female_reference_path,
-            male_reference_path=settings.qwen3_male_reference_path,
-            clone_reference_path=settings.clone_reference_path,
             threads=settings.qwen3_threads,
         )
 
@@ -121,17 +121,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Warming up Kokoro engine...")
         kokoro.warm_up()
 
-        # Phase 8: Warm up Qwen3
+        # Phase 8: Warm up Qwen3 (using first available reference WAV)
         logger.info("Warming up Qwen3 engine...")
-        qwen.warm_up()
+        qwen_warmup_ref: Path | None = None
+        if qwen_voices_dir.is_dir():
+            wavs = sorted(qwen_voices_dir.glob("*.wav"))
+            if wavs:
+                qwen_warmup_ref = wavs[0]
+        qwen.warm_up(reference_path=qwen_warmup_ref)
     except Exception:
         logger.critical("Startup failed during engine initialization", exc_info=True)
         raise
 
     # Phase 9: Ready
-    router = EngineRouter(kokoro=kokoro, qwen=qwen)
+    router = EngineRouter(kokoro=kokoro, qwen=qwen, voices_dir=voices_dir)
     app.state.router = router
     app.state.ready = True
+
+    # Validate default voice is resolvable
+    default = settings.default_voice
+    if default not in router.available_voices():
+        try:
+            router._parse_voice(default)
+        except Exception:
+            logger.warning(
+                "DEFAULT_VOICE '%s' has invalid format — requests"
+                " without explicit voice will fail",
+                default,
+            )
 
     logger.info("Service ready on http://0.0.0.0:%d", settings.port)
 
@@ -153,7 +170,7 @@ async def validation_error_handler(
                 "type": "invalid_request_error",
                 "hint": (
                     'Expected JSON: {"input": "text to speak",'
-                    ' "voice": "santa", "response_format": "ogg"}'
+                    ' "voice": "kokoro/pm_santa", "response_format": "ogg"}'
                 ),
             }
         },
@@ -182,7 +199,6 @@ def create_app() -> FastAPI:
                         "voices": [],
                         "engines": {},
                         "queue_depth": 0,
-                        "clone_configured": False,
                         "uptime_seconds": 0,
                         "memory_mb": 0,
                         "version": __version__,

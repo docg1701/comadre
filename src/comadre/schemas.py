@@ -21,8 +21,6 @@ class Destination(StrEnum):
     instagram = "instagram"
 
 
-_KOKORO_VOICES = frozenset({"santa", "dora", "alex"})
-_QWEN_VOICES = frozenset({"clone", "qwen-female", "qwen-male"})
 _KOKORO_CHAR_LIMIT = 500
 _QWEN_CHAR_LIMIT = 300
 
@@ -38,15 +36,11 @@ class SpeechRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_char_limit(self) -> "SpeechRequest":
-        if self.voice is None:
-            return self
-        if self.voice in _KOKORO_VOICES and len(self.input) > _KOKORO_CHAR_LIMIT:
-            msg = (
-                f"Input exceeds {_KOKORO_CHAR_LIMIT} character limit"
-                f" for Kokoro engine (voice '{self.voice}')"
-            )
-            raise ValueError(msg)
-        if self.voice in _QWEN_VOICES and len(self.input) > _QWEN_CHAR_LIMIT:
+        if (
+            self.voice is not None
+            and self.voice.startswith("qwen/")
+            and len(self.input) > _QWEN_CHAR_LIMIT
+        ):
             msg = (
                 f"Input exceeds {_QWEN_CHAR_LIMIT} character limit"
                 f" for Qwen3 engine (voice '{self.voice}')"

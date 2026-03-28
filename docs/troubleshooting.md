@@ -89,8 +89,8 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 **Resolution:**
 
 1. Check available voices via health endpoint: `curl http://localhost:8000/health | jq .voices`
-2. Valid voice names: `santa`, `dora`, `alex`, `clone`, `qwen-female`, `qwen-male`
-3. Voice names are case-sensitive. Multi-word names use hyphens, not underscores (e.g., `qwen-female`, not `qwen_female`)
+2. Voice names use the `engine/name` format: `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/female-reference`, `qwen/galvani`, etc.
+3. Voice names are case-sensitive. The engine prefix (`kokoro/` or `qwen/`) is required. See [voice-management.md](voice-management.md) for the full list of available voices and how to add new ones.
 
 ### Request timeout
 

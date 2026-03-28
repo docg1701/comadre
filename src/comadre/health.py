@@ -54,15 +54,11 @@ def build_health_response(
         status = HealthStatus.warming_up
         status_code = 503
 
-    engine_status = router.engine_status()
-    clone_configured: bool = engine_status["qwen3"]["clone_configured"]  # type: ignore[assignment]
-
     body: dict[str, Any] = {
         "status": str(status),
         "voices": router.available_voices(),
-        "engines": engine_status,
+        "engines": router.engine_status(),
         "queue_depth": queue_depth,
-        "clone_configured": clone_configured,
         "uptime_seconds": _get_uptime_seconds(start_time),
         "memory_mb": _get_memory_mb(),
         "version": __version__,

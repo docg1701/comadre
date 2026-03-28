@@ -17,13 +17,13 @@ class TestSettings:
 
     def test_loads_from_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key-123")
-        monkeypatch.setenv("DEFAULT_VOICE", "alloy")
+        monkeypatch.setenv("DEFAULT_VOICE", "kokoro/pf_dora")
         monkeypatch.setenv("PORT", "9000")
 
         settings = Settings()
 
         assert settings.api_key.get_secret_value() == "test-key-123"
-        assert settings.default_voice == "alloy"
+        assert settings.default_voice == "kokoro/pf_dora"
         assert settings.port == 9000
 
     def test_missing_api_key_raises_validation_error(
@@ -40,7 +40,7 @@ class TestSettings:
 
         settings = Settings()
 
-        assert settings.default_voice == "santa"
+        assert settings.default_voice == "kokoro/pm_santa"
         assert settings.port == 8000
 
     def test_case_insensitive_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,20 +152,22 @@ class TestSettings:
         settings = Settings()
         assert settings.qwen3_tokenizer_path == "/opt/models/tokenizer.gguf"
 
-    def test_clone_reference_path_defaults_to_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_voices_dir_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key")
         settings = Settings()
-        assert settings.clone_reference_path is None
+        assert settings.voices_dir == "/voices"
 
-    def test_clone_reference_path_from_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_voices_dir_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("CLONE_REFERENCE_PATH", "/voices/clone-ref.wav")
+        monkeypatch.setenv("VOICES_DIR", "/custom/voices")
         settings = Settings()
-        assert settings.clone_reference_path == "/voices/clone-ref.wav"
+        assert settings.voices_dir == "/custom/voices"
+
+    def test_voices_dir_rejects_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("VOICES_DIR", "")
+        with pytest.raises(ValidationError):
+            Settings()
 
     def test_qwen3_threads_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key")
@@ -200,36 +202,6 @@ class TestSettings:
         monkeypatch.setenv("QWEN3_THREADS", "0")
         with pytest.raises(ValidationError):
             Settings()
-
-    def test_qwen3_female_reference_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        settings = Settings()
-        assert settings.qwen3_female_reference_path == "voices/female-reference.wav"
-
-    def test_qwen3_female_reference_from_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("QWEN3_FEMALE_REFERENCE_PATH", "/custom/f.wav")
-        settings = Settings()
-        assert settings.qwen3_female_reference_path == "/custom/f.wav"
-
-    def test_qwen3_male_reference_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        settings = Settings()
-        assert settings.qwen3_male_reference_path == "voices/male-reference.wav"
-
-    def test_qwen3_male_reference_from_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("QWEN3_MALE_REFERENCE_PATH", "/custom/m.wav")
-        settings = Settings()
-        assert settings.qwen3_male_reference_path == "/custom/m.wav"
 
     def test_kokoro_model_url_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key")

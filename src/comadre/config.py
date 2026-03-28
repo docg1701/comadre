@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     api_key: SecretStr = Field(min_length=1)
-    default_voice: str = "santa"
+    default_voice: str = "kokoro/pm_santa"
     port: int = Field(default=8000, ge=1, le=65535)
     espeak_data_path: str | None = Field(
         default=None,
@@ -42,17 +42,10 @@ class Settings(BaseSettings):
         default="models/qwen3-tts-tokenizer-f16.gguf",
         description="Path to the Qwen3 TTS tokenizer file",
     )
-    clone_reference_path: str | None = Field(
-        default=None,
-        description="Path to clone reference WAV for Qwen3 voice cloning",
-    )
-    qwen3_female_reference_path: str = Field(
-        default="voices/female-reference.wav",
-        description="Path to bundled female reference WAV for Qwen3",
-    )
-    qwen3_male_reference_path: str = Field(
-        default="voices/male-reference.wav",
-        description="Path to bundled male reference WAV for Qwen3",
+    voices_dir: str = Field(
+        default="/voices",
+        min_length=1,
+        description="Base directory for voice files (kokoro/ and qwen/ subdirs)",
     )
     noise_dir: str = Field(
         default="/app/noise",

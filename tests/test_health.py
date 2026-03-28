@@ -19,18 +19,20 @@ def mock_router() -> MagicMock:
     """Return a mock EngineRouter with typical healthy state."""
     router = MagicMock()
     router.available_voices.return_value = [
-        "alex",
-        "dora",
-        "qwen-female",
-        "qwen-male",
-        "santa",
+        "kokoro/pm_alex",
+        "kokoro/pf_dora",
+        "kokoro/pm_santa",
+        "qwen/female-reference",
+        "qwen/male-reference",
     ]
     router.engine_status.return_value = {
-        "kokoro": {"loaded": True, "voices": ["alex", "dora", "santa"]},
+        "kokoro": {
+            "loaded": True,
+            "voices": ["kokoro/pm_alex", "kokoro/pf_dora", "kokoro/pm_santa"],
+        },
         "qwen3": {
             "loaded": True,
-            "clone_configured": False,
-            "voices": ["qwen-female", "qwen-male"],
+            "voices": ["qwen/female-reference", "qwen/male-reference"],
         },
     }
     return router
@@ -60,7 +62,6 @@ class TestHealthyResponse:
             "voices",
             "engines",
             "queue_depth",
-            "clone_configured",
             "uptime_seconds",
             "memory_mb",
             "version",
@@ -76,7 +77,6 @@ class TestHealthyResponse:
             "voices",
             "engines",
             "queue_depth",
-            "clone_configured",
             "uptime_seconds",
             "memory_mb",
             "version",
@@ -88,11 +88,11 @@ class TestHealthyResponse:
         )
         assert isinstance(body["voices"], list)
         assert body["voices"] == [
-            "alex",
-            "dora",
-            "qwen-female",
-            "qwen-male",
-            "santa",
+            "kokoro/pm_alex",
+            "kokoro/pf_dora",
+            "kokoro/pm_santa",
+            "qwen/female-reference",
+            "qwen/male-reference",
         ]
 
 
@@ -140,7 +140,7 @@ class TestEnginesField:
         )
         kokoro = body["engines"]["kokoro"]
         assert kokoro["loaded"] is True
-        assert kokoro["voices"] == ["alex", "dora", "santa"]
+        assert "kokoro/pm_santa" in kokoro["voices"]
 
     def test_qwen3_engine_structure(self, mock_router: MagicMock) -> None:
         body, _ = build_health_response(
@@ -148,32 +148,7 @@ class TestEnginesField:
         )
         qwen3 = body["engines"]["qwen3"]
         assert qwen3["loaded"] is True
-        assert qwen3["clone_configured"] is False
-        assert qwen3["voices"] == ["qwen-female", "qwen-male"]
-
-
-class TestCloneConfigured:
-    """Tests for the clone_configured field."""
-
-    def test_clone_configured_false(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["clone_configured"] is False
-
-    def test_clone_configured_true(self, mock_router: MagicMock) -> None:
-        mock_router.engine_status.return_value = {
-            "kokoro": {"loaded": True, "voices": ["alex", "dora", "santa"]},
-            "qwen3": {
-                "loaded": True,
-                "clone_configured": True,
-                "voices": ["clone", "qwen-female", "qwen-male"],
-            },
-        }
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["clone_configured"] is True
+        assert "qwen/female-reference" in qwen3["voices"]
 
 
 class TestVersionField:
@@ -254,7 +229,7 @@ class TestHealthStatusEnum:
         assert HealthStatus.degraded == "degraded"
 
 
-# --- Story 1.10: HTTP-level health endpoint tests ---
+# --- HTTP-level health endpoint tests ---
 
 
 class TestHealthHTTPEndpoint:
@@ -270,7 +245,6 @@ class TestHealthHTTPEndpoint:
             "voices",
             "engines",
             "queue_depth",
-            "clone_configured",
             "uptime_seconds",
             "memory_mb",
             "version",
@@ -302,42 +276,9 @@ class TestHealthHTTPEndpoint:
         response = await client.get("/health")
         body = response.json()
         assert body["voices"] == [
-            "alex",
-            "dora",
-            "qwen-female",
-            "qwen-male",
-            "santa",
+            "kokoro/pm_alex",
+            "kokoro/pf_dora",
+            "kokoro/pm_santa",
+            "qwen/female-reference",
+            "qwen/male-reference",
         ]
-
-    async def test_health_clone_configured_reflects_state(self) -> None:
-        app = create_app()
-        mock_router = MagicMock()
-        mock_router.available_voices.return_value = [
-            "alex",
-            "clone",
-            "dora",
-            "qwen-female",
-            "qwen-male",
-            "santa",
-        ]
-        mock_router.engine_status.return_value = {
-            "kokoro": {"loaded": True, "voices": ["alex", "dora", "santa"]},
-            "qwen3": {
-                "loaded": True,
-                "clone_configured": True,
-                "voices": ["clone", "qwen-female", "qwen-male"],
-            },
-        }
-        app.state.ready = True
-        app.state.router = mock_router
-        app.state.queue_lock = asyncio.Lock()
-        app.state.queue_depth = 0
-        app.state.start_time = time.monotonic()
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as c:
-            response = await c.get("/health")
-        assert response.status_code == 200
-        body = response.json()
-        assert body["clone_configured"] is True
