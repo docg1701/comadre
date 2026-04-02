@@ -1,4 +1,4 @@
-# COMADRE
+# Comade
 
 <p align="center">
   <img src="assets/logo-comadre.webp" alt="COMADRE Logo">
