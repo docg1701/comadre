@@ -1,4 +1,4 @@
-"""Speech endpoint route handler for COMADRE."""
+"""Speech endpoint route handler for Comadre."""
 
 from __future__ import annotations
 

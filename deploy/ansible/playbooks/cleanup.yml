@@ -1,13 +1,13 @@
 ---
-# COMADRE Cleanup Playbook
-# Fully decommissions COMADRE from a VPS — removes all artifacts:
+# Comadre Cleanup Playbook
+# Fully decommissions Comadre from a VPS — removes all artifacts:
 #   ansible-playbook playbooks/cleanup.yml -i inventory/production.yml
 #
 # WARNING: This is destructive. It removes containers, images, volumes,
 # cron jobs, and the ~/comadre directory. Data cannot be recovered.
 # Entirely unprivileged — no become: true.
 
-- name: Cleanup COMADRE TTS Service
+- name: Cleanup Comadre TTS Service
   hosts: comadre_vps
   gather_facts: false
 
@@ -16,7 +16,7 @@
     # Prerequisites
     # =========================================================================
 
-    - name: "[Prereq] Check COMADRE directory exists"
+    - name: "[Prereq] Check Comadre directory exists"
       ansible.builtin.stat:
         path: "~/comadre"
       register: comadre_dir
@@ -26,7 +26,7 @@
       ansible.builtin.debug:
         msg: >-
           ~/comadre directory does not exist. Nothing to clean up.
-          If COMADRE was previously deployed, it may have already been removed.
+          If Comadre was previously deployed, it may have already been removed.
 
     - name: "[Prereq] Confirm deployment exists"
       when: not (comadre_dir.stat.exists and comadre_dir.stat.isdir)
@@ -63,7 +63,7 @@
     # Remove Project Directory
     # =========================================================================
 
-    - name: "[Cleanup] Remove COMADRE directory"
+    - name: "[Cleanup] Remove Comadre directory"
       ansible.builtin.file:
         path: "~/comadre"
         state: absent
@@ -76,10 +76,10 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          COMADRE TTS Service — Cleanup Complete
+          Comadre TTS Service — Cleanup Complete
           ============================================
 
-          All COMADRE artifacts have been removed:
+          All Comadre artifacts have been removed:
 
             ✓ Containers stopped and removed
             ✓ Docker volumes removed (models, voices, audio)
@@ -87,7 +87,7 @@
             ✓ Cron jobs removed (daily-restart, audio-cleanup)
             ✓ ~/comadre directory removed
 
-          The VPS has zero COMADRE artifacts remaining.
+          The VPS has zero Comadre artifacts remaining.
 
           To redeploy, run:
             ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml

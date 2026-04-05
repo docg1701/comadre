@@ -1,5 +1,5 @@
 ---
-# COMADRE Model Deployment Playbook
+# Comadre Model Deployment Playbook
 # Pre-deploys Qwen3 GGUF model files into the comadre-models Docker volume:
 #   ansible-playbook playbooks/deploy-models.yml -i inventory/production.yml
 #
@@ -19,12 +19,12 @@
     # Prerequisites
     # =========================================================================
 
-    - name: "[Prereq] Check COMADRE directory exists"
+    - name: "[Prereq] Check Comadre directory exists"
       ansible.builtin.stat:
         path: "~/comadre"
       register: comadre_dir
 
-    - name: "[Prereq] Verify COMADRE is deployed"
+    - name: "[Prereq] Verify Comadre is deployed"
       ansible.builtin.assert:
         that:
           - comadre_dir.stat.exists
@@ -32,7 +32,7 @@
         fail_msg: >-
           ~/comadre directory does not exist.
           Run bootstrap.yml first to deploy the service.
-        success_msg: "COMADRE directory found."
+        success_msg: "Comadre directory found."
 
     - name: "[Prereq] Validate TTS model path is set"
       ansible.builtin.assert:
@@ -130,7 +130,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          COMADRE — Qwen3 Model Deployment Complete
+          Comadre — Qwen3 Model Deployment Complete
           ============================================
 
           Models deployed to comadre-models volume:

@@ -200,7 +200,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 ## Log Format
 
-COMADRE uses structured pipe-delimited logging:
+Comadre uses structured pipe-delimited logging:
 
 ```text
 2026-03-25T14:30:00Z | INFO  | request | TTS generation completed in 8.3s

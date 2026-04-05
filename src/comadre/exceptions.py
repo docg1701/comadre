@@ -1,4 +1,4 @@
-"""Custom exception hierarchy for COMADRE."""
+"""Custom exception hierarchy for Comadre."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _logger = get_logger("request")
 
 
 class ComadreError(Exception):
-    """Base exception for all COMADRE errors."""
+    """Base exception for all Comadre errors."""
 
     def __init__(
         self,

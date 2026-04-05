@@ -1,4 +1,4 @@
-"""Health response assembler for COMADRE."""
+"""Health response assembler for Comadre."""
 
 from __future__ import annotations
 

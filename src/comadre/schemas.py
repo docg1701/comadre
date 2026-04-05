@@ -1,4 +1,4 @@
-"""Request and response schemas for COMADRE API."""
+"""Request and response schemas for Comadre API."""
 
 from enum import StrEnum
 

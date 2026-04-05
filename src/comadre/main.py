@@ -1,4 +1,4 @@
-"""COMADRE FastAPI application entry point."""
+"""Comadre FastAPI application entry point."""
 
 from __future__ import annotations
 
@@ -180,7 +180,7 @@ async def validation_error_handler(
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
-        title="COMADRE",
+        title="Comadre",
         version=__version__,
         lifespan=lifespan,
     )

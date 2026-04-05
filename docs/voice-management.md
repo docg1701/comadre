@@ -1,6 +1,6 @@
 # Voice Management
 
-COMADRE discovers voices from the filesystem at request time. Drop a file in the right directory and it's immediately available — no restart needed.
+Comadre discovers voices from the filesystem at request time. Drop a file in the right directory and it's immediately available — no restart needed.
 
 ## Volume Structure
 

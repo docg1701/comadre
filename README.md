@@ -1,7 +1,7 @@
 # Comadre
 
 <p align="center">
-  <img src="assets/logo-comadre.webp" alt="COMADRE Logo">
+  <img src="assets/logo-comadre.webp" alt="Comadre Logo">
 </p>
 
 <p align="center">

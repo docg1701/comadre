@@ -1,6 +1,6 @@
 # API Reference
 
-COMADRE exposes an OpenAI-compatible TTS endpoint and a health endpoint.
+Comadre exposes an OpenAI-compatible TTS endpoint and a health endpoint.
 
 ## Authentication
 

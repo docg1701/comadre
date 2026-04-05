@@ -1,6 +1,6 @@
 # Configuration Reference
 
-COMADRE is configured via environment variables. All variables are loaded at startup using pydantic-settings.
+Comadre is configured via environment variables. All variables are loaded at startup using pydantic-settings.
 
 ## Environment Variables
 
@@ -52,7 +52,7 @@ The `API_KEY` uses the `?` syntax, which causes Docker Compose to error immediat
 ## Complete .env.example
 
 ```bash
-# COMADRE -- Environment Configuration
+# Comadre -- Environment Configuration
 # Copy to .env and fill in values
 
 # API authentication key (required)

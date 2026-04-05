@@ -1,13 +1,13 @@
 ---
-# COMADRE Health Diagnostic Playbook
-# Read-only diagnostic tool for troubleshooting COMADRE deployments:
+# Comadre Health Diagnostic Playbook
+# Read-only diagnostic tool for troubleshooting Comadre deployments:
 #   ansible-playbook playbooks/health.yml -i inventory/production.yml
 #
 # This playbook NEVER modifies anything. It checks container state, queries
 # the health endpoint, inspects disk usage and cron jobs, and reports warnings.
 # Entirely unprivileged — no become: true.
 
-- name: Diagnose COMADRE TTS Service
+- name: Diagnose Comadre TTS Service
   hosts: comadre_vps
   gather_facts: false
 
@@ -16,12 +16,12 @@
     # Prerequisites
     # =========================================================================
 
-    - name: "[Prereq] Check COMADRE directory exists"
+    - name: "[Prereq] Check Comadre directory exists"
       ansible.builtin.stat:
         path: "~/comadre"
       register: comadre_dir
 
-    - name: "[Prereq] Verify COMADRE is deployed"
+    - name: "[Prereq] Verify Comadre is deployed"
       ansible.builtin.assert:
         that:
           - comadre_dir.stat.exists
@@ -29,7 +29,7 @@
         fail_msg: >-
           ~/comadre directory does not exist.
           Run bootstrap.yml first to deploy the service.
-        success_msg: "COMADRE directory found."
+        success_msg: "Comadre directory found."
 
     # =========================================================================
     # Container State
@@ -44,7 +44,7 @@
       when: not (tts_container.exists and (tts_container.container.State.Running | default(false)))
       ansible.builtin.debug:
         msg: >-
-          WARNING: COMADRE container is not running.
+          WARNING: Comadre container is not running.
           Check logs with: cd ~/comadre && docker compose logs
           Restart with: cd ~/comadre && docker compose up -d
 
@@ -152,7 +152,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          COMADRE TTS Service — Health Diagnostic
+          Comadre TTS Service — Health Diagnostic
           ============================================
 
           Container State: {{ 'Running' if (container_running | bool) else 'NOT RUNNING' }}

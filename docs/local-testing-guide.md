@@ -1,6 +1,6 @@
 # Local Testing Guide
 
-How to run COMADRE end-to-end on your machine with all features working.
+How to run Comadre end-to-end on your machine with all features working.
 
 ## Prerequisites
 

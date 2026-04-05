@@ -1,4 +1,4 @@
-# COMADRE API & Architecture Specification
+# Comadre API & Architecture Specification
 
 **Date:** 2026-03-23
 **Status:** Definitive specification for implementation
@@ -6,7 +6,7 @@
 
 ## Overview
 
-COMADRE is a self-hosted pt-BR TTS API for WhatsApp automation via n8n. Dual-engine: Kokoro (fast, no cloning) and Qwen3-TTS C++ (voice cloning). Single FIFO queue per instance, horizontal scaling via Caddy load balancer.
+Comadre is a self-hosted pt-BR TTS API for WhatsApp automation via n8n. Dual-engine: Kokoro (fast, no cloning) and Qwen3-TTS C++ (voice cloning). Single FIFO queue per instance, horizontal scaling via Caddy load balancer.
 
 ## API Endpoint
 

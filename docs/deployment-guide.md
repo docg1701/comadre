@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Full lifecycle management for COMADRE TTS service using Ansible playbooks.
+Full lifecycle management for Comadre TTS service using Ansible playbooks.
 
 ## Prerequisites
 
@@ -63,7 +63,7 @@ all:
 
 ## Bootstrap -- First Deployment
 
-Deploys COMADRE on a clean Ubuntu VPS with a single command.
+Deploys Comadre on a clean Ubuntu VPS with a single command.
 
 **What it does:**
 
@@ -91,7 +91,7 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 ```text
 TASK [[Summary] Report deployment status]
 ============================================
-COMADRE TTS Service -- Bootstrap Complete
+Comadre TTS Service -- Bootstrap Complete
 ============================================
 
 Service Status:  healthy
@@ -114,7 +114,7 @@ The playbook is idempotent -- safe to run multiple times.
 
 ## Update -- Deploy New Version
 
-Updates a running COMADRE deployment from the latest git commit.
+Updates a running Comadre deployment from the latest git commit.
 
 **What it does:**
 
@@ -170,7 +170,7 @@ ansible-playbook playbooks/health.yml -i inventory/production.yml
 
 ## Cleanup -- Full Decommission
 
-Removes all COMADRE artifacts from the VPS. This is irreversible.
+Removes all Comadre artifacts from the VPS. This is irreversible.
 
 **What it removes:**
 
@@ -185,7 +185,7 @@ cd deploy/ansible
 ansible-playbook playbooks/cleanup.yml -i inventory/production.yml
 ```
 
-After cleanup, the VPS has zero COMADRE artifacts. To redeploy, run `bootstrap.yml` again.
+After cleanup, the VPS has zero Comadre artifacts. To redeploy, run `bootstrap.yml` again.
 
 ## Model Deployment
 

@@ -1,5 +1,5 @@
 # ruff: noqa: E501,E402,PTH112
-"""COMADRE Feasibility Test: pt-BR TTS quality and performance evaluation.
+"""Comadre Feasibility Test: pt-BR TTS quality and performance evaluation.
 
 Generates real audio files for human listening evaluation and produces
 a markdown report with timing metrics.
@@ -483,7 +483,7 @@ def write_report(
     report_path = output_dir / "report.md"
     lines: list[str] = []
 
-    lines.append("# COMADRE Feasibility Test Report\n")
+    lines.append("# Comadre Feasibility Test Report\n")
     lines.append(f"Generated: {sys_info['timestamp']}\n")
 
     lines.append("\n## System Info\n")
@@ -620,7 +620,7 @@ def write_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="COMADRE pt-BR TTS feasibility test")
+    parser = argparse.ArgumentParser(description="Comadre pt-BR TTS feasibility test")
     parser.add_argument(
         "--categories",
         default="A,B,C,D,E",
@@ -652,7 +652,7 @@ def main() -> None:
     sys_info = get_system_info()
 
     print("=" * 60)
-    print("COMADRE Feasibility Test")
+    print("Comadre Feasibility Test")
     print("=" * 60)
     print(f"Platform: {sys_info['platform']}")
     print(f"Thread limit: {sys_info['threads_limit']}")

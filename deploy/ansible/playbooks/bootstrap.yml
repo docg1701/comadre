@@ -1,12 +1,12 @@
 ---
-# COMADRE Bootstrap Playbook
-# Deploys COMADRE TTS service on a clean Ubuntu VPS with a single command:
+# Comadre Bootstrap Playbook
+# Deploys Comadre TTS service on a clean Ubuntu VPS with a single command:
 #   ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 #
 # Idempotent: safe to run multiple times. Only tasks with actual changes
 # report as "changed".
 
-- name: Bootstrap COMADRE TTS Service
+- name: Bootstrap Comadre TTS Service
   hosts: comadre_vps
   gather_facts: true
 
@@ -21,7 +21,7 @@
           - ansible_os_family == "Debian"
         fail_msg: >-
           Unsupported OS family '{{ ansible_os_family }}'.
-          COMADRE requires Ubuntu or Debian.
+          Comadre requires Ubuntu or Debian.
           Install on a supported distribution and retry.
         success_msg: >-
           OS family {{ ansible_os_family }}
@@ -115,7 +115,7 @@
     # Git Clone
     # =========================================================================
 
-    - name: "[Git] Clone COMADRE repository"
+    - name: "[Git] Clone Comadre repository"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "~/comadre"
@@ -226,7 +226,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          COMADRE TTS Service — Bootstrap Complete
+          Comadre TTS Service — Bootstrap Complete
           ============================================
 
           Service Status:  {{ hc.status }}

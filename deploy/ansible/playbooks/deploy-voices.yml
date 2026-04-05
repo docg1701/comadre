@@ -1,5 +1,5 @@
 ---
-# COMADRE Voice Deployment Playbook
+# Comadre Voice Deployment Playbook
 # Deploys voice files (Kokoro .npy + Qwen3 .wav) into the comadre-voices Docker volume:
 #   ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
 #
@@ -20,12 +20,12 @@
     # Prerequisites
     # =========================================================================
 
-    - name: "[Prereq] Check COMADRE directory exists"
+    - name: "[Prereq] Check Comadre directory exists"
       ansible.builtin.stat:
         path: "~/comadre"
       register: comadre_dir
 
-    - name: "[Prereq] Verify COMADRE is deployed"
+    - name: "[Prereq] Verify Comadre is deployed"
       ansible.builtin.assert:
         that:
           - comadre_dir.stat.exists
@@ -33,7 +33,7 @@
         fail_msg: >-
           ~/comadre directory does not exist.
           Run bootstrap.yml first to deploy the service.
-        success_msg: "COMADRE directory found."
+        success_msg: "Comadre directory found."
 
     - name: "[Prereq] Validate voices directory is set"
       ansible.builtin.assert:
@@ -160,7 +160,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================
-          COMADRE — Voice Deployment Complete
+          Comadre — Voice Deployment Complete
           ============================================
 
           Kokoro voices deployed: {{ kokoro_files.files | length }}

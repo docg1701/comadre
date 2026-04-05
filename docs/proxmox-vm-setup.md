@@ -1,6 +1,6 @@
-# Proxmox VM Setup for COMADRE
+# Proxmox VM Setup for Comadre
 
-Step-by-step guide for creating a Debian 13 VM on Proxmox VE to run COMADRE.
+Step-by-step guide for creating a Debian 13 VM on Proxmox VE to run Comadre.
 
 **Research date:** 2026-03-25
 **Proxmox VE version:** 9.1 (released 2025-11-19, based on Debian 13 "Trixie")
@@ -199,7 +199,7 @@ stat -fc %T /sys/fs/cgroup/           # Expected: cgroup2fs
 
 Debian 13 ships with cgroup v2 enabled by default. Docker works without kernel parameter changes.
 
-## 5. Deploy COMADRE
+## 5. Deploy Comadre
 
 The VM is ready. See [local-testing-guide.md](local-testing-guide.md) for steps to build and run the service, or use Ansible from your workstation:
 
