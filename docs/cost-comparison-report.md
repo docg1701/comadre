@@ -45,10 +45,11 @@ Budget cloud TTS aggregator that resells access to multiple providers — Eleven
 - **Languages:** Dozens (inherits from ElevenLabs + MiniMax multilingual support)
 - **Pricing model:** Credit packs
 - **Rate:** $10 per 2,100,000 credits
-- **Cost per audio:** 170 credits per 12-second audio
-- **Effective rate:** 12,353 audios per $10 = $0.00081/audio
-- **Cost per audio minute:** $0.00405/min
-- **Trade-off:** Quality depends on which provider is selected per request. Latency and availability depend on upstream providers.
+- **Cost per audio (12s):** Edge ~90 credits, ElevenLabs/MiniMax ~140-190 credits
+- **Effective rate (ElevenLabs/MiniMax):** ~12,350 audios per $10 = $0.00081/audio
+- **Effective rate (Edge):** ~23,330 audios per $10 = $0.00043/audio
+- **Cost per audio minute:** $0.0041 (ElevenLabs/MiniMax), $0.0021 (Edge)
+- **Trade-off:** Quality depends on which provider is selected. Edge is cheapest but lowest quality. ElevenLabs is best quality but costs 2x more credits. Latency and availability depend on upstream providers.
 
 ## Measured Performance (Comadre — Kokoro Engine)
 
