@@ -66,9 +66,6 @@ API_KEY=your-secret-api-key-here
 # Default voice for TTS when none specified
 DEFAULT_VOICE=kokoro/pm_santa
 
-# HTTP port (internal, Caddy handles external HTTPS)
-PORT=8000
-
 # Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert)
 # Use "localhost" for self-signed cert on private networks
 DOMAIN=localhost

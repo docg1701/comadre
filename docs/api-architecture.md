@@ -33,7 +33,7 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 | `input` | string | Yes | — | max 500 chars (Kokoro) / 300 chars (Qwen3) | Text to synthesize in pt-BR |
 | `voice` | string | No | — | `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/<name>` | Voice selection (engine/name format, see [voice-management.md](voice-management.md)) |
 | `response_format` | string | No | `"ogg"` | `ogg`, `wav` | Output format |
-| `speed` | float | No | `1.0` | 0.25 — 4.0 | Speed multiplier (stacks with enhance speed) |
+| `speed` | float | No | `1.0` | 0.25 — 4.0 | Speed multiplier. Accepted by schema but not yet applied by engines. |
 | `raw` | boolean | No | `false` | true/false | Skip audio post-processing (vibrato, EQ, compression, noise) |
 | `destination` | string | No | `"whatsapp"` | `whatsapp`, `telegram`, `messenger`, `instagram` | Target platform. When `instagram`, encode as AAC M4A instead of OGG Opus. |
 
@@ -86,7 +86,7 @@ noise(room=0.15, hiss=0.08) → loudnorm(-17 LUFS) →
 OGG Opus 24kbps 16kHz mono
 ```
 
-**`speed` parameter stacks with enhance:** If `enhance=true` and Qwen3, the enhance applies 1.15x. Then `speed=1.1` results in 1.15 × 1.1 = 1.265x total. For Kokoro, enhance does not change speed, so `speed` is applied directly.
+**`speed` parameter:** Accepted by the schema but not yet applied by either engine. When `raw=false` (default), Qwen3's whatsapp-subtle pipeline applies a fixed 1.15x atempo adjustment independently of the `speed` field.
 
 #### Response
 

@@ -107,13 +107,12 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
 5. Installs and configures UFW firewall (ports 22, 80, 443)
-6. Installs and configures UFW firewall (ports 22, 80, 443)
-7. Clones the repository to `~/comadre`
-8. Creates empty voices directory structure in Docker volume
-9. Creates `.env` with all configuration variables
-10. Builds the Docker image and starts the service (tts-service + Caddy)
-11. Configures cron jobs (daily restart, audio cleanup)
-12. Waits for the health endpoint to report `healthy`
+6. Clones the repository to `~/comadre`
+7. Creates empty voices directory structure in Docker volume
+8. Creates `.env` with all configuration variables
+9. Builds the Docker image and starts the service (tts-service + Caddy)
+10. Configures cron jobs (daily restart, audio cleanup)
+11. Waits for the health endpoint to report `healthy`
 
 **Bootstrap does NOT deploy voice files.** Run `deploy-voices.yml` after bootstrap to copy voice files from your local machine to the VPS.
 
@@ -318,7 +317,7 @@ DOMAIN=tts.example.com
 
 Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certificate. Clients must accept self-signed certs or use `--insecure`/`-k` with curl.
 
-**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` with gzip compression and file-based JSON logging to /var/log/caddy/access.log.
+**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` with gzip compression and JSON logging to stdout (captured by Docker log driver).
 
 ## API Key Rotation
 
