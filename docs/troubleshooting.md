@@ -89,7 +89,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 **Resolution:**
 
 1. Check available voices via health endpoint: `curl http://localhost:8000/health | jq .voices`
-2. Voice names use the `engine/name` format: `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/female-reference`, `qwen/galvani`, etc.
+2. Voice names use the `engine/name` format: `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/female`, `qwen/galvani`, etc.
 3. Voice names are case-sensitive. The engine prefix (`kokoro/` or `qwen/`) is required. See [voice-management.md](voice-management.md) for the full list of available voices and how to add new ones.
 
 ### 429 rate limit exceeded
@@ -101,7 +101,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 **Resolution:**
 
 1. Wait for the period indicated by `Retry-After` and retry
-2. If the limit is too low for your use case, increase it in `.env`: `RATE_LIMIT_SPEECH=20/minute`
+2. If the limit is too low for your use case, increase it in `.env`: `RATE_LIMIT_SPEECH=60/minute`
 3. Restart after changing: `docker compose restart tts-service`
 4. For high-traffic deployments, scale horizontally with multiple instances behind Caddy
 
@@ -280,8 +280,8 @@ Comadre uses structured pipe-delimited logging:
 | `startup` | Application initialization and model loading |
 | `download` | Model download progress |
 | `request` | HTTP request handling, TTS generation, and errors |
+| `access` | HTTP access log (client IP, method, path, status, duration) |
 | `health` | Health endpoint checks |
-| `voice` | Voice discovery and validation |
 
 **Filtering logs by component:**
 

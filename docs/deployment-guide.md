@@ -59,7 +59,7 @@ all:
 | `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
 | `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
 | `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed) |
-| `rate_limit_speech` | No | Rate limit for speech endpoint per IP (default: `10/minute`) |
+| `rate_limit_speech` | No | Rate limit for speech endpoint per IP (default: `30/minute`) |
 | `rate_limit_health` | No | Rate limit for health endpoint per IP (default: `60/minute`) |
 | `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model (empty to skip) |
 | `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF (empty to skip) |
@@ -123,7 +123,8 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 ```bash
 cd deploy/ansible
 export COMADRE_API_KEY="your-secret-key-here"
-ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
+ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  -e "ansible_become_password=YOUR_SUDO_PASS"
 ```
 
 **Expected output on success:**
@@ -135,7 +136,7 @@ Comadre TTS Service -- Bootstrap Complete
 ============================================
 
 Service Status:  healthy
-Loaded Voices:   kokoro/pf_dora, kokoro/pm_alex, kokoro/pm_santa, qwen/female-reference, qwen/galvani
+Loaded Voices:   kokoro/pf_dora, kokoro/pm_alex, kokoro/pm_santa, qwen/female, qwen/galvani
 Endpoint URL:    http://YOUR_VPS_IP:8000
 ============================================
 ```
@@ -222,7 +223,8 @@ Removes all Comadre artifacts from the VPS. This is irreversible.
 
 ```bash
 cd deploy/ansible
-ansible-playbook playbooks/cleanup.yml -i inventory/production.yml
+ansible-playbook playbooks/cleanup.yml -i inventory/production.yml \
+  -e "ansible_become_password=YOUR_SUDO_PASS"
 ```
 
 After cleanup, the VPS has zero Comadre artifacts. To redeploy, run `bootstrap.yml` again.
@@ -236,6 +238,7 @@ Qwen3 GGUF models (~1.6 GB total) are too large for git. They deploy via SCP thr
 - Qwen3 models must be converted locally from HuggingFace safetensors
 - See [quantizing-qwen3-models.md](quantizing-qwen3-models.md) for the conversion procedure
 - Two files needed: `qwen3-tts-0.6b-q8_0.gguf` (~1.3 GB) and `qwen3-tts-tokenizer-f16.gguf` (~325 MB)
+- **Preferred method:** Models auto-download on first startup when `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` are set in the inventory. Pre-built GGUF files are available from `PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF` on HuggingFace. Manual deployment via this playbook is only needed for air-gapped environments.
 
 **Configure inventory:**
 
@@ -280,7 +283,7 @@ Voices are discovered from the filesystem at runtime. No environment variable co
       kokoro/          # .npy voice profiles (optional)
       qwen/            # .wav reference audio (optional)
         galvani.wav
-        female-reference.wav
+        female.wav
     ```
 
 2. Run bootstrap (for first deploy) or the `deploy-voices.yml` playbook:
@@ -316,7 +319,7 @@ DOMAIN=tts.example.com
 
 Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certificate. Clients must accept self-signed certs or use `--insecure`/`-k` with curl.
 
-**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` with gzip compression and console logging.
+**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` with gzip compression and file-based JSON logging to /var/log/caddy/access.log.
 
 ## API Key Rotation
 

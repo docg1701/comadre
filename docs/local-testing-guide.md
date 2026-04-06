@@ -16,7 +16,7 @@ These files are tracked in git and require no action:
 | Item | Location | Purpose |
 | --- | --- | --- |
 | `qwen3-tts-cli` binary | `deploy/bin/` | Qwen3 C++ inference CLI |
-| Voice reference WAVs | `voices/` | 3 files: female, male, clone reference |
+| Voice reference WAVs | `voices/` | 3 files: female, male, galvani |
 | Noise WAVs | `noise/` | 2 files: hiss + room tone for post-processing |
 | espeak-ng pt_extra dictionary | `deploy/espeak-ng/pt_extra` | Custom sigla pronunciation (CPF, CNPJ, etc.) |
 
@@ -153,12 +153,15 @@ Expected response when fully ready:
 ```json
 {
     "status": "healthy",
-    "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female-reference", "qwen/galvani"],
+    "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female", "qwen/galvani"],
     "engines": {
         "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
-        "qwen3": {"loaded": true, "voices": ["qwen/female-reference", "qwen/galvani"]}
+        "qwen3": {"loaded": true, "voices": ["qwen/female", "qwen/galvani"]}
     },
-    "queue_depth": 0
+    "queue_depth": 0,
+    "uptime_seconds": 42,
+    "memory_mb": 1024,
+    "version": "1.0.0"
 }
 ```
 
@@ -194,18 +197,18 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ### Qwen3 voices (12-37 seconds latency)
 
 ```bash
-# qwen/female-reference
+# qwen/female
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen/female-reference"}' \
+  -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen/female"}' \
   --output test-qwen-female.ogg
 
-# qwen/male-reference
+# qwen/male
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen/male-reference"}' \
+  -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen/male"}' \
   --output test-qwen-male.ogg
 
 # qwen/galvani (uses galvani.wav reference)

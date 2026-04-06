@@ -18,7 +18,7 @@ The `comadre-voices` Docker volume is mounted at `/voices/` with two subdirector
 
 Kokoro uses voice style vectors stored as numpy arrays. Two sources:
 
-1. **Built-in voices** — bundled in `voices-v1.0.bin` (the .npz archive). These work automatically without any files. Examples: `pm_santa`, `pf_dora`, `pm_alex`, and 50+ others.
+1. **Built-in voices** — bundled in `voices-v1.0.bin` (numpy archive format). These work automatically without any files. Examples: `pm_santa`, `pf_dora`, `pm_alex`, and 50+ others.
 
 2. **Custom voices** — `.npy` files placed in `/voices/kokoro/`. These are voice style vectors exported from your voice cloning pipeline.
 
@@ -110,7 +110,7 @@ Output:
   "kokoro/pf_dora",
   "kokoro/pm_alex",
   "kokoro/pm_santa",
-  "qwen/female-reference",
+  "qwen/female",
   "qwen/galvani"
 ]
 ```
@@ -131,8 +131,8 @@ Old voice names map to the new format:
 | `santa`       | `kokoro/pm_santa`          | Built-in, no file needed       |
 | `dora`        | `kokoro/pf_dora`           | Built-in, no file needed       |
 | `alex`        | `kokoro/pm_alex`           | Built-in, no file needed       |
-| `qwen-female` | `qwen/female-reference`    | Requires .wav in /voices/qwen/ |
-| `qwen-male`   | `qwen/male-reference`      | Requires .wav in /voices/qwen/ |
+| `qwen-female` | `qwen/female`              | Requires .wav in /voices/qwen/ |
+| `qwen-male`   | `qwen/male`                | Requires .wav in /voices/qwen/ |
 | `clone`       | `qwen/<your-reference>`    | Use the actual filename         |
 
 ## Deploy via Ansible

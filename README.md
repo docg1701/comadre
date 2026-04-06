@@ -32,14 +32,14 @@ docker compose up --build -d
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Bom dia, como posso ajudar?", "voice":"santa"}' \
+  -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
 
 # Test with Qwen3 (cloned voice, if configured)
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"clone"}' \
+  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
   --output test_clone.ogg
 ```
 
@@ -63,12 +63,12 @@ Return OGG Opus or WAV
 
 | Voice | Engine | Use Case | Latency (4 vCPU) |
 |-------|--------|----------|-------------------|
-| `santa` (M) | Kokoro fp32 | Default, fast, perfect siglas | 5-16s |
-| `dora` (F) | Kokoro fp32 | Female alternative | 5-16s |
-| `alex` (M) | Kokoro fp32 | Male alternative | 5-16s |
-| `clone` | Qwen3-TTS C++ Q8_0 | Voice cloning (pre-configured reference) | 12-37s |
-| `qwen-female` | Qwen3-TTS C++ Q8_0 | Qwen3 default female | 12-37s |
-| `qwen-male` | Qwen3-TTS C++ Q8_0 | Qwen3 default male | 12-37s |
+| `kokoro/pm_santa` (M) | Kokoro fp32 | Default, fast, perfect siglas | 5-16s |
+| `kokoro/pf_dora` (F) | Kokoro fp32 | Female alternative | 5-16s |
+| `kokoro/pm_alex` (M) | Kokoro fp32 | Male alternative | 5-16s |
+| `qwen/galvani` | Qwen3-TTS C++ Q8_0 | Voice cloning (pre-configured reference) | 12-37s |
+| `qwen/female` | Qwen3-TTS C++ Q8_0 | Qwen3 default female | 12-37s |
+| `qwen/male` | Qwen3-TTS C++ Q8_0 | Qwen3 default male | 12-37s |
 
 Each engine has its own:
 
@@ -101,10 +101,10 @@ Full lifecycle management via Ansible:
 
 ```bash
 cd deploy/ansible
-ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml  # Deploy
+ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml -e "ansible_become_password=YOUR_SUDO_PASS"  # Deploy
 ansible-playbook playbooks/update.yml -i inventory/production.yml     # Update
 ansible-playbook playbooks/health.yml -i inventory/production.yml     # Diagnose
-ansible-playbook playbooks/cleanup.yml -i inventory/production.yml    # Remove
+ansible-playbook playbooks/cleanup.yml -i inventory/production.yml -e "ansible_become_password=YOUR_SUDO_PASS"   # Remove
 ```
 
 ## Documentation

@@ -22,7 +22,7 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `KOKORO_VOICES_URL` | *(GitHub release URL)* | URL to download Kokoro voices binary on first start. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin` |
 | `QWEN3_MODEL_URL` | *(empty)* | URL to download Qwen3 GGUF model. Empty string skips auto-download. | *(empty string)* |
 | `QWEN3_TOKENIZER_URL` | *(empty)* | URL to download Qwen3 tokenizer GGUF. Empty string skips auto-download. | *(empty string)* |
-| `DOMAIN` | `localhost` | Domain for Caddy HTTPS. Set to a public domain for Let's Encrypt auto-cert, or `localhost` for self-signed. | `tts.example.com` |
+| `DOMAIN` | `localhost` | Domain for Caddy HTTPS. Set to a public domain for Let's Encrypt auto-cert, or `localhost` for self-signed. Caddy/compose-level variable, not part of the Python application settings. | `tts.example.com` |
 | `RATE_LIMIT_SPEECH` | `30/minute` | Rate limit for the speech endpoint, per client IP. Uses `limits` syntax. | `20/minute` |
 | `RATE_LIMIT_HEALTH` | `60/minute` | Rate limit for the health endpoint, per client IP. | `120/minute` |
 
@@ -51,6 +51,8 @@ environment:
 ```
 
 The `API_KEY` uses the `?` syntax, which causes Docker Compose to error immediately if the variable is not set in `.env`.
+
+This is a simplified example. The actual `compose.yaml` maps 18+ environment variables. See the full `compose.yaml` for all mappings.
 
 ## Complete .env.example
 

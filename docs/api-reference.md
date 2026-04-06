@@ -154,7 +154,7 @@ Wrong API key:
   "error": {
     "message": "Voice 'unknown' not found",
     "type": "not_found_error",
-    "hint": "Available voices: ['kokoro/pf_dora', 'kokoro/pm_alex', 'kokoro/pm_santa', 'qwen/female-reference', 'qwen/galvani']. Use engine/name format. See /health for the current list."
+    "hint": "Available voices: ['kokoro/pf_dora', 'kokoro/pm_alex', 'kokoro/pm_santa', 'qwen/female', 'qwen/galvani']. Use engine/name format. See /health for the current list."
   }
 }
 ```
@@ -208,10 +208,10 @@ Returns service health status. No authentication required.
 ```json
 {
   "status": "healthy",
-  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female-reference", "qwen/galvani"],
+  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female", "qwen/galvani"],
   "engines": {
     "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
-    "qwen3": {"loaded": true, "voices": ["qwen/female-reference", "qwen/galvani"]}
+    "qwen3": {"loaded": true, "voices": ["qwen/female", "qwen/galvani"]}
   },
   "queue_depth": 0,
   "uptime_seconds": 3600,
@@ -288,6 +288,8 @@ curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
   -d '{"input":"Confira nosso novo produto!", "voice":"kokoro/pf_dora", "destination":"instagram"}' \
   --output test.m4a
 ```
+
+*Note: the `destination` parameter is not yet implemented. This request currently outputs OGG Opus regardless of the destination value.*
 
 **Missing authentication (error example):**
 

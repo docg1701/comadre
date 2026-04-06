@@ -22,8 +22,7 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
   "voice": "kokoro/pm_santa",
   "response_format": "ogg",
   "speed": 1.0,
-  "enhance": true,
-  "seed": -1
+  "raw": false
 }
 ```
 
@@ -32,11 +31,10 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 | Parameter | Type | Required | Default | Values | Description |
 |---|---|---|---|---|---|
 | `input` | string | Yes | — | max 500 chars (Kokoro) / 300 chars (Qwen3) | Text to synthesize in pt-BR |
-| `voice` | string | Yes | — | `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/<name>` | Voice selection (engine/name format, see [voice-management.md](voice-management.md)) |
+| `voice` | string | No | — | `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/<name>` | Voice selection (engine/name format, see [voice-management.md](voice-management.md)) |
 | `response_format` | string | No | `"ogg"` | `ogg`, `wav` | Output format |
-| `speed` | float | No | `1.0` | 0.5 — 2.0 | Speed multiplier (stacks with enhance speed) |
-| `enhance` | bool | No | `true` | true/false | Apply post-processing pipeline |
-| `seed` | int | No | `-1` | -1 or any positive int | Qwen3 random seed (-1 = random). Ignored for Kokoro. |
+| `speed` | float | No | `1.0` | 0.25 — 4.0 | Speed multiplier (stacks with enhance speed) |
+| `raw` | boolean | No | `false` | true/false | Skip audio post-processing (vibrato, EQ, compression, noise) |
 | `destination` | string | No | `"whatsapp"` | `whatsapp`, `telegram`, `messenger`, `instagram` | Target platform. When `instagram`, encode as AAC M4A instead of OGG Opus. |
 
 #### Engine routing (based on `voice` prefix)
@@ -65,7 +63,7 @@ Voice names use the `engine/name` format. The engine prefix determines the TTS b
 - Word acronyms kept as-is: SUS, PIX, PIS, LOAS, CEP, DETRAN, ENEM, SAMU, ANVISA
 - Siglas must be embedded between normal words (never start sentence with spelled sigla)
 
-#### Post-processing (`enhance=true`)
+#### Post-processing (`raw=false`)
 
 **Kokoro pipeline (vibrato_warm):**
 
@@ -103,8 +101,10 @@ Body: [audio bytes]
 | Code | Condition |
 |---|---|
 | 400 | `input` empty or exceeds character limit |
-| 400 | `voice` not recognized |
+| 400 | Malformed request or voice format |
 | 401 | Invalid or missing API_KEY |
+| 404 | Voice not found |
+| 429 | Rate limit exceeded |
 | 500 | TTS generation failed |
 | 503 | Engine not loaded |
 
@@ -113,12 +113,15 @@ Body: [audio bytes]
 ```json
 {
   "status": "healthy",
-  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female-reference", "qwen/galvani"],
+  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female", "qwen/galvani"],
   "engines": {
     "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
-    "qwen3": {"loaded": true, "voices": ["qwen/female-reference", "qwen/galvani"]}
+    "qwen3": {"loaded": true, "voices": ["qwen/female", "qwen/galvani"]}
   },
-  "queue_depth": 3
+  "queue_depth": 3,
+  "uptime_seconds": 3600,
+  "memory_mb": 4200,
+  "version": "1.5.0"
 }
 ```
 
@@ -285,13 +288,13 @@ For detailed voice setup instructions, see [voice-management.md](voice-managemen
 
 | Voice | File | Source | License |
 |---|---|---|---|
-| `qwen/female-reference` | `/voices/qwen/female-reference.wav` | LibriVox pt-BR — Leni (Contos Brasileiros, track 02) | Public domain |
-| `qwen/male-reference` | `/voices/qwen/male-reference.wav` | LibriVox pt-BR — Lucas M. (Contos Brasileiros, track 04) | Public domain |
+| `qwen/female` | `/voices/qwen/female.wav` | LibriVox pt-BR — Leni (Contos Brasileiros, track 02) | Public domain |
+| `qwen/male` | `/voices/qwen/male.wav` | LibriVox pt-BR — Lucas M. (Contos Brasileiros, track 04) | Public domain |
 | `qwen/galvani` | `/voices/qwen/galvani.wav` | Original recording — Galvani (project owner) | Private / owner consent |
 
 ### Adding a custom voice
 
-1. Place a reference WAV in `/voices/qwen/` (3-10s, clean speech, mono, 24kHz)
+1. Place a reference WAV in `/voices/qwen/` (3-10s, clean speech, mono, 16kHz or higher)
 2. The voice is immediately available as `qwen/<filename-without-extension>`
 3. No restart or environment variable configuration needed
 
@@ -305,7 +308,7 @@ For detailed voice setup instructions, see [voice-management.md](voice-managemen
 
 ```yaml
 services:
-  comadre:
+  tts-service:
     build: .
     ports:
       - "8000:8000"
@@ -319,7 +322,7 @@ services:
     restart: unless-stopped
 ```
 
-No Redis. No workers. Single container.
+Two containers: tts-service (TTS API) + caddy (HTTPS reverse proxy). No Redis, no workers.
 
 ## Character Limits
 
@@ -353,6 +356,6 @@ Exceeding the limit returns HTTP 400 with error message.
 
 | File | Source | Size |
 |---|---|---|
-| `noise-room-tone.wav` | Generated via ffmpeg (anoisesrc pink) | ~1 MB |
-| `noise-mic-hiss.wav` | Generated via ffmpeg (anoisesrc white) | ~1 MB |
+| `room.wav` | Generated via ffmpeg (anoisesrc pink) | ~1 MB |
+| `hiss.wav` | Generated via ffmpeg (anoisesrc white) | ~1 MB |
 | `ffmpeg` | System package | — |
