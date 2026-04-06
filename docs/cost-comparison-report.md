@@ -4,7 +4,7 @@
 
 Comadre delivers unlimited TTS audio for a fixed cost of $7/month on a single VPS (or near-zero on self-hosted hardware), with measured throughput of 18 audio messages per minute, 100% audio integrity across 818 test requests, and predictable latency under load. Voice quality is very good — comparable to MiniMax, better than Microsoft Edge TTS, and only slightly below ElevenLabs' best models. The companion kokoro-cloner project enables custom brand voices from a 10-second sample. For a business handling 120 clients/day in Brazilian Portuguese, Comadre costs 97-99% less than ElevenLabs and 35-77% less than AI33.pro, while offering full data privacy, LGPD compliance by design, and zero external dependencies. The trade-off is the need to self-manage infrastructure and a smaller voice catalog compared to ElevenLabs.
 
-All Comadre performance numbers in this report are measured, not estimated. Cloud platform costs are calculated from published pricing.
+All Comadre performance numbers in this report are measured using the **Kokoro engine only** (CPU inference, no GPU). Comadre also supports Qwen3-TTS for voice cloning, but Qwen3 has significantly higher latency on CPU and is not suitable for high-throughput production use. All throughput, latency, and cost comparisons in this report reflect Kokoro performance exclusively. Cloud platform costs are calculated from published pricing.
 
 ## Platform Profiles
 
@@ -12,9 +12,10 @@ All Comadre performance numbers in this report are measured, not estimated. Clou
 
 Open-source dual-engine TTS API optimized for Brazilian Portuguese. Runs on a standard VPS with no GPU required.
 
-- **Engines:** Kokoro fp32 (fast, built-in voices) + Qwen3-TTS C++ Q8_0 (voice cloning)
+- **Primary engine:** Kokoro fp32 — fast CPU inference, no GPU required. All benchmarks in this report use Kokoro.
+- **Secondary engine:** Qwen3-TTS C++ Q8_0 — voice cloning capability, but high latency on CPU (not used in benchmarks)
 - **Deployment:** Docker Compose on any VPS (4 vCPU, 8 GB RAM minimum)
-- **Pricing model:** Fixed monthly VPS cost (Hetzner CX33: EUR 6.49/mo = ~$7.01/mo)
+- **Pricing model:** Fixed monthly VPS cost (Hetzner CX33: EUR 6.49/mo = ~$7.01/mo) or near-zero on self-hosted hardware
 - **API:** OpenAI-compatible (`POST /v1/audio/speech`)
 - **Languages:** Optimized for Brazilian Portuguese (espeak-ng custom dictionary, 67 sigla entries)
 
@@ -44,7 +45,7 @@ Budget cloud TTS API with credit-based pricing.
 - **Effective rate:** 12,353 audios per $10 = $0.00081/audio
 - **Cost per audio minute:** $0.00405/min
 
-## Measured Performance (Comadre)
+## Measured Performance (Comadre — Kokoro Engine)
 
 All data from load tests run on 2026-04-06 against a Hetzner CX33 VPS (4 shared vCPU, 8 GB RAM) located at 10.10.10.207.
 
@@ -313,9 +314,10 @@ Comadre is built exclusively for Brazilian Portuguese — the text preprocessing
 
 ### Environment
 
-- **VPS:** Hetzner CX33 — 4 shared vCPU (AMD EPYC), 8 GB RAM, 80 GB SSD
-- **Location:** Germany (Falkenstein)
+- **Host:** Proxmox 9.1.7 VM on Xeon E5-1980v4 (self-hosted, equivalent to a 4 vCPU VPS)
+- **VM specs:** 4 vCPU, 8 GB RAM
 - **Container limits:** 4 CPUs, 6 GB RAM
-- **Engine:** Kokoro fp32 (ONNX), voice `pm_santa`
+- **Engine:** Kokoro fp32 (ONNX), voice `pm_santa` — CPU-only, no GPU
+- **Qwen3 was not used** in any benchmark due to high CPU latency
 - **Output format:** OGG Opus 24kbps 16kHz mono
 - **Date:** 2026-04-06
