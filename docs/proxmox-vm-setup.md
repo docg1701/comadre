@@ -37,6 +37,7 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 | Field | Value |
 | --- | --- |
 | Name | `comadre-tts` |
+| Add to HA | No (only useful for multi-node clusters with automatic failover) |
 
 ### OS
 
@@ -53,8 +54,11 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 | Machine | q35 | Modern chipset, better PCIe support |
 | BIOS | OVMF (UEFI) | Recommended for Debian 13 |
 | EFI Storage | local-lvm | Required with OVMF |
+| Add TPM | No | Unnecessary for a TTS server VM |
+| Pre-Enroll keys | No | Secure Boot not needed for internal workloads |
 | SCSI Controller | VirtIO SCSI single | Best disk performance with IO threads |
 | QEMU Agent | Enabled | Shows IP in Proxmox, graceful shutdown, backup freeze |
+| Graphic card | Default (VGA) | No GPU needed, Comadre runs 100% on CPU |
 
 ### Disks
 
@@ -63,9 +67,11 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 | Bus/Device | SCSI | Uses VirtIO SCSI controller above |
 | Storage | local-lvm | Or your preferred storage |
 | Size | 32 GB | 20 GB minimum, 32 GB gives headroom for Docker images |
+| SSD Emulation | Enabled | Informs guest the disk is SSD, enables TRIM/discard |
 | Cache | Write back | Best performance |
 | Discard | Enabled | Reclaims space via TRIM on thin-provisioned storage |
 | IO Thread | Enabled | Dedicated IO thread per disk, 30-50% improvement |
+| Skip Replication | Enabled | Replication is for multi-node clusters with shared storage |
 
 ### CPU
 
@@ -77,10 +83,11 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 
 ### Memory
 
-| Field | Value |
-| --- | --- |
-| Memory (MiB) | 8192 |
-| Ballooning | Disabled (predictable latency for TTS inference) |
+| Field | Value | Why |
+| --- | --- | --- |
+| Memory (MiB) | 8192 | |
+| Ballooning | Disabled | Predictable latency for TTS inference |
+| KSM (Kernel Same-page Merging) | Disabled | Adds CPU overhead and unpredictable latency, harmful for inference |
 
 ### Network
 
@@ -88,6 +95,7 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 | --- | --- | --- |
 | Bridge | vmbr0 | VM gets LAN IP via DHCP |
 | Model | VirtIO (virtio) | Paravirtualized, vastly faster than e1000 |
+| Firewall | Disabled | Unnecessary overhead for internal LAN; use ufw inside the VM if needed |
 
 Click **Finish**.
 
@@ -104,21 +112,79 @@ Click **Finish**.
 
 ## 4. Post-install configuration
 
-### Find the VM IP
+All steps below are done via the Proxmox console, logged in as the user
+you created during installation.
 
-From the Proxmox console (logged in as the user you created):
+### Install sudo
+
+The Debian netinst with a root password does not install sudo by default:
 
 ```bash
-ip addr show
+su -
+apt install -y sudo
+usermod -aG sudo YOUR_USER
+exit
 ```
 
-Or after installing the guest agent (next step), the IP appears in Proxmox UI under VM > Summary > IPs.
+Log out and back in for the group to take effect.
 
-### SSH key setup (from your workstation)
+### Configure static IP
+
+Find the network interface name:
 
 ```bash
-ssh-copy-id YOUR_USER@VM_IP
-ssh YOUR_USER@VM_IP
+ip link show
+```
+
+Typically `ens18` on Proxmox VirtIO. Edit the network config:
+
+```bash
+sudo nano /etc/network/interfaces
+```
+
+Replace the DHCP block for your interface with:
+
+```text
+auto ens18
+iface ens18 inet static
+    address YOUR_STATIC_IP/24
+    gateway YOUR_GATEWAY
+    dns-nameservers 1.1.1.1 8.8.8.8
+```
+
+Apply:
+
+```bash
+sudo systemctl restart networking
+```
+
+The `dns-nameservers` directive in `/etc/network/interfaces` requires the
+`resolvconf` package, which is not installed by default. Instead, set the
+nameservers directly:
+
+```bash
+sudo nano /etc/resolv.conf
+```
+
+```text
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+```
+
+Verify connectivity:
+
+```bash
+ping -c 1 google.com
+```
+
+### Install avahi (mDNS)
+
+Enables `HOSTNAME.local` resolution on the LAN:
+
+```bash
+sudo apt update
+sudo apt install -y avahi-daemon
+sudo systemctl enable --now avahi-daemon
 ```
 
 ### Install essentials and guest agent
@@ -129,75 +195,17 @@ sudo apt install -y qemu-guest-agent htop curl git
 sudo systemctl enable --now qemu-guest-agent
 ```
 
-### Harden SSH
+The VM IP now appears in Proxmox UI under VM > Summary > IPs.
+
+### SSH key setup (from your workstation)
 
 ```bash
-sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-sudo sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
-sudo systemctl restart sshd
+ssh-copy-id YOUR_USER@HOSTNAME.local
+ssh YOUR_USER@HOSTNAME.local
 ```
 
-### Install Docker (official repository)
-
-```bash
-# Remove conflicting packages
-for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
-  sudo apt remove -y $pkg 2>/dev/null
-done
-
-# Add Docker GPG key
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-# Add Docker repository (uses "trixie" codename)
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# Install Docker Engine + Compose plugin
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# Add your user to the docker group
-sudo usermod -aG docker $USER
-```
-
-Log out and back in for the group to take effect:
-
-```bash
-exit
-ssh YOUR_USER@VM_IP
-docker compose version   # Should work without sudo
-```
-
-### Performance tuning
-
-```bash
-# Disable swap (prevents unpredictable latency during inference)
-sudo swapoff -a
-sudo sed -i '/swap/d' /etc/fstab
-
-# Limit Docker log size (prevents disk fill)
-sudo mkdir -p /etc/docker
-cat <<'EOF' | sudo tee /etc/docker/daemon.json
-{
-  "log-driver": "json-file",
-  "log-opts": { "max-size": "10m", "max-file": "3" }
-}
-EOF
-sudo systemctl restart docker
-```
-
-### Verify Docker and cgroup v2
-
-```bash
-docker info | grep "Storage Driver"   # Expected: overlay2
-stat -fc %T /sys/fs/cgroup/           # Expected: cgroup2fs
-```
-
-Debian 13 ships with cgroup v2 enabled by default. Docker works without kernel parameter changes.
+> **Note:** Docker installation, Docker log limits, and performance tuning are
+> handled by the Ansible bootstrap playbook. Do not install Docker manually.
 
 ## 5. Deploy Comadre
 
@@ -225,12 +233,14 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 
 ```text
 Name:    comadre-tts
+HA:      No
 OS:      Debian 13.4 "Trixie" (netinst)
-Machine: q35, OVMF (UEFI)
+Machine: q35, OVMF (UEFI), no TPM, no Secure Boot
+GPU:     Default (VGA), no passthrough
 CPU:     4 cores, type=host, 1 socket
-RAM:     8192 MiB, ballooning off
-Disk:    32 GB, VirtIO SCSI single, IO thread, discard, write-back cache
-Network: vmbr0, VirtIO (virtio)
+RAM:     8192 MiB, ballooning off, KSM off
+Disk:    32 GB, VirtIO SCSI single, SSD emulation, IO thread, discard, write-back cache, skip replication
+Network: vmbr0, VirtIO (virtio), firewall off
 Agent:   QEMU Guest Agent enabled
 ```
 

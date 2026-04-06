@@ -4,6 +4,7 @@ all:
       # VPS connection — set these to your server's IP and SSH user
       ansible_host: "CHANGE_ME"
       ansible_user: "CHANGE_ME"
+      ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
     # API authentication key — reads from COMADRE_API_KEY env var (required)

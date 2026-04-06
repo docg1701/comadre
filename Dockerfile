@@ -13,6 +13,8 @@ RUN apt-get update && \
         gcc \
         g++ \
         make \
+        libsonic-dev \
+        ronn \
     && rm -rf /var/lib/apt/lists/*
 
 # Build espeak-ng from source — pinned 2026-03-24, includes PR #2344 pt-BR improvements

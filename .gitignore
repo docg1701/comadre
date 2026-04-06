@@ -25,6 +25,9 @@ env/
 # Linting
 .ruff_cache/
 
+# Ansible inventory (real credentials)
+deploy/ansible/inventory/production.yml
+
 # Docker
 .docker/
 
