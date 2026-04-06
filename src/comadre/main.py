@@ -7,10 +7,12 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from comadre import __version__
 from comadre.api import api_router
@@ -204,6 +206,26 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.limiter = limiter
+    access_logger = get_logger("access")
+
+    @app.middleware("http")
+    async def access_log_middleware(request: Request, call_next: Any) -> Response:
+        start = time.monotonic()
+        response: Response = await call_next(request)
+        duration = time.monotonic() - start
+        client_ip = request.headers.get(
+            "x-forwarded-for", request.client.host if request.client else "-"
+        )
+        access_logger.info(
+            "%s %s %s %d %.1fs",
+            client_ip,
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration,
+        )
+        return response
+
     register_exception_handlers(app)
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(429, _rate_limit_exceeded_handler)

@@ -4,6 +4,6 @@
 
 	log {
 		output stdout
-		format console
+		format json
 	}
 }

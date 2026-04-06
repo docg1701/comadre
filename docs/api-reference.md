@@ -34,6 +34,7 @@ Generate speech audio from text input.
 | `response_format` | string | No | `ogg` | Output format: `ogg` or `wav` |
 | `speed` | float | No | `1.0` | Speed multiplier: 0.25 to 4.0. Accepted by schema but not yet applied by engines. |
 | `destination` | string | No | `whatsapp` | Target platform: `whatsapp`, `telegram`, `messenger`, or `instagram`. Accepted by schema but not yet applied -- all output currently uses OGG Opus regardless of destination. |
+| `raw` | boolean | No | `false` | Skip audio post-processing (vibrato, EQ, compression, echo, noise mixing). Returns the raw TTS engine output encoded to the requested format. Useful for testing or custom downstream processing. |
 
 ### Voice Routing
 
@@ -170,7 +171,7 @@ Wrong API key:
 }
 ```
 
-The 429 response includes a `Retry-After` header. Default limits: 10 req/min for speech (per client IP), 60 req/min for health. Configurable via `RATE_LIMIT_SPEECH` and `RATE_LIMIT_HEALTH` environment variables.
+The 429 response includes a `Retry-After` header. Default limits: 30 req/min for speech (per client IP), 60 req/min for health. Configurable via `RATE_LIMIT_SPEECH` and `RATE_LIMIT_HEALTH` environment variables.
 
 **500 -- Server Error:**
 
@@ -215,7 +216,7 @@ Returns service health status. No authentication required.
   "queue_depth": 0,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
-  "version": "1.4.0"
+  "version": "1.5.0"
 }
 ```
 
@@ -231,7 +232,7 @@ Returned while models are still loading after startup:
   "queue_depth": 0,
   "uptime_seconds": 15,
   "memory_mb": 800,
-  "version": "1.4.0"
+  "version": "1.5.0"
 }
 ```
 

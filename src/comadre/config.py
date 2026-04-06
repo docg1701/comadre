@@ -58,7 +58,7 @@ class Settings(BaseSettings):
         description="Number of CPU threads for Qwen3 inference",
     )
     rate_limit_speech: str = Field(
-        default="10/minute",
+        default="30/minute",
         description="Rate limit for speech endpoint (per client IP)",
     )
     rate_limit_health: str = Field(

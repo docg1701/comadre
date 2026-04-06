@@ -96,7 +96,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 **Symptom:** Requests return 429 with `"Rate limit exceeded"` and a `Retry-After` header.
 
-**Cause:** The client IP has exceeded the configured rate limit (default: 10 req/min for speech, 60 req/min for health).
+**Cause:** The client IP has exceeded the configured rate limit (default: 30 req/min for speech, 60 req/min for health).
 
 **Resolution:**
 
@@ -181,6 +181,31 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 2. Verify `.env` was updated: `grep API_KEY ~/comadre/.env`
 3. Manual restart: `cd ~/comadre && docker compose restart tts-service`
 4. If the service is stuck, full restart: `docker compose down && docker compose up -d`
+
+### Locked out by fail2ban
+
+**Symptom:** All requests from your IP return connection refused or timeout.
+
+**Cause:** Too many failed auth attempts triggered a fail2ban ban (default: 5 failures in 5 minutes, 1-hour ban).
+
+**Resolution:**
+
+1. SSH into the VPS (SSH is not affected by fail2ban's Caddy jail)
+2. Check if your IP is banned: `sudo fail2ban-client status caddy-auth`
+3. Unban: `sudo bash ~/comadre/deploy/bin/unban-ip.sh YOUR_IP`
+4. If you don't know your IP: `sudo fail2ban-client set caddy-auth unbanip --all`
+
+### UFW blocking access
+
+**Symptom:** Cannot reach the VPS on ports 80/443 but SSH works.
+
+**Cause:** UFW rules may have been modified or ports were not allowed.
+
+**Resolution:**
+
+1. Check UFW status: `sudo ufw status`
+2. Ensure ports are open: `sudo ufw allow 80/tcp && sudo ufw allow 443/tcp`
+3. Verify Docker is not conflicting: `sudo iptables -L -n | grep 443`
 
 ## Deployment Issues
 

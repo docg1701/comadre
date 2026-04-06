@@ -95,6 +95,8 @@ class KokoroEngine:
         voice: str | NDArray[np.float32],
         response_format: str,
         noise_dir: Path | None = None,
+        *,
+        raw: bool = False,
     ) -> bytes:
         """Generate speech via Kokoro fp32 engine.
 
@@ -151,6 +153,8 @@ class KokoroEngine:
                 wav_parts.append(_samples_to_wav(samples, sample_rate))
 
             wav_bytes = _concatenate_wavs(wav_parts)
+            if raw:
+                return _encode_final(wav_bytes, response_format)
             return _apply_vibrato_warm(wav_bytes, response_format, noise_dir)
         except (InvalidRequestError, GenerationError):
             raise
@@ -501,6 +505,8 @@ class QwenEngine:
         response_format: str,
         noise_dir: Path | None = None,
         seed: int = -1,
+        *,
+        raw: bool = False,
     ) -> bytes:
         """Generate speech via Qwen3 C++ engine.
 
@@ -560,6 +566,8 @@ class QwenEngine:
                 timeout=60,
             )
             wav_bytes = Path(tmp_path).read_bytes()
+            if raw:
+                return _encode_final(wav_bytes, response_format)
             return _apply_whatsapp_subtle(wav_bytes, response_format, noise_dir)
         except (InvalidRequestError, GenerationError):
             raise
@@ -689,6 +697,8 @@ class EngineRouter:
         response_format: str = "ogg",
         noise_dir: Path | None = None,
         seed: int = -1,
+        *,
+        raw: bool = False,
     ) -> bytes:
         """Generate speech by dispatching to the correct engine.
 
@@ -698,6 +708,7 @@ class EngineRouter:
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
             seed: Random seed (forwarded to Qwen3 only).
+            raw: Skip audio post-processing.
 
         Returns:
             Audio bytes in the requested format.
@@ -706,11 +717,13 @@ class EngineRouter:
 
         if engine == "kokoro":
             voice = self._resolve_kokoro_voice(name)
-            return self._kokoro.generate_speech(text, voice, response_format, noise_dir)
+            return self._kokoro.generate_speech(
+                text, voice, response_format, noise_dir, raw=raw
+            )
         # engine == "qwen"
         ref_path = self._resolve_qwen_voice(name)
         return self._qwen.generate_speech(
-            text, ref_path, response_format, noise_dir, seed
+            text, ref_path, response_format, noise_dir, seed, raw=raw
         )
 
     def available_voices(self) -> list[str]:

@@ -283,21 +283,129 @@ Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certifica
 
 ## API Key Rotation
 
-Rotate the API key without redeployment using the included script:
+### How the Key Works
+
+The API key is generated during bootstrap and stored in `~/comadre/.env` on the VPS. Clients send it as `Authorization: Bearer <key>` in every request. The key is a 256-bit random value (base64-encoded), validated with timing-safe comparison.
+
+### Initial Setup (During Bootstrap)
+
+The key is set before running bootstrap:
+
+```bash
+# 1. Generate a key on your local machine
+openssl rand -base64 32
+# Output: DlzNODuV7Ons4rLm/94NyEABzoLiHvLUH5z7eYgKhdo=
+
+# 2. Export it for the Ansible playbook
+export COMADRE_API_KEY="DlzNODuV7Ons4rLm/94NyEABzoLiHvLUH5z7eYgKhdo="
+
+# 3. Run bootstrap — the key is written to ~/comadre/.env on the VPS
+ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
+
+# 4. Copy the key to your n8n/chatbot config — this is the only time you see it
+```
+
+### Rotating a Compromised Key
+
+If the key is compromised, rotate it in one command:
 
 ```bash
 ssh YOUR_VPS_IP "bash ~/comadre/deploy/bin/rotate-api-key.sh"
 ```
 
-**What it does:**
+Output:
 
-1. Generates a new 256-bit key (`openssl rand -base64 32`)
-2. Updates `API_KEY` in `~/comadre/.env`
-3. Restarts the TTS container
-4. Displays the new key once on stdout
-5. Waits for health check to confirm service is up
+```text
+=== New API Key (shown once) ===
 
-**After rotation:** all clients using the old key will receive 401 errors. Update your n8n workflows, chatbot configs, or API clients with the new key.
+  aB3xK9mP2qR7nW4vL8cJ5fT1hY6dS0gU=
+
+=================================
+
+Container restarted. Waiting for health check...
+Service is healthy. Key rotation complete.
+```
+
+**Immediately after rotation:**
+
+1. Copy the new key from the output
+2. Update your n8n/chatbot config with the new key
+3. All requests with the old key will return 401
+
+The new key is shown only once. If you lose it, rotate again.
+
+## Firewall (UFW)
+
+The bootstrap playbook installs and configures UFW with minimal rules:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 22 | TCP | SSH access |
+| 80 | TCP | HTTP (Caddy redirects to HTTPS) |
+| 443 | TCP | HTTPS (Caddy reverse proxy) |
+
+All other incoming ports are blocked. Outgoing traffic is unrestricted.
+
+**Check status:**
+
+```bash
+ssh YOUR_VPS_IP "sudo ufw status"
+```
+
+**Temporarily open a port (e.g., for debugging):**
+
+```bash
+ssh YOUR_VPS_IP "sudo ufw allow 8080/tcp"
+# ... debug ...
+ssh YOUR_VPS_IP "sudo ufw delete allow 8080/tcp"
+```
+
+## Fail2ban
+
+The bootstrap playbook installs fail2ban with a Caddy jail that bans IPs after 5 failed authentication attempts (401 responses) within 5 minutes. Ban duration: 1 hour.
+
+**Check status:**
+
+```bash
+ssh YOUR_VPS_IP "sudo fail2ban-client status caddy-auth"
+```
+
+**Unban an IP:**
+
+```bash
+ssh YOUR_VPS_IP "sudo bash ~/comadre/deploy/bin/unban-ip.sh 1.2.3.4"
+```
+
+**View banned IPs:**
+
+```bash
+ssh YOUR_VPS_IP "sudo fail2ban-client status caddy-auth | grep 'Banned IP'"
+```
+
+**Configuration files:**
+
+- Jail: `deploy/fail2ban/jail.local` (maxretry, bantime, findtime)
+- Filter: `deploy/fail2ban/filter.d/caddy-auth.conf` (log pattern matching)
+
+## IP Allowlist (Optional)
+
+If the API is only accessed from known IPs (e.g., your n8n server), you can restrict access in the Caddyfile:
+
+```text
+{$DOMAIN:localhost} {
+    @blocked not remote_ip 203.0.113.10 198.51.100.0/24
+    respond @blocked 403
+
+    reverse_proxy tts-service:8000
+    encode gzip
+    log {
+        output stdout
+        format json
+    }
+}
+```
+
+Replace the IPs with your allowed addresses. Restart Caddy after changes: `docker compose restart caddy`.
 
 ## Daily Restart
 

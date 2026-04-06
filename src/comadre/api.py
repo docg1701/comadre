@@ -88,6 +88,7 @@ async def generate_speech(
                         voice_name=voice,
                         response_format=body.response_format.value,
                         noise_dir=Path(settings.noise_dir),
+                        raw=body.raw,
                     ),
                     timeout=120.0,
                 )

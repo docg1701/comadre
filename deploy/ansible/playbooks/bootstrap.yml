@@ -112,6 +112,87 @@
         reset_connection
 
     # =========================================================================
+    # Firewall (UFW)
+    # =========================================================================
+
+    - name: "[UFW] Install ufw"
+      become: true
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+
+    - name: "[UFW] Allow SSH"
+      become: true
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: "[UFW] Allow HTTP"
+      become: true
+      community.general.ufw:
+        rule: allow
+        port: "80"
+        proto: tcp
+
+    - name: "[UFW] Allow HTTPS"
+      become: true
+      community.general.ufw:
+        rule: allow
+        port: "443"
+        proto: tcp
+
+    - name: "[UFW] Default deny incoming"
+      become: true
+      community.general.ufw:
+        default: deny
+        direction: incoming
+
+    - name: "[UFW] Default allow outgoing"
+      become: true
+      community.general.ufw:
+        default: allow
+        direction: outgoing
+
+    - name: "[UFW] Enable firewall"
+      become: true
+      community.general.ufw:
+        state: enabled
+
+    # =========================================================================
+    # Fail2ban
+    # =========================================================================
+
+    - name: "[Fail2ban] Install fail2ban"
+      become: true
+      ansible.builtin.apt:
+        name: fail2ban
+        state: present
+
+    - name: "[Fail2ban] Copy jail config"
+      become: true
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../deploy/fail2ban/jail.local"
+        dest: /etc/fail2ban/jail.local
+        mode: "0644"
+      notify: restart fail2ban
+
+    - name: "[Fail2ban] Copy filter config"
+      become: true
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../deploy/fail2ban/filter.d/caddy-auth.conf"
+        dest: /etc/fail2ban/filter.d/caddy-auth.conf
+        mode: "0644"
+      notify: restart fail2ban
+
+    - name: "[Fail2ban] Enable and start service"
+      become: true
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    # =========================================================================
     # Git Clone
     # =========================================================================
 
@@ -172,7 +253,7 @@
           DEFAULT_VOICE={{ default_voice | default('kokoro/pm_santa') }}
           PORT={{ port }}
           DOMAIN={{ domain | default('localhost') }}
-          RATE_LIMIT_SPEECH={{ rate_limit_speech | default('10/minute') }}
+          RATE_LIMIT_SPEECH={{ rate_limit_speech | default('30/minute') }}
           RATE_LIMIT_HEALTH={{ rate_limit_health | default('60/minute') }}
           QWEN3_MODEL_URL={{ qwen3_model_url }}
           QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
@@ -259,3 +340,10 @@
             --output test.ogg
 
           ============================================
+
+  handlers:
+    - name: restart fail2ban
+      become: true
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted

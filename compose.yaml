@@ -3,6 +3,11 @@ services:
     image: caddy:2-alpine
     container_name: caddy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     ports:
       - "80:80"
       - "443:443"
@@ -20,6 +25,11 @@ services:
     build: .
     container_name: tts-service
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     expose:
       - "8000"
     ports:
@@ -45,7 +55,7 @@ services:
       QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
       KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
       KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
-      RATE_LIMIT_SPEECH: "${RATE_LIMIT_SPEECH:-10/minute}"
+      RATE_LIMIT_SPEECH: "${RATE_LIMIT_SPEECH:-30/minute}"
       RATE_LIMIT_HEALTH: "${RATE_LIMIT_HEALTH:-60/minute}"
     deploy:
       resources:

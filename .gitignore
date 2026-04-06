@@ -65,3 +65,4 @@ models/
 *.onnx
 *.bin
 *.safetensors
+results-capacity/

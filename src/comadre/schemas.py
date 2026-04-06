@@ -33,6 +33,10 @@ class SpeechRequest(BaseModel):
     response_format: ResponseFormat = ResponseFormat.ogg
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
     destination: Destination = Destination.whatsapp
+    raw: bool = Field(
+        default=False,
+        description="Skip audio post-processing (vibrato, EQ, compression, noise)",
+    )
 
     @model_validator(mode="after")
     def _validate_char_limit(self) -> "SpeechRequest":

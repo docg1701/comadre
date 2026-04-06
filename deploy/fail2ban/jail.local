@@ -1,0 +1,8 @@
+[caddy-auth]
+enabled  = true
+port     = http,https
+filter   = caddy-auth
+logpath  = /var/lib/docker/containers/*caddy*/*-json.log
+maxretry = 5
+bantime  = 3600
+findtime = 300

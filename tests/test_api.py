@@ -96,6 +96,39 @@ class TestSpeechSuccess:
         call_kwargs = mock_router.generate_speech.call_args
         assert call_kwargs.kwargs["noise_dir"] == Path("/app/noise")
 
+    async def test_raw_parameter_passed_to_router(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        mock_router: MagicMock,
+    ) -> None:
+        response = await client.post(
+            "/v1/audio/speech",
+            json={
+                "input": "Hello world",
+                "voice": "kokoro/pm_santa",
+                "raw": True,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        call_kwargs = mock_router.generate_speech.call_args
+        assert call_kwargs.kwargs["raw"] is True
+
+    async def test_raw_defaults_to_false(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        mock_router: MagicMock,
+    ) -> None:
+        await client.post(
+            "/v1/audio/speech",
+            json={"input": "Hello world", "voice": "kokoro/pm_santa"},
+            headers=auth_headers,
+        )
+        call_kwargs = mock_router.generate_speech.call_args
+        assert call_kwargs.kwargs["raw"] is False
+
 
 class TestSpeechAuth:
     """Missing or invalid auth returns 401."""
