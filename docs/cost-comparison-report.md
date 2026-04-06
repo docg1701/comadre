@@ -49,7 +49,7 @@ Budget cloud TTS aggregator that resells access to multiple providers — Eleven
 - **Effective rate (ElevenLabs/MiniMax):** ~12,350 audios per $10 = $0.00081/audio
 - **Effective rate (Edge):** ~23,330 audios per $10 = $0.00043/audio
 - **Cost per audio minute:** $0.0041 (ElevenLabs/MiniMax), $0.0021 (Edge)
-- **Trade-off:** Quality depends on which provider is selected. Edge is cheapest but lowest quality. ElevenLabs is best quality but costs 2x more credits. Latency and availability depend on upstream providers.
+- **Trade-off:** Quality depends on provider. Edge is cheapest but inferior to Kokoro (no cloning, worse prosody). ElevenLabs is best quality but costs 2x more credits. To match Comadre's quality, you need the MiniMax/ElevenLabs tier — not the cheap Edge tier. Latency and availability depend on upstream providers.
 
 ## Measured Performance (Comadre — Kokoro Engine)
 
