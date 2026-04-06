@@ -25,8 +25,9 @@ RUN cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON && \
     cmake --install build && \
     ldconfig
 
-# Copy custom pt_extra dictionary and compile
+# Copy custom pt_extra dictionary and compile from dictsource dir
 COPY deploy/espeak-ng/pt_extra /tmp/espeak-ng/dictsource/pt_extra
+WORKDIR /tmp/espeak-ng/dictsource
 RUN espeak-ng --compile=pt
 
 # Install uv for Python dependency management
