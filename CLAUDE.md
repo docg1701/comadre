@@ -57,5 +57,5 @@ uv run pre-commit run --all-files  # All quality checks
 - **Noise calibration differs per engine** — Kokoro needs 3x more room/hiss noise than Qwen3 (RMS 0.063 vs 0.016).
 - **kokoclone dependency is legacy** — still in pyproject.toml but REJECTED. Will be replaced by kokoro-onnx in Story 1.4.
 - **qwen3-tts-cli build is non-trivial** — requires building ggml submodule first, patching OpenMP linking, and applying the seed patch. Full procedure in `docs/building-qwen3-tts-cli.md`.
-- **Qwen3 Q8_0 model must be converted locally** — no pre-built Q8_0 exists. Neither `llama-quantize` nor `gpt-2-quantize` supports the `qwen3-tts` architecture. Must convert from HuggingFace safetensors using upstream script (needs CPU-only PyTorch in a temp venv). Full procedure in `docs/quantizing-qwen3-models.md`.
-- **Models deploy to VPS via SSH, not git** — GGUF files (~1.6 GB) are too large for git. Copy via SCP + helper container into Docker volume. Ansible does NOT automate this yet.
+- **Qwen3 Q8_0 GGUF now available pre-built** — from `PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF` on HuggingFace. The app auto-downloads when `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` are set. Manual conversion (see `docs/quantizing-qwen3-models.md`) is no longer required.
+- **Models auto-download on first startup** — Kokoro models download from GitHub releases, Qwen3 models from HuggingFace. For air-gapped deployments, use `deploy-models.yml` to copy via SCP.

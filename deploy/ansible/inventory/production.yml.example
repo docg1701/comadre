@@ -26,8 +26,11 @@ all:
     # Daily restart hour (0-23) — precaution against potential memory leaks
     restart_hour: 3
 
+    # Qwen3 GGUF model download URLs (auto-download on first startup)
+    qwen3_model_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf"
+    qwen3_tokenizer_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf"
+
     # Optional: local paths to pre-converted Qwen3 GGUF model files
-    # See docs/quantizing-qwen3-models.md for conversion procedure
-    # Leave empty to rely on auto-download via download URLs (slower first startup)
+    # If set, deploy-models.yml copies these to the VPS instead of downloading
     qwen3_model_local: ""
     qwen3_tokenizer_local: ""
