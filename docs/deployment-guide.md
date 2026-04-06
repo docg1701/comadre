@@ -94,7 +94,7 @@ After these three steps, the service is fully operational with all voices availa
 | `deploy-models.yml` | Copy Qwen3 GGUF models via SCP (if not using auto-download) | No |
 | `update.yml` | Pull latest code, rebuild image, restart services | No |
 | `health.yml` | Read-only diagnostic (status, memory, disk, cron) | No |
-| `cleanup.yml` | Remove all Comadre artifacts from VPS | Yes |
+| `cleanup.yml` | Full decommission: remove all artifacts and system components | Yes |
 
 ## Bootstrap -- First Deployment
 
@@ -209,13 +209,28 @@ ansible-playbook playbooks/health.yml -i inventory/production.yml
 
 ## Cleanup -- Full Decommission
 
-Removes all Comadre artifacts from the VPS. This is irreversible.
+Removes all Comadre artifacts **and** system-level components from the VPS, restoring it to its pre-bootstrap state. This is irreversible.
 
 **What it removes:**
 
-- Docker containers, images, and volumes (models, voices, audio)
+Application artifacts:
+
+- Docker containers, images, volumes, and build cache
 - Cron jobs (daily-restart, audio-cleanup)
 - `~/comadre` directory
+
+System-level components (installed by bootstrap):
+
+- Docker Engine (`docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-compose-plugin`)
+- Docker data directories (`/var/lib/docker`, `/var/lib/containerd`)
+- Docker apt repository and GPG key
+- Docker group
+- UFW firewall (disabled, rules reset, package removed)
+- GitHub SSH key from `known_hosts`
+
+**What it keeps:**
+
+- `ca-certificates`, `curl`, `gnupg` — common system utilities, safe to keep
 
 **Run:**
 
@@ -225,7 +240,7 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml \
   -e "ansible_become_password=YOUR_SUDO_PASS"
 ```
 
-After cleanup, the VPS has zero Comadre artifacts. To redeploy, run `bootstrap.yml` again.
+After cleanup, the VPS is restored to its pre-bootstrap state. To redeploy, run `bootstrap.yml` again.
 
 ## Model Deployment
 
