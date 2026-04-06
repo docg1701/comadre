@@ -47,7 +47,7 @@ Budget cloud TTS API with credit-based pricing.
 
 ## Measured Performance (Comadre — Kokoro Engine)
 
-All data from load tests run on 2026-04-06 against a Hetzner CX33 VPS (4 shared vCPU, 8 GB RAM) located at 10.10.10.207.
+All data from load tests run on 2026-04-06 against a self-hosted Proxmox VM (4 vCPU, 8 GB RAM, Xeon E5-2680v4). Hardware configuration is comparable to a Hetzner CX33 VPS (4 shared vCPU, 8 GB RAM, EUR 6.49/mo) — used as cost reference throughout this report.
 
 ### Throughput
 
@@ -98,7 +98,7 @@ Measured with audio messages of 5-12 seconds (80-200 characters, typical chatbot
 - **Working hours:** 8 per day
 - **Messages per client:** 6 (typical sales/post-sales conversation)
 - **Peak distribution:** 60% of traffic in 4 peak hours (10-12h, 14-16h)
-- **Comadre VPS:** Hetzner CX33 at EUR 6.49/mo ($7.01/mo at 1.08 EUR/USD)
+- **Comadre cost reference:** Hetzner CX33 at EUR 6.49/mo ($7.01/mo) — comparable config to the self-hosted test environment. Self-hosted cost is near-zero (electricity only).
 
 ### Scenario A: Short Audio Messages (avg 7 seconds, ~100 chars)
 
@@ -314,7 +314,7 @@ Comadre is built exclusively for Brazilian Portuguese — the text preprocessing
 
 ### Environment
 
-- **Host:** Proxmox 9.1.7 VM on Xeon E5-1980v4 (self-hosted, equivalent to a 4 vCPU VPS)
+- **Host:** Proxmox 9.1.7 VM on Xeon E5-2680v4 (self-hosted, equivalent to a 4 vCPU VPS)
 - **VM specs:** 4 vCPU, 8 GB RAM
 - **Container limits:** 4 CPUs, 6 GB RAM
 - **Engine:** Kokoro fp32 (ONNX), voice `pm_santa` — CPU-only, no GPU
