@@ -229,6 +229,28 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output test.wav
 ```
 
+### Live playback (pipe to ffplay)
+
+Stream audio directly to speakers without saving a file. Requires WAV format for pipe compatibility:
+
+```bash
+# Kokoro female voice
+curl -s -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Seu CPF foi validado com sucesso.","voice":"kokoro/pf_dora","response_format":"wav"}' \
+  | ffplay -nodisp -autoexit -
+
+# Qwen3 cloned voice
+curl -s -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Seu CPF foi validado com sucesso.","voice":"qwen/female","response_format":"wav"}' \
+  | ffplay -nodisp -autoexit -
+```
+
+OGG Opus does not support pipe streaming. Use `response_format: wav` when piping to ffplay.
+
 ### Error example (missing auth)
 
 ```bash
