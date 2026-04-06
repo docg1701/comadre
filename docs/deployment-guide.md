@@ -347,10 +347,10 @@ The key is set before running bootstrap:
 ```bash
 # 1. Generate a key on your local machine
 openssl rand -base64 32
-# Output: DlzNODuV7Ons4rLm/94NyEABzoLiHvLUH5z7eYgKhdo=
+# Output: <your-generated-key-here>
 
 # 2. Export it for the Ansible playbook
-export COMADRE_API_KEY="DlzNODuV7Ons4rLm/94NyEABzoLiHvLUH5z7eYgKhdo="
+export COMADRE_API_KEY="<paste-the-generated-key-here>"
 
 # 3. Run bootstrap — the key is written to ~/comadre/.env on the VPS
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml

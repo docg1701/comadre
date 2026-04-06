@@ -7,7 +7,7 @@ with ElevenLabs cost comparison.
 
 Usage:
     uv run --group test scripts/capacity_test.py \
-        --url http://10.10.10.207:8000 \
+        --url http://YOUR_VPS_IP:8000 \
         --api-key <key> \
         --output results-capacity
 """
@@ -532,7 +532,7 @@ async def main() -> None:
     parser.add_argument(
         "--url",
         required=True,
-        help="Base URL (e.g. http://10.10.10.207:8000)",
+        help="Base URL (e.g. http://YOUR_VPS_IP:8000)",
     )
     parser.add_argument(
         "--api-key",

@@ -6,7 +6,7 @@ under increasing concurrency against a live Comadre instance.
 
 Usage:
     uv run --group test scripts/loadtest.py \
-        --url http://10.10.10.207:8000 \
+        --url http://YOUR_VPS_IP:8000 \
         --api-key <key> \
         --scenario all
 """
@@ -631,7 +631,7 @@ def summarize(res: ScenarioResults) -> str:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Comadre TTS load test")
     parser.add_argument(
-        "--url", required=True, help="Base URL (e.g. http://10.10.10.207:8000)"
+        "--url", required=True, help="Base URL (e.g. http://YOUR_VPS_IP:8000)"
     )
     parser.add_argument(
         "--api-key", required=True, help="API key for Authorization header"
