@@ -81,8 +81,8 @@
 
           All Comadre artifacts have been removed:
 
-            ✓ Containers stopped and removed
-            ✓ Docker volumes removed (models, voices, audio)
+            ✓ Containers stopped and removed (tts-service, caddy)
+            ✓ Docker volumes removed (models, voices, audio, caddy-data, caddy-config)
             ✓ Docker images removed
             ✓ Cron jobs removed (daily-restart, audio-cleanup)
             ✓ ~/comadre directory removed

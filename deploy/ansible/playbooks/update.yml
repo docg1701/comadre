@@ -68,10 +68,34 @@
         update: true
 
     # =========================================================================
-    # TTS Service Rebuild & Restart
+    # Configuration Sync
     # =========================================================================
 
-    - name: "[TTS] Rebuild image and restart service"
+    - name: "[Config] Add missing env vars from .env.example"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        while IFS= read -r line; do
+          var_name=$(echo "$line" | grep -oP '^\w+(?==)' || true)
+          if [ -n "$var_name" ] && ! grep -q "^${var_name}=" ~/comadre/.env; then
+            echo "$line" >> ~/comadre/.env
+            echo "Added: $var_name"
+          fi
+        done < ~/comadre/.env.example
+      args:
+        executable: /bin/bash
+      register: env_sync
+      changed_when: "'Added:' in env_sync.stdout"
+
+    - name: "[Config] Show added variables"
+      when: env_sync.changed
+      ansible.builtin.debug:
+        msg: "{{ env_sync.stdout }}"
+
+    # =========================================================================
+    # Service Rebuild & Restart
+    # =========================================================================
+
+    - name: "[TTS] Rebuild image and restart all services"
       community.docker.docker_compose_v2:
         project_src: "~/comadre"
         state: present
@@ -125,13 +149,15 @@
           ============================================
 
           Service Status:  {{ hc.status }}
+          Version:         {{ hc.version | default('N/A') }}
           Loaded Voices:   {{ hc.voices | join(', ') }}
           Voice Count:     {{ hc.voices | length }}
           Kokoro Engine:   {{ hc.engines.kokoro | default('unknown') }}
           Qwen3 Engine:    {{ hc.engines.qwen3 | default('unknown') }}
-          Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
+          HTTPS URL:       https://{{ ansible_host }}
 
           Data preserved:  Volumes (models, voices, audio) intact
-          API Key:         Unchanged (.env not modified)
+          API Key:         Unchanged (existing value kept)
+          Config:          Missing env vars added from .env.example
 
           ============================================

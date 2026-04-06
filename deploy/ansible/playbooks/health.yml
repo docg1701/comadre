@@ -35,17 +35,30 @@
     # Container State
     # =========================================================================
 
-    - name: "[Docker] Check container state"
+    - name: "[Docker] Check TTS container state"
       community.docker.docker_container_info:
         name: tts-service
       register: tts_container
 
-    - name: "[Docker] Report container not running"
+    - name: "[Docker] Check Caddy container state"
+      community.docker.docker_container_info:
+        name: caddy
+      register: caddy_container
+
+    - name: "[Docker] Report TTS container not running"
       when: not (tts_container.exists and (tts_container.container.State.Running | default(false)))
       ansible.builtin.debug:
         msg: >-
-          WARNING: Comadre container is not running.
-          Check logs with: cd ~/comadre && docker compose logs
+          WARNING: TTS service container is not running.
+          Check logs with: cd ~/comadre && docker compose logs tts-service
+          Restart with: cd ~/comadre && docker compose up -d
+
+    - name: "[Docker] Report Caddy container not running"
+      when: not (caddy_container.exists and (caddy_container.container.State.Running | default(false)))
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Caddy reverse proxy is not running. HTTPS is down.
+          Check logs with: cd ~/comadre && docker compose logs caddy
           Restart with: cd ~/comadre && docker compose up -d
 
     # =========================================================================
@@ -134,6 +147,7 @@
     - name: "[Summary] Full diagnostic report"
       vars:
         container_running: "{{ tts_container.exists and (tts_container.container.State.Running | default(false)) }}"
+        caddy_running: "{{ caddy_container.exists and (caddy_container.container.State.Running | default(false)) }}"
         hc: "{{ health_check.json | default({}) }}"
         has_health: >-
           {{ health_check is defined
@@ -155,7 +169,8 @@
           Comadre TTS Service — Health Diagnostic
           ============================================
 
-          Container State: {{ 'Running' if (container_running | bool) else 'NOT RUNNING' }}
+          TTS Container:   {{ 'Running' if (container_running | bool) else 'NOT RUNNING' }}
+          Caddy Proxy:     {{ 'Running' if (caddy_running | bool) else 'NOT RUNNING' }}
           {% if has_health | bool %}
           Service Status:  {{ hc.status | default('unknown') }}
           Loaded Voices:   {{ hc.voices | default([]) | join(', ') }}

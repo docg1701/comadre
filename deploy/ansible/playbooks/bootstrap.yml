@@ -247,14 +247,14 @@
           Voice Count:     {{ hc.voices | length }}
           Kokoro Engine:   {{ hc.engines.kokoro | default('unknown') }}
           Qwen3 Engine:    {{ hc.engines.qwen3 | default('unknown') }}
-          Endpoint URL:    http://{{ ansible_host }}:{{ port }}
+          HTTPS URL:       https://{{ ansible_host }}
           Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
 
           Test command (copy-paste ready):
-          curl -X POST \
+          curl -k -X POST \
             -H "Authorization: Bearer $COMADRE_API_KEY" \
             -H "Content-Type: application/json" \
-            http://{{ ansible_host }}:{{ port }}/v1/audio/speech \
+            https://{{ ansible_host }}/v1/audio/speech \
             -d '{"input":"Olá mundo","voice":"kokoro/pm_santa"}' \
             --output test.ogg
 
