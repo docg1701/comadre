@@ -102,6 +102,7 @@
           - docker-compose-plugin
         state: absent
         purge: true
+      failed_when: false
 
     - name: "[Docker] Remove Docker data directory"
       become: true
@@ -167,6 +168,18 @@
         name: ufw
         state: absent
         purge: true
+      failed_when: false
+
+    # =========================================================================
+    # Clean Up Orphaned Dependencies
+    # =========================================================================
+
+    - name: "[Cleanup] Remove orphaned packages from Docker and UFW"
+      become: true
+      ansible.builtin.apt:
+        autoremove: true
+        purge: true
+      failed_when: false
 
     # =========================================================================
     # Remove GitHub from Known Hosts
