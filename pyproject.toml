@@ -1,6 +1,6 @@
 [project]
 name = "comadre"
-version = "1.1.0"
+version = "1.2.1"
 description = "Comadre Manda Audio Direto, Rapido e Eficiente — Dual-engine TTS API: Kokoro fp32 + Qwen3-TTS C++"
 readme = "README.md"
 license = "MIT"

@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue" alt="Version 1.1.0">
+  <img src="https://img.shields.io/badge/version-1.2.1-blue" alt="Version 1.2.1">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-Kokoro_fp32-ff6f00" alt="Kokoro TTS">
   <img src="https://img.shields.io/badge/TTS-Qwen3_Q8__0-8b5cf6" alt="Qwen3 TTS">
