@@ -169,10 +169,12 @@
         dest: "~/comadre/.env"
         content: |
           API_KEY={{ api_key_value }}
-          DEFAULT_VOICE=kokoro/pm_santa
+          DEFAULT_VOICE={{ default_voice | default('kokoro/pm_santa') }}
           PORT={{ port }}
           QWEN3_MODEL_URL={{ qwen3_model_url }}
           QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
+          KOKORO_MODEL_URL={{ kokoro_model_url | default('') }}
+          KOKORO_VOICES_URL={{ kokoro_voices_url | default('') }}
         mode: "0600"
 
     # =========================================================================

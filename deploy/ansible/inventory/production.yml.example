@@ -20,6 +20,9 @@ all:
     repo_url: "CHANGE_ME"
     repo_branch: "master"
 
+    # Default voice for TTS when none specified (format: engine/name)
+    default_voice: "kokoro/pm_santa"
+
     # Service port — must match compose.yaml PORT env var
     port: 8000
 

@@ -11,7 +11,7 @@ services:
       - comadre-audio:/audio:rw
     environment:
       API_KEY: ${API_KEY:?API_KEY must be set}
-      DEFAULT_VOICE: kokoro/pm_santa
+      DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
       PORT: "${PORT:-8000}"
       ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
       NOISE_DIR: /app/noise
@@ -24,6 +24,8 @@ services:
       QWEN3_THREADS: "4"
       QWEN3_MODEL_URL: "${QWEN3_MODEL_URL:-}"
       QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
+      KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
+      KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
     deploy:
       resources:
         limits:
