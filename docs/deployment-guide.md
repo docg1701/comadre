@@ -64,6 +64,38 @@ all:
 | `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model (empty to skip) |
 | `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF (empty to skip) |
 
+## Complete Deployment Flow
+
+A fresh deploy requires three playbooks in sequence:
+
+```bash
+cd deploy/ansible
+export COMADRE_API_KEY="your-secret-key"
+
+# 1. Bootstrap — installs everything, builds and starts services
+ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  -e "ansible_become_password=YOUR_SUDO_PASS"
+
+# 2. Deploy voices — copies voice files from local machine to VPS
+ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
+
+# 3. Verify — read-only diagnostic check
+ansible-playbook playbooks/health.yml -i inventory/production.yml
+```
+
+After these three steps, the service is fully operational with all voices available.
+
+## Available Playbooks
+
+| Playbook | Purpose | Requires sudo |
+|----------|---------|---------------|
+| `bootstrap.yml` | First-time VPS setup (Docker, UFW, fail2ban, build, start) | Yes |
+| `deploy-voices.yml` | Copy voice files to VPS (Kokoro .npy, Qwen3 .wav) | No |
+| `deploy-models.yml` | Copy Qwen3 GGUF models via SCP (if not using auto-download) | No |
+| `update.yml` | Pull latest code, rebuild image, restart services | No |
+| `health.yml` | Read-only diagnostic (status, memory, disk, cron) | No |
+| `cleanup.yml` | Remove all Comadre artifacts from VPS | Yes |
+
 ## Bootstrap -- First Deployment
 
 Deploys Comadre on a clean Ubuntu VPS with a single command.
@@ -74,12 +106,17 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 2. Validates that `API_KEY` and `repo_url` are configured
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
-5. Clones the repository to `~/comadre`
-6. Deploys voice files to voices volume (if `voices_local_dir` is configured)
-7. Creates `.env` with API_KEY, DEFAULT_VOICE, and PORT
-8. Builds the Docker image and starts the service
-9. Configures cron jobs (daily restart, audio cleanup)
-10. Waits for the health endpoint to report `healthy`
+5. Installs and configures UFW firewall (ports 22, 80, 443)
+6. Installs and configures fail2ban (Caddy auth jail)
+7. Clones the repository to `~/comadre`
+8. Creates empty voices directory structure in Docker volume
+9. Creates `.env` with all configuration variables
+10. Builds the Docker image and starts the service (tts-service + Caddy)
+11. Configures cron jobs (daily restart, audio cleanup)
+12. Starts fail2ban (after Caddy log file exists)
+13. Waits for the health endpoint to report `healthy`
+
+**Bootstrap does NOT deploy voice files.** Run `deploy-voices.yml` after bootstrap to copy voice files from your local machine to the VPS.
 
 **Run:**
 
