@@ -4,8 +4,8 @@
 #   ansible-playbook playbooks/cleanup.yml -i inventory/production.yml
 #
 # WARNING: This is destructive. It removes containers, images, volumes,
-# cron jobs, and the ~/comadre directory. Data cannot be recovered.
-# Entirely unprivileged — no become: true.
+# cron jobs, fail2ban configs, and the ~/comadre directory. Data cannot be recovered.
+# Requires become password for fail2ban cleanup.
 
 - name: Cleanup Comadre TTS Service
   hosts: comadre_vps
@@ -49,6 +49,25 @@
     # Remove Cron Jobs
     # =========================================================================
 
+    - name: "[Fail2ban] Remove jail config"
+      become: true
+      ansible.builtin.file:
+        path: /etc/fail2ban/jail.local
+        state: absent
+
+    - name: "[Fail2ban] Remove filter config"
+      become: true
+      ansible.builtin.file:
+        path: /etc/fail2ban/filter.d/caddy-auth.conf
+        state: absent
+
+    - name: "[Fail2ban] Restart to drop caddy-auth jail"
+      become: true
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted
+      ignore_errors: true
+
     - name: "[Cron] Remove daily restart cron"
       ansible.builtin.cron:
         name: "comadre-daily-restart"
@@ -82,8 +101,9 @@
           All Comadre artifacts have been removed:
 
             ✓ Containers stopped and removed (tts-service, caddy)
-            ✓ Docker volumes removed (models, voices, audio, caddy-data, caddy-config)
+            ✓ Docker volumes removed (models, voices, audio, caddy-data, caddy-config, caddy-logs)
             ✓ Docker images removed
+            ✓ Fail2ban configs removed (jail.local, caddy-auth.conf)
             ✓ Cron jobs removed (daily-restart, audio-cleanup)
             ✓ ~/comadre directory removed
 

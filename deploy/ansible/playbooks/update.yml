@@ -100,6 +100,7 @@
         project_src: "~/comadre"
         state: present
         build: always
+        recreate: always
         remove_orphans: true
 
     # =========================================================================
@@ -152,8 +153,8 @@
           Version:         {{ hc.version | default('N/A') }}
           Loaded Voices:   {{ hc.voices | join(', ') }}
           Voice Count:     {{ hc.voices | length }}
-          Kokoro Engine:   {{ hc.engines.kokoro | default('unknown') }}
-          Qwen3 Engine:    {{ hc.engines.qwen3 | default('unknown') }}
+          Kokoro Engine:   {{ 'Loaded' if (hc.engines.kokoro.loaded | default(false)) else 'Not loaded' }}
+          Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
           HTTPS URL:       https://{{ ansible_host }}
 
           Data preserved:  Volumes (models, voices, audio) intact

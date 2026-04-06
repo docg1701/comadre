@@ -38,8 +38,8 @@ all:
     restart_hour: 3
 
     # Kokoro model download URLs (auto-download on first startup)
-    kokoro_model_url: ""
-    kokoro_voices_url: ""
+    kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+    kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
     # Qwen3 GGUF model download URLs (auto-download on first startup)
     qwen3_model_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf"

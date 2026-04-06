@@ -1,10 +1,13 @@
 ---
 # Comadre Bootstrap Playbook
 # Deploys Comadre TTS service on a clean Ubuntu VPS with a single command:
-#   ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
+#   export COMADRE_API_KEY="your-key"
+#   ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+#     -e "ansible_become_password=YOUR_SUDO_PASS"
 #
 # Idempotent: safe to run multiple times. Only tasks with actual changes
 # report as "changed".
+# Requires become password for: Docker, UFW, fail2ban installation.
 
 - name: Bootstrap Comadre TTS Service
   hosts: comadre_vps
@@ -160,7 +163,7 @@
         state: enabled
 
     # =========================================================================
-    # Fail2ban
+    # Fail2ban — install and configure (started AFTER Docker)
     # =========================================================================
 
     - name: "[Fail2ban] Install fail2ban"
@@ -175,22 +178,14 @@
         src: "{{ playbook_dir }}/../../../deploy/fail2ban/jail.local"
         dest: /etc/fail2ban/jail.local
         mode: "0644"
-      notify: restart fail2ban
 
     - name: "[Fail2ban] Copy filter config"
       become: true
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../../../deploy/fail2ban/filter.d/caddy-auth.conf"
+        src: >-
+          {{ playbook_dir }}/../../../deploy/fail2ban/filter.d/caddy-auth.conf
         dest: /etc/fail2ban/filter.d/caddy-auth.conf
         mode: "0644"
-      notify: restart fail2ban
-
-    - name: "[Fail2ban] Enable and start service"
-      become: true
-      ansible.builtin.systemd:
-        name: fail2ban
-        state: started
-        enabled: true
 
     # =========================================================================
     # Git Clone
@@ -199,7 +194,9 @@
     - name: "[Git] Add GitHub to known_hosts"
       ansible.builtin.known_hosts:
         name: github.com
-        key: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+        key: >-
+          github.com ssh-ed25519
+          AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
         state: present
 
     - name: "[Git] Clone Comadre repository"
@@ -250,15 +247,15 @@
         dest: "~/comadre/.env"
         content: |
           API_KEY={{ api_key_value }}
-          DEFAULT_VOICE={{ default_voice | default('kokoro/pm_santa') }}
+          DEFAULT_VOICE={{ default_voice }}
           PORT={{ port }}
-          DOMAIN={{ domain | default('localhost') }}
-          RATE_LIMIT_SPEECH={{ rate_limit_speech | default('30/minute') }}
-          RATE_LIMIT_HEALTH={{ rate_limit_health | default('60/minute') }}
+          DOMAIN={{ domain }}
+          RATE_LIMIT_SPEECH={{ rate_limit_speech }}
+          RATE_LIMIT_HEALTH={{ rate_limit_health }}
           QWEN3_MODEL_URL={{ qwen3_model_url }}
           QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
-          KOKORO_MODEL_URL={{ kokoro_model_url | default('') }}
-          KOKORO_VOICES_URL={{ kokoro_voices_url | default('') }}
+          KOKORO_MODEL_URL={{ kokoro_model_url }}
+          KOKORO_VOICES_URL={{ kokoro_voices_url }}
         mode: "0600"
 
     # =========================================================================
@@ -270,6 +267,7 @@
         project_src: "~/comadre"
         state: present
         build: always
+        recreate: always
         remove_orphans: true
 
     # =========================================================================
@@ -281,7 +279,7 @@
         name: "comadre-daily-restart"
         minute: "0"
         hour: "{{ restart_hour }}"
-        job: "cd ~/comadre && docker compose restart"
+        job: "cd ~/comadre && docker compose up -d --no-build"
 
     - name: "[Cron] Configure audio cleanup every 6 hours"
       ansible.builtin.cron:
@@ -307,8 +305,42 @@
       until: >-
         health_check.status == 200
         and (health_check.json.status | default('')) == "healthy"
-      retries: 60
+      retries: 180
       delay: 10
+
+    # =========================================================================
+    # Fail2ban — start AFTER Docker (log file now exists)
+    # =========================================================================
+
+    - name: "[Fail2ban] Ensure caddy log directory exists"
+      become: true
+      ansible.builtin.file:
+        path: /var/lib/docker/volumes/caddy-logs/_data
+        state: directory
+        mode: "0755"
+
+    - name: "[Fail2ban] Ensure access log file exists"
+      become: true
+      ansible.builtin.file:
+        path: /var/lib/docker/volumes/caddy-logs/_data/access.log
+        state: touch
+        mode: "0644"
+        access_time: preserve
+        modification_time: preserve
+
+    - name: "[Fail2ban] Enable and start service"
+      become: true
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted
+        enabled: true
+
+    - name: "[Fail2ban] Verify caddy-auth jail is active"
+      become: true
+      ansible.builtin.command:
+        cmd: fail2ban-client status caddy-auth
+      register: fail2ban_status
+      changed_when: false
 
     # =========================================================================
     # Summary
@@ -324,12 +356,14 @@
           ============================================
 
           Service Status:  {{ hc.status }}
+          Version:         {{ hc.version | default('N/A') }}
           Loaded Voices:   {{ hc.voices | join(', ') }}
           Voice Count:     {{ hc.voices | length }}
-          Kokoro Engine:   {{ hc.engines.kokoro | default('unknown') }}
-          Qwen3 Engine:    {{ hc.engines.qwen3 | default('unknown') }}
+          Kokoro Engine:   {{ 'Loaded' if (hc.engines.kokoro.loaded | default(false)) else 'Not loaded' }}
+          Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
           HTTPS URL:       https://{{ ansible_host }}
-          Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
+          UFW:             Active (22, 80, 443)
+          Fail2ban:        {{ fail2ban_status.stdout_lines[0] | default('Unknown') }}
 
           Test command (copy-paste ready):
           curl -k -X POST \
@@ -340,10 +374,3 @@
             --output test.ogg
 
           ============================================
-
-  handlers:
-    - name: restart fail2ban
-      become: true
-      ansible.builtin.systemd:
-        name: fail2ban
-        state: restarted

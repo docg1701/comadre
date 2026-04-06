@@ -24,7 +24,7 @@ echo "================================="
 echo ""
 
 cd "$COMADRE_DIR"
-docker compose restart tts-service
+docker compose up -d --no-build tts-service
 echo "Container restarted. Waiting for health check..."
 
 for _ in $(seq 1 30); do
