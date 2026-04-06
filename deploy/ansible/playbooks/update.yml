@@ -76,6 +76,7 @@
         set -euo pipefail
         while IFS= read -r line; do
           var_name=$(echo "$line" | grep -oP '^\w+(?==)' || true)
+          [ "$var_name" = "API_KEY" ] && continue
           if [ -n "$var_name" ] && ! grep -q "^${var_name}=" ~/comadre/.env; then
             echo "$line" >> ~/comadre/.env
             echo "Added: $var_name"
@@ -100,7 +101,7 @@
         project_src: "~/comadre"
         state: present
         build: always
-        recreate: always
+        recreate: auto
         remove_orphans: true
 
     # =========================================================================

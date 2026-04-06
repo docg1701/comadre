@@ -223,7 +223,6 @@
         content: |
           API_KEY={{ api_key_value }}
           DEFAULT_VOICE={{ default_voice }}
-          PORT={{ port }}
           DOMAIN={{ domain }}
           RATE_LIMIT_SPEECH={{ rate_limit_speech }}
           RATE_LIMIT_HEALTH={{ rate_limit_health }}
@@ -242,7 +241,7 @@
         project_src: "~/comadre"
         state: present
         build: always
-        recreate: always
+        recreate: auto
         remove_orphans: true
 
     # =========================================================================
@@ -306,10 +305,10 @@
           UFW:             Active (22, 80, 443)
 
           Test command (copy-paste ready):
-          curl -k -X POST \
+          curl -X POST \
             -H "Authorization: Bearer $COMADRE_API_KEY" \
             -H "Content-Type: application/json" \
-            https://{{ ansible_host }}/v1/audio/speech \
+            http://{{ ansible_host }}:8000/v1/audio/speech \
             -d '{"input":"Olá mundo","voice":"kokoro/pm_santa"}' \
             --output test.ogg
 
