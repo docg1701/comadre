@@ -22,6 +22,8 @@ services:
       QWEN3_TOKENIZER_PATH: /models/qwen3-tts-tokenizer-f16.gguf
       QWEN3_CLI_PATH: /usr/local/bin/qwen3-tts-cli
       QWEN3_THREADS: "4"
+      QWEN3_MODEL_URL: "${QWEN3_MODEL_URL:-}"
+      QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
     deploy:
       resources:
         limits:
