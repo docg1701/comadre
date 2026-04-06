@@ -41,6 +41,7 @@ uv run pre-commit run --all-files  # All quality checks
 - Structured logging: pipe-delimited `timestamp | level | component | message` — never `print()`
 - Docker Compose v2 syntax: `docker compose`, never `docker-compose`
 - Package management: `uv` only, never `pip` or `poetry`
+- Ansible become password: pass via `-e "ansible_become_password=PASSWORD"` on every playbook that uses `become: true` (bootstrap, cleanup). Never modify inventory to store passwords.
 
 ## Key File Locations
 
