@@ -92,6 +92,19 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 2. Voice names use the `engine/name` format: `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/female-reference`, `qwen/galvani`, etc.
 3. Voice names are case-sensitive. The engine prefix (`kokoro/` or `qwen/`) is required. See [voice-management.md](voice-management.md) for the full list of available voices and how to add new ones.
 
+### 429 rate limit exceeded
+
+**Symptom:** Requests return 429 with `"Rate limit exceeded"` and a `Retry-After` header.
+
+**Cause:** The client IP has exceeded the configured rate limit (default: 10 req/min for speech, 60 req/min for health).
+
+**Resolution:**
+
+1. Wait for the period indicated by `Retry-After` and retry
+2. If the limit is too low for your use case, increase it in `.env`: `RATE_LIMIT_SPEECH=20/minute`
+3. Restart after changing: `docker compose restart tts-service`
+4. For high-traffic deployments, scale horizontally with multiple instances behind Caddy
+
 ### Request timeout
 
 **Symptom:** Request hangs and eventually times out (120 second limit).
@@ -142,6 +155,32 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 2. Check the reference file exists: `docker exec tts-service ls -la /voices/`
 3. Seed reproducibility gives similar (not identical) results across runs -- some variation is expected
 4. Try a different reference recording with clearer audio
+
+## HTTPS / Caddy Issues
+
+### Caddy certificate error
+
+**Symptom:** Browser or curl shows SSL certificate error when connecting via HTTPS.
+
+**Cause:** Using `DOMAIN=localhost` (self-signed cert) or DNS not pointing to the VPS IP.
+
+**Resolution:**
+
+1. For public domains: verify DNS A record points to the VPS IP
+2. For private IPs: use `curl -k` or configure clients to accept self-signed certs
+3. Check Caddy logs: `docker compose logs caddy`
+4. Verify Caddy can reach the TTS service: `docker compose exec caddy wget -qO- http://tts-service:8000/health`
+
+### API key rotation fails
+
+**Symptom:** `rotate-api-key.sh` reports service not healthy after restart.
+
+**Resolution:**
+
+1. Check container logs: `docker compose logs --tail=20 tts-service`
+2. Verify `.env` was updated: `grep API_KEY ~/comadre/.env`
+3. Manual restart: `cd ~/comadre && docker compose restart tts-service`
+4. If the service is stuck, full restart: `docker compose down && docker compose up -d`
 
 ## Deployment Issues
 

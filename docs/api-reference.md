@@ -158,6 +158,20 @@ Wrong API key:
 }
 ```
 
+**429 -- Rate Limit Exceeded:**
+
+```json
+{
+  "error": {
+    "message": "Rate limit exceeded",
+    "type": "rate_limit_error",
+    "hint": "Too many requests. Try again in 60 seconds."
+  }
+}
+```
+
+The 429 response includes a `Retry-After` header. Default limits: 10 req/min for speech (per client IP), 60 req/min for health. Configurable via `RATE_LIMIT_SPEECH` and `RATE_LIMIT_HEALTH` environment variables.
+
 **500 -- Server Error:**
 
 ```json
@@ -201,7 +215,7 @@ Returns service health status. No authentication required.
   "queue_depth": 0,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
-  "version": "1.3.0"
+  "version": "1.4.0"
 }
 ```
 
@@ -217,7 +231,7 @@ Returned while models are still loading after startup:
   "queue_depth": 0,
   "uptime_seconds": 15,
   "memory_mb": 800,
-  "version": "1.3.0"
+  "version": "1.4.0"
 }
 ```
 

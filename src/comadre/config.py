@@ -57,6 +57,14 @@ class Settings(BaseSettings):
         ge=1,
         description="Number of CPU threads for Qwen3 inference",
     )
+    rate_limit_speech: str = Field(
+        default="10/minute",
+        description="Rate limit for speech endpoint (per client IP)",
+    )
+    rate_limit_health: str = Field(
+        default="60/minute",
+        description="Rate limit for health endpoint (per client IP)",
+    )
     kokoro_model_url: str = Field(
         default=(
             "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"

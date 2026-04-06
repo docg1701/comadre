@@ -29,7 +29,9 @@ uv run pre-commit run --all-files  # All quality checks
 - **Engine-specific post-processing**: Kokoro → vibrato_warm pipeline. Qwen3 → whatsapp-subtle pipeline. Both output OGG Opus.
 - **Siglas**: Kokoro handles them natively via espeak-ng pt_extra dictionary (67 entries, 34/34 verified). Qwen3 uses spaced format (`C N P J`).
 - **Module boundaries enforced**: no HTTP concerns in `service.py`, no business logic in `api.py`, no raw `os.environ` (use pydantic-settings), no raw `HTTPException` (use `ComadreError` hierarchy).
-- **Import graph flows downward only**: config/logging → exceptions/voices/schemas → preprocessing → service → api/health → main. No circular imports.
+- **HTTPS via Caddy**: Caddy reverse proxy terminates TLS (auto Let's Encrypt or self-signed). TTS service only exposed internally on Docker network. Configure domain via `DOMAIN` env var.
+- **Rate limiting**: slowapi per-IP rate limiting. Speech: 10/min, Health: 60/min (configurable via `RATE_LIMIT_SPEECH`, `RATE_LIMIT_HEALTH`). Shared limiter instance in `src/comadre/rate_limit.py`.
+- **Import graph flows downward only**: config/logging → exceptions/voices/schemas → preprocessing → service → rate_limit → api/health → main. No circular imports.
 
 ## Code Conventions
 
@@ -47,6 +49,10 @@ uv run pre-commit run --all-files  # All quality checks
 - `deploy/espeak-ng/pt_extra` — custom sigla dictionary for espeak-ng
 - `docs/` — technical research docs (feasibility report, engine internals, dictionary docs, **qwen3-tts-cli build guide**, **qwen3 model quantization guide**, **voice management guide**)
 - `deploy/bin/qwen3-tts-cli` — pre-built Qwen3 C++ binary (see `docs/building-qwen3-tts-cli.md` to rebuild)
+- `deploy/bin/rotate-api-key.sh` — API key rotation script (run on VPS, no redeploy needed)
+- `deploy/caddy/Caddyfile` — Caddy reverse proxy config (HTTPS termination)
+- `scripts/loadtest.py` — saturation test (concurrency-based, 6 scenarios)
+- `scripts/capacity_test.py` — capacity test (rate-based, WhatsApp context, ElevenLabs comparison)
 - `_bmad-output/` — planning artifacts (PRD, architecture, epics, stories, sprint status)
 
 ## Non-Obvious Gotchas

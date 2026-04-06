@@ -63,8 +63,14 @@ def mock_router() -> MagicMock:
 
 
 @pytest.fixture()
-def app(mock_settings: Settings, mock_router: MagicMock) -> Any:
+def app(
+    mock_settings: Settings, mock_router: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> Any:
     """Create a FastAPI app with mocked state (no lifespan)."""
+    monkeypatch.setenv("API_KEY", TEST_API_KEY)
+    monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
+    monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
+    get_settings.cache_clear()
     application = create_app()
     application.state.settings = mock_settings
     application.state.router = mock_router

@@ -1,0 +1,9 @@
+{$DOMAIN:localhost} {
+	reverse_proxy tts-service:8000
+	encode gzip
+
+	log {
+		output stdout
+		format console
+	}
+}

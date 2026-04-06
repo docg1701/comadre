@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from comadre import __version__
+from comadre.config import get_settings
 from comadre.health import HealthStatus, build_health_response
 from comadre.main import create_app
 
@@ -251,7 +252,13 @@ class TestHealthHTTPEndpoint:
         }
         assert set(body.keys()) == expected_keys
 
-    async def test_health_returns_503_when_not_ready(self) -> None:
+    async def test_health_returns_503_when_not_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
+        monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
+        get_settings.cache_clear()
         app = create_app()
         app.state.ready = False
         app.state.router = None

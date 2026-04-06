@@ -26,6 +26,14 @@ all:
     # Service port — must match compose.yaml PORT env var
     port: 8000
 
+    # Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert)
+    # Use "localhost" for self-signed cert on private networks
+    domain: "localhost"
+
+    # Rate limiting (per client IP)
+    rate_limit_speech: "10/minute"
+    rate_limit_health: "60/minute"
+
     # Daily restart hour (0-23) — precaution against potential memory leaks
     restart_hour: 3
 

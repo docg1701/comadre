@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-1.3.0-blue" alt="Version 1.3.0">
+  <img src="https://img.shields.io/badge/version-1.4.0-blue" alt="Version 1.4.0">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-Kokoro_fp32-ff6f00" alt="Kokoro TTS">
   <img src="https://img.shields.io/badge/TTS-Qwen3_Q8__0-8b5cf6" alt="Qwen3 TTS">
@@ -84,6 +84,9 @@ Each engine has its own:
 - **Network-isolated** -- zero external API calls after deployment
 - **CPU-only** -- runs on a 4 vCPU / 8 GB RAM VPS or any PC
 - **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally for concurrency
+- **HTTPS via Caddy** -- auto-TLS reverse proxy with Let's Encrypt or self-signed certs
+- **Rate limiting** -- per-IP rate limiting via slowapi (configurable per endpoint)
+- **API key rotation** -- one-command key rotation without redeployment
 
 ## Requirements
 
@@ -107,13 +110,25 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml    # Remove
 ## Documentation
 
 - [docs/api-reference.md](docs/api-reference.md) -- API endpoint spec, schemas, error codes, curl examples
-- [docs/deployment-guide.md](docs/deployment-guide.md) -- Deployment lifecycle: bootstrap, update, cleanup, health, models
+- [docs/deployment-guide.md](docs/deployment-guide.md) -- Deployment lifecycle: bootstrap, update, cleanup, HTTPS, API key rotation
 - [docs/configuration-reference.md](docs/configuration-reference.md) -- Environment variables reference
 - [docs/troubleshooting.md](docs/troubleshooting.md) -- Common issues with resolution steps
 - [docs/api-architecture.md](docs/api-architecture.md) -- Internal API design, queue architecture, post-processing pipelines
 - [docs/feasibility-report-tts-engine.md](docs/feasibility-report-tts-engine.md) -- Engine evaluation (10+ configs, 400+ samples)
 - [docs/espeak-ng-custom-dictionary.md](docs/espeak-ng-custom-dictionary.md) -- pt_extra dictionary for sigla pronunciation
 - [docs/qwen3-tts-internals.md](docs/qwen3-tts-internals.md) -- Qwen3 CLI params, THINK mode, seed reproducibility
+
+## Load Testing
+
+```bash
+# Saturation test (concurrency-based, 6 scenarios)
+uv run --group test python scripts/loadtest.py \
+  --url http://YOUR_VPS_IP:8000 --api-key KEY --scenario all
+
+# Capacity test (rate-based, WhatsApp context, ElevenLabs cost comparison)
+uv run --group test python scripts/capacity_test.py \
+  --url http://YOUR_VPS_IP:8000 --api-key KEY
+```
 
 ## Development
 

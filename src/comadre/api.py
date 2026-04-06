@@ -9,17 +9,23 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 
+from comadre.config import get_settings
 from comadre.exceptions import (
     AuthenticationError,
     GenerationError,
     ServiceUnavailableError,
 )
 from comadre.logging import get_logger
+from comadre.rate_limit import limiter
 from comadre.schemas import ResponseFormat, SpeechRequest
 
 logger = get_logger("request")
 
 api_router = APIRouter()
+
+
+def _speech_rate_limit() -> str:
+    return get_settings().rate_limit_speech
 
 
 async def verify_ready(request: Request) -> None:
@@ -48,6 +54,7 @@ async def verify_api_key(
     "/v1/audio/speech",
     dependencies=[Depends(verify_ready), Depends(verify_api_key)],
 )
+@limiter.limit(_speech_rate_limit)
 async def generate_speech(
     request: Request,
     body: SpeechRequest,

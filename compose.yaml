@@ -1,10 +1,27 @@
 services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      DOMAIN: "${DOMAIN:-localhost}"
+    depends_on:
+      tts-service:
+        condition: service_healthy
+
   tts-service:
     build: .
     container_name: tts-service
     restart: unless-stopped
-    ports:
-      - "${PORT:-8000}:8000"
+    expose:
+      - "8000"
     volumes:
       - comadre-models:/models:rw
       - comadre-voices:/voices:ro
@@ -12,7 +29,7 @@ services:
     environment:
       API_KEY: ${API_KEY:?API_KEY must be set}
       DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
-      PORT: "${PORT:-8000}"
+      PORT: "8000"
       ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
       NOISE_DIR: /app/noise
       VOICES_DIR: /voices
@@ -26,6 +43,8 @@ services:
       QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
       KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
       KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
+      RATE_LIMIT_SPEECH: "${RATE_LIMIT_SPEECH:-10/minute}"
+      RATE_LIMIT_HEALTH: "${RATE_LIMIT_HEALTH:-60/minute}"
     deploy:
       resources:
         limits:
@@ -45,3 +64,7 @@ volumes:
     name: comadre-voices
   comadre-audio:
     name: comadre-audio
+  caddy-data:
+    name: caddy-data
+  caddy-config:
+    name: caddy-config

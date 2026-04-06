@@ -9,7 +9,7 @@ Full lifecycle management for Comadre TTS service using Ansible playbooks.
 - 4 vCPU, 8 GB RAM minimum
 - Ubuntu 22.04+ or Debian 12+
 - SSH key access configured
-- Ports: service port (default 8000) open for your network
+- Ports: 80 and 443 open (Caddy HTTPS reverse proxy)
 
 **Control machine requirements:**
 
@@ -58,6 +58,9 @@ all:
 | `port` | No | Service port (default: `8000`) |
 | `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
 | `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
+| `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed) |
+| `rate_limit_speech` | No | Rate limit for speech endpoint per IP (default: `10/minute`) |
+| `rate_limit_health` | No | Rate limit for health endpoint per IP (default: `60/minute`) |
 | `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model (empty to skip) |
 | `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF (empty to skip) |
 
@@ -259,6 +262,42 @@ Voices are discovered from the filesystem at runtime. No environment variable co
 - Content: clear speech in the target voice, minimal background noise
 
 **Seed reproducibility:** Qwen3-TTS supports seed values for consistent voice characteristics across generations. The same seed + reference WAV produces similar voice quality.
+
+## HTTPS via Caddy
+
+Comadre uses Caddy as a reverse proxy for automatic HTTPS. The TTS service is only exposed internally on the Docker network — all external traffic goes through Caddy on ports 80/443.
+
+**With a public domain (Let's Encrypt):**
+
+Set `DOMAIN` in `.env` to your domain. Caddy automatically provisions and renews certificates:
+
+```bash
+DOMAIN=tts.example.com
+```
+
+**With a private IP (self-signed):**
+
+Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certificate. Clients must accept self-signed certs or use `--insecure`/`-k` with curl.
+
+**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` with gzip compression and console logging.
+
+## API Key Rotation
+
+Rotate the API key without redeployment using the included script:
+
+```bash
+ssh YOUR_VPS_IP "bash ~/comadre/deploy/bin/rotate-api-key.sh"
+```
+
+**What it does:**
+
+1. Generates a new 256-bit key (`openssl rand -base64 32`)
+2. Updates `API_KEY` in `~/comadre/.env`
+3. Restarts the TTS container
+4. Displays the new key once on stdout
+5. Waits for health check to confirm service is up
+
+**After rotation:** all clients using the old key will receive 401 errors. Update your n8n workflows, chatbot configs, or API clients with the new key.
 
 ## Daily Restart
 

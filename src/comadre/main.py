@@ -16,9 +16,10 @@ from comadre import __version__
 from comadre.api import api_router
 from comadre.config import get_settings
 from comadre.download import ensure_kokoro_models, ensure_qwen3_models
-from comadre.exceptions import register_exception_handlers
+from comadre.exceptions import RateLimitError, register_exception_handlers
 from comadre.health import build_health_response
 from comadre.logging import get_logger, setup_logging
+from comadre.rate_limit import limiter
 from comadre.service import EngineRouter, KokoroEngine, QwenEngine
 
 logger = get_logger("startup")
@@ -177,18 +178,39 @@ async def validation_error_handler(
     )
 
 
+def _rate_limit_exceeded_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Convert slowapi RateLimitExceeded to our error format."""
+    error = RateLimitError(retry_after=60)
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": {
+                "message": error.message,
+                "type": error.error_type,
+                "hint": error.hint,
+            }
+        },
+        headers={"Retry-After": "60"},
+    )
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    settings = get_settings()
+
     app = FastAPI(
         title="Comadre",
         version=__version__,
         lifespan=lifespan,
     )
+    app.state.limiter = limiter
     register_exception_handlers(app)
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(429, _rate_limit_exceeded_handler)
     app.include_router(api_router)
 
     @app.get("/health")
+    @limiter.limit(settings.rate_limit_health)
     async def health_endpoint(request: Request) -> JSONResponse:
         if not getattr(request.app.state, "ready", False):
             router = getattr(request.app.state, "router", None)

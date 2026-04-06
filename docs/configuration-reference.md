@@ -22,6 +22,9 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `KOKORO_VOICES_URL` | *(GitHub release URL)* | URL to download Kokoro voices binary on first start. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin` |
 | `QWEN3_MODEL_URL` | *(empty)* | URL to download Qwen3 GGUF model. Empty string skips auto-download. | *(empty string)* |
 | `QWEN3_TOKENIZER_URL` | *(empty)* | URL to download Qwen3 tokenizer GGUF. Empty string skips auto-download. | *(empty string)* |
+| `DOMAIN` | `localhost` | Domain for Caddy HTTPS. Set to a public domain for Let's Encrypt auto-cert, or `localhost` for self-signed. | `tts.example.com` |
+| `RATE_LIMIT_SPEECH` | `10/minute` | Rate limit for the speech endpoint, per client IP. Uses `limits` syntax. | `20/minute` |
+| `RATE_LIMIT_HEALTH` | `60/minute` | Rate limit for the health endpoint, per client IP. | `120/minute` |
 
 ## Required vs Optional
 
@@ -61,8 +64,16 @@ API_KEY=your-secret-api-key-here
 # Default voice for TTS when none specified
 DEFAULT_VOICE=kokoro/pm_santa
 
-# HTTP port
+# HTTP port (internal, Caddy handles external HTTPS)
 PORT=8000
+
+# Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert)
+# Use "localhost" for self-signed cert on private networks
+DOMAIN=localhost
+
+# Rate limiting (per client IP)
+RATE_LIMIT_SPEECH=10/minute
+RATE_LIMIT_HEALTH=60/minute
 
 # Override bundled espeak-ng data for updated pt-BR pronunciation (optional)
 # ESPEAK_DATA_PATH=/usr/share/espeak-ng-data-custom

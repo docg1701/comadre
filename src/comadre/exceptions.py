@@ -93,6 +93,19 @@ class AuthenticationError(ComadreError):
         )
 
 
+class RateLimitError(ComadreError):
+    """Raised when a client exceeds the rate limit."""
+
+    def __init__(self, retry_after: int = 60) -> None:
+        super().__init__(
+            message="Rate limit exceeded",
+            status_code=429,
+            error_type="rate_limit_error",
+            hint=f"Too many requests. Try again in {retry_after} seconds.",
+        )
+        self.retry_after = retry_after
+
+
 class ServiceUnavailableError(ComadreError):
     """Raised when the service is not ready to handle requests."""
 
@@ -114,7 +127,9 @@ class ServiceUnavailableError(ComadreError):
 async def comadre_error_handler(request: Request, exc: ComadreError) -> JSONResponse:
     """Handle ComadreError subclasses with structured JSON response."""
     headers: dict[str, str] | None = None
-    if isinstance(exc, ServiceUnavailableError):
+    if isinstance(exc, RateLimitError):
+        headers = {"Retry-After": str(exc.retry_after)}
+    elif isinstance(exc, ServiceUnavailableError):
         headers = {"Retry-After": str(exc.retry_seconds)}
     return JSONResponse(
         status_code=exc.status_code,

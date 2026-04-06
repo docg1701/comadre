@@ -171,6 +171,9 @@
           API_KEY={{ api_key_value }}
           DEFAULT_VOICE={{ default_voice | default('kokoro/pm_santa') }}
           PORT={{ port }}
+          DOMAIN={{ domain | default('localhost') }}
+          RATE_LIMIT_SPEECH={{ rate_limit_speech | default('10/minute') }}
+          RATE_LIMIT_HEALTH={{ rate_limit_health | default('60/minute') }}
           QWEN3_MODEL_URL={{ qwen3_model_url }}
           QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
           KOKORO_MODEL_URL={{ kokoro_model_url | default('') }}
