@@ -7,7 +7,7 @@
 #
 # Idempotent: safe to run multiple times. Only tasks with actual changes
 # report as "changed".
-# Requires become password for: Docker, UFW, fail2ban installation.
+# Requires become password for: Docker, UFW installation.
 
 - name: Bootstrap Comadre TTS Service
   hosts: comadre_vps
@@ -163,31 +163,6 @@
         state: enabled
 
     # =========================================================================
-    # Fail2ban — install and configure (started AFTER Docker)
-    # =========================================================================
-
-    - name: "[Fail2ban] Install fail2ban"
-      become: true
-      ansible.builtin.apt:
-        name: fail2ban
-        state: present
-
-    - name: "[Fail2ban] Copy jail config"
-      become: true
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../../../deploy/fail2ban/jail.local"
-        dest: /etc/fail2ban/jail.local
-        mode: "0644"
-
-    - name: "[Fail2ban] Copy filter config"
-      become: true
-      ansible.builtin.copy:
-        src: >-
-          {{ playbook_dir }}/../../../deploy/fail2ban/filter.d/caddy-auth.conf
-        dest: /etc/fail2ban/filter.d/caddy-auth.conf
-        mode: "0644"
-
-    # =========================================================================
     # Git Clone
     # =========================================================================
 
@@ -309,40 +284,6 @@
       delay: 10
 
     # =========================================================================
-    # Fail2ban — start AFTER Docker (log file now exists)
-    # =========================================================================
-
-    - name: "[Fail2ban] Ensure caddy log directory exists"
-      become: true
-      ansible.builtin.file:
-        path: /var/lib/docker/volumes/caddy-logs/_data
-        state: directory
-        mode: "0755"
-
-    - name: "[Fail2ban] Ensure access log file exists"
-      become: true
-      ansible.builtin.file:
-        path: /var/lib/docker/volumes/caddy-logs/_data/access.log
-        state: touch
-        mode: "0644"
-        access_time: preserve
-        modification_time: preserve
-
-    - name: "[Fail2ban] Enable and start service"
-      become: true
-      ansible.builtin.systemd:
-        name: fail2ban
-        state: restarted
-        enabled: true
-
-    - name: "[Fail2ban] Verify caddy-auth jail is active"
-      become: true
-      ansible.builtin.command:
-        cmd: fail2ban-client status caddy-auth
-      register: fail2ban_status
-      changed_when: false
-
-    # =========================================================================
     # Summary
     # =========================================================================
 
@@ -363,7 +304,6 @@
           Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
           HTTPS URL:       https://{{ ansible_host }}
           UFW:             Active (22, 80, 443)
-          Fail2ban:        {{ fail2ban_status.stdout_lines[0] | default('Unknown') }}
 
           Test command (copy-paste ready):
           curl -k -X POST \

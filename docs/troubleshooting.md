@@ -182,19 +182,6 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 3. Manual restart: `cd ~/comadre && docker compose restart tts-service`
 4. If the service is stuck, full restart: `docker compose down && docker compose up -d`
 
-### Locked out by fail2ban
-
-**Symptom:** All requests from your IP return connection refused or timeout.
-
-**Cause:** Too many failed auth attempts triggered a fail2ban ban (default: 5 failures in 5 minutes, 1-hour ban).
-
-**Resolution:**
-
-1. SSH into the VPS (SSH is not affected by fail2ban's Caddy jail)
-2. Check if your IP is banned: `sudo fail2ban-client status caddy-auth`
-3. Unban: `sudo bash ~/comadre/deploy/bin/unban-ip.sh YOUR_IP`
-4. If you don't know your IP: `sudo fail2ban-client set caddy-auth unbanip --all`
-
 ### UFW blocking access
 
 **Symptom:** Cannot reach the VPS on ports 80/443 but SSH works.

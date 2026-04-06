@@ -89,7 +89,7 @@ After these three steps, the service is fully operational with all voices availa
 
 | Playbook | Purpose | Requires sudo |
 |----------|---------|---------------|
-| `bootstrap.yml` | First-time VPS setup (Docker, UFW, fail2ban, build, start) | Yes |
+| `bootstrap.yml` | First-time VPS setup (Docker, UFW, build, start) | Yes |
 | `deploy-voices.yml` | Copy voice files to VPS (Kokoro .npy, Qwen3 .wav) | No |
 | `deploy-models.yml` | Copy Qwen3 GGUF models via SCP (if not using auto-download) | No |
 | `update.yml` | Pull latest code, rebuild image, restart services | No |
@@ -107,14 +107,13 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
 5. Installs and configures UFW firewall (ports 22, 80, 443)
-6. Installs and configures fail2ban (Caddy auth jail)
+6. Installs and configures UFW firewall (ports 22, 80, 443)
 7. Clones the repository to `~/comadre`
 8. Creates empty voices directory structure in Docker volume
 9. Creates `.env` with all configuration variables
 10. Builds the Docker image and starts the service (tts-service + Caddy)
 11. Configures cron jobs (daily restart, audio cleanup)
-12. Starts fail2ban (after Caddy log file exists)
-13. Waits for the health endpoint to report `healthy`
+12. Waits for the health endpoint to report `healthy`
 
 **Bootstrap does NOT deploy voice files.** Run `deploy-voices.yml` after bootstrap to copy voice files from your local machine to the VPS.
 
@@ -399,33 +398,6 @@ ssh YOUR_VPS_IP "sudo ufw allow 8080/tcp"
 # ... debug ...
 ssh YOUR_VPS_IP "sudo ufw delete allow 8080/tcp"
 ```
-
-## Fail2ban
-
-The bootstrap playbook installs fail2ban with a Caddy jail that bans IPs after 5 failed authentication attempts (401 responses) within 5 minutes. Ban duration: 1 hour.
-
-**Check status:**
-
-```bash
-ssh YOUR_VPS_IP "sudo fail2ban-client status caddy-auth"
-```
-
-**Unban an IP:**
-
-```bash
-ssh YOUR_VPS_IP "sudo bash ~/comadre/deploy/bin/unban-ip.sh 1.2.3.4"
-```
-
-**View banned IPs:**
-
-```bash
-ssh YOUR_VPS_IP "sudo fail2ban-client status caddy-auth | grep 'Banned IP'"
-```
-
-**Configuration files:**
-
-- Jail: `deploy/fail2ban/jail.local` (maxretry, bantime, findtime)
-- Filter: `deploy/fail2ban/filter.d/caddy-auth.conf` (log pattern matching)
 
 ## IP Allowlist (Optional)
 
