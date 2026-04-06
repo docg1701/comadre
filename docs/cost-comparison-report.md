@@ -37,13 +37,18 @@ Industry-leading cloud TTS with premium voice quality and extensive voice librar
 
 ### AI33.pro (Cloud API)
 
-Budget cloud TTS API with credit-based pricing.
+Budget cloud TTS aggregator that resells access to multiple providers — ElevenLabs, MiniMax, and Microsoft Edge TTS — through a unified credit system.
 
+- **Providers:** ElevenLabs (premium voices), MiniMax (multilingual), Microsoft Edge TTS (free-tier quality)
+- **Voice quality:** Varies by provider — ElevenLabs voices are excellent, MiniMax is very good, Edge is acceptable
+- **Voice cloning:** Yes (via ElevenLabs provider)
+- **Languages:** Dozens (inherits from ElevenLabs + MiniMax multilingual support)
 - **Pricing model:** Credit packs
 - **Rate:** $10 per 2,100,000 credits
 - **Cost per audio:** 170 credits per 12-second audio
 - **Effective rate:** 12,353 audios per $10 = $0.00081/audio
 - **Cost per audio minute:** $0.00405/min
+- **Trade-off:** Quality depends on which provider is selected per request. Latency and availability depend on upstream providers.
 
 ## Measured Performance (Comadre — Kokoro Engine)
 
@@ -200,13 +205,13 @@ Neither platform publishes SLA guarantees for response time. A request that take
 
 | Feature | Comadre | ElevenLabs | AI33.pro |
 |---------|---------|------------|----------|
-| **Voice quality** | Very good (Kokoro) | Excellent | Good |
-| **BR-PT optimization** | Yes (custom dictionary) | Generic multilingual | Unknown |
-| **Sigla pronunciation** | Perfect (67 verified entries) | Inconsistent | Unknown |
-| **Voice cloning** | Yes (Qwen3 + kokoro-cloner) | Yes (premium) | Unknown |
-| **Custom voicepacks** | Yes (kokoro-cloner pipeline) | No (predefined clones) | Unknown |
-| **Built-in voices (pt-BR)** | 3 optimized + unlimited via kokoro-cloner | Hundreds (multilingual) | Unknown |
-| **Language focus** | Brazilian Portuguese only | Dozens of languages | Unknown |
+| **Voice quality** | Very good (Kokoro) | Excellent | Varies (ElevenLabs/MiniMax/Edge) |
+| **BR-PT optimization** | Yes (custom dictionary) | Generic multilingual | Generic (via providers) |
+| **Sigla pronunciation** | Perfect (67 verified entries) | Inconsistent | Inconsistent (no custom dict) |
+| **Voice cloning** | Yes (Qwen3 + kokoro-cloner) | Yes (premium) | Yes (via ElevenLabs provider) |
+| **Custom voicepacks** | Yes (kokoro-cloner pipeline) | No (predefined clones) | No |
+| **Built-in voices (pt-BR)** | 3 optimized + unlimited via kokoro-cloner | Hundreds (multilingual) | Hundreds (from 3 providers) |
+| **Language focus** | Brazilian Portuguese only | Dozens of languages | Dozens (via ElevenLabs + MiniMax) |
 | **Data privacy** | Full (on-premise) | Cloud (third-party) | Cloud (third-party) |
 | **LGPD compliance** | Inherent (no data leaves your server) | Requires DPA | Requires DPA |
 | **Uptime control** | You control | Vendor-dependent | Vendor-dependent |
@@ -223,7 +228,7 @@ Neither platform publishes SLA guarantees for response time. A request that take
 
 ### Quality Positioning
 
-Comadre's Kokoro engine produces very good audio quality — comparable to MiniMax and noticeably better than Microsoft Edge TTS. It is only slightly inferior to ElevenLabs' top-tier models. For WhatsApp, Telegram, and Messenger voice messages, the quality difference is negligible to end users. ElevenLabs retains an edge for premium use cases like audiobooks, brand voices, and marketing videos.
+Comadre's Kokoro engine produces very good audio quality — comparable to MiniMax and noticeably better than Microsoft Edge TTS. It is only slightly inferior to ElevenLabs' top-tier models. AI33.pro's quality varies depending on which provider is selected: their ElevenLabs voices are excellent, MiniMax voices are very good (comparable to Comadre), and Edge voices are noticeably lower quality. For WhatsApp, Telegram, and Messenger voice messages, the quality difference between Comadre and AI33.pro's MiniMax tier is negligible. ElevenLabs retains an edge for premium use cases like audiobooks, brand voices, and marketing videos.
 
 ### Custom Voice Cloning with kokoro-cloner
 
