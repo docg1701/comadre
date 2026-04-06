@@ -6,15 +6,12 @@ RUN apt-get update && \
         ffmpeg \
         libsndfile1 \
         git \
-        autoconf \
-        automake \
-        libtool \
+        cmake \
         pkg-config \
         gcc \
         g++ \
         make \
         libsonic-dev \
-        ronn \
     && rm -rf /var/lib/apt/lists/*
 
 # Build espeak-ng from source — pinned 2026-03-24, includes PR #2344 pt-BR improvements
@@ -23,10 +20,9 @@ RUN git init /tmp/espeak-ng
 WORKDIR /tmp/espeak-ng
 RUN git fetch --depth 1 https://github.com/espeak-ng/espeak-ng.git 675d77226b16105e96382d38ee27c0ad9660fa1e && \
     git checkout FETCH_HEAD
-RUN ./autogen.sh && \
-    ./configure --prefix=/usr/local && \
-    make -j"$(nproc)" && \
-    make install && \
+RUN cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON && \
+    cmake --build build -j"$(nproc)" && \
+    cmake --install build && \
     ldconfig
 
 # Copy custom pt_extra dictionary and compile
@@ -57,9 +53,7 @@ RUN LOADER_DATA=$(python -c "import sys; sys.path.insert(0, '.venv/lib/python3.1
 RUN rm -rf /tmp/espeak-ng && \
     apt-mark manual libstdc++6 && \
     apt-get purge -y \
-        autoconf \
-        automake \
-        libtool \
+        cmake \
         pkg-config \
         gcc \
         g++ \
