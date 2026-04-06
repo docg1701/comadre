@@ -245,8 +245,6 @@ async def validate_audio(
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
         duration = float(stdout.decode().strip())
         valid = duration > 0.1
-        if valid:
-            audio_path.unlink(missing_ok=True)
         return valid, duration
     except (TimeoutError, ValueError):
         return False, 0.0
