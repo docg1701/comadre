@@ -65,15 +65,15 @@ Voice names use the `engine/name` format. The engine prefix determines the TTS b
 
 #### Post-processing (`raw=false`)
 
-**Kokoro pipeline (vibrato_warm):**
+**Kokoro pipeline (radio_warm):**
 
 ```text
-vibrato(4.5Hz, 6%) → highpass(80Hz) → bass(+3dB) →
-EQ(+1.5dB@200Hz, -2dB@700Hz, +2dB@2.5kHz, -2dB@6kHz) →
-exciter(4.5kHz, drive=3.5) → softclip(tanh) →
-compressor(4:1) → lowpass(8kHz) → echo(40ms, 0.12) →
-loudnorm(-18 LUFS) → noise(room=0.45, hiss=0.24) →
-loudnorm(-17 LUFS) → OGG Opus 24kbps 16kHz mono
+highpass(100Hz) → bass(+5dB@150Hz) →
+EQ(+3dB@250Hz, -4dB@600Hz, +5dB@3.5kHz) →
+compressor(6:1, -24dB, makeup=2) → softclip(tanh, 0.3) →
+lowpass(7kHz) → loudnorm(-16 LUFS) →
+noise(room=0.45, hiss=0.24) → loudnorm(-17 LUFS) →
+OGG Opus 24kbps 16kHz mono
 ```
 
 **Qwen3 pipeline (whatsapp-subtle):**

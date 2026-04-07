@@ -68,7 +68,7 @@ Each engine applies different text preprocessing before synthesis:
 
 Each engine has a dedicated audio post-processing pipeline applied before output:
 
-**vibrato_warm (Kokoro):** vibrato effect, EQ shaping, exciter, dynamic compression, echo, room/hiss noise layer.
+**radio_warm (Kokoro):** EQ shaping (bass boost, mid-scoop, presence), dynamic compression, saturation, loudnorm, room/hiss noise layer.
 
 **whatsapp-subtle (Qwen3):** EQ shaping, dynamic compression, atempo 1.15x speed adjustment, echo, room/hiss noise layer.
 

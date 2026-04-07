@@ -48,7 +48,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 - **Dual-engine routing by voice name** — voice name determines engine: `santa`/`dora`/`alex` → KokoroEngine; `clone`/`qwen-female`/`qwen-male` → QwenEngine. Router dispatches automatically.
 - **Engine-specific preprocessing** — Kokoro: `normalize_text()` + `chunk_text()` (full pt-BR normalization). Qwen3: `expand_siglas()` only (spaced acronyms like `C N P J`).
-- **Engine-specific post-processing** — Kokoro: `vibrato_warm` pipeline (vibrato, EQ, compressor, loudnorm). Qwen3: `whatsapp_subtle` pipeline (EQ, compressor, atempo 1.15x). Both output OGG Opus 24kbps 16kHz mono.
+- **Engine-specific post-processing** — Kokoro: `radio_warm` pipeline (EQ, compressor, saturation, loudnorm). Qwen3: `whatsapp_subtle` pipeline (EQ, compressor, atempo 1.15x). Both output OGG Opus 24kbps 16kHz mono.
 - **Single FIFO queue per instance** — one `asyncio.Lock`, no multi-worker model. Horizontal scaling via Caddy load balancer, not threading/multiprocessing.
 - **9-phase startup lifespan** — strict ordering: state init → config → logging → Kokoro model download → Qwen3 model download → noise dir → espeak-ng data → clone ref detection → engine load + warm-up. Both engines must succeed or startup fails.
 - **Health endpoint contract** — returns 503 `warming_up` during startup, 200 `healthy` when ready. Reports `queue_depth`, `engines`, `voices`, `memory_mb`, `uptime_seconds`, `version`.

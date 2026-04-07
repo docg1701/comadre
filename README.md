@@ -73,7 +73,7 @@ Return OGG Opus or WAV
 Each engine has its own:
 
 - **Preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
-- **Post-processing**: Kokoro uses vibrato_warm (vibrato, EQ, exciter, compression, echo, noise). Qwen3 uses whatsapp-subtle (EQ, compression, atempo 1.15x, echo, noise).
+- **Post-processing**: Kokoro uses radio_warm (EQ, compression, saturation, loudnorm). Qwen3 uses whatsapp-subtle (EQ, compression, atempo 1.15x, echo, noise).
 - **Output**: OGG Opus 24kbps 16kHz mono (default) or WAV.
 
 ## Key Features

@@ -14,7 +14,7 @@ from comadre.exceptions import GenerationError, InvalidRequestError
 from comadre.service import (
     KokoroEngine,
     QwenEngine,
-    _apply_vibrato_warm,
+    _apply_radio_warm,
     _apply_whatsapp_subtle,
     _concatenate_wavs,
     _samples_to_wav,
@@ -67,7 +67,7 @@ def startup_logger(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
 
 
 class TestGenerateSpeechWav:
-    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_radio_warm")
     def test_returns_processed_bytes(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -75,7 +75,7 @@ class TestGenerateSpeechWav:
         result = engine.generate_speech("hello", "pm_santa", "wav")
         assert result == b"processed_wav"
 
-    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_radio_warm")
     def test_calls_kokoro_create_with_correct_args(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -86,7 +86,7 @@ class TestGenerateSpeechWav:
         assert call_kwargs.kwargs["voice"] == "pm_santa"
         assert call_kwargs.kwargs["lang"] == "pt-br"
 
-    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_radio_warm")
     def test_accepts_numpy_voice(
         self, mock_pipeline: MagicMock, engine: KokoroEngine
     ) -> None:
@@ -110,12 +110,12 @@ class TestResponseFormatValidation:
         assert exc_info.value.status_code == 400
 
     def test_accepts_wav(self, engine: KokoroEngine) -> None:
-        with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
+        with patch("comadre.service._apply_radio_warm", return_value=b"audio"):
             result = engine.generate_speech("hello", "pm_santa", "wav")
         assert result == b"audio"
 
     def test_accepts_ogg(self, engine: KokoroEngine) -> None:
-        with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
+        with patch("comadre.service._apply_radio_warm", return_value=b"audio"):
             result = engine.generate_speech("hello", "pm_santa", "ogg")
         assert result == b"audio"
 
@@ -141,7 +141,7 @@ class TestEmptyTextValidation:
 class TestCharLimitValidation:
     def test_text_at_limit_passes(self, engine: KokoroEngine) -> None:
         text = "a" * KokoroEngine.CHAR_LIMIT
-        with patch("comadre.service._apply_vibrato_warm", return_value=b"audio"):
+        with patch("comadre.service._apply_radio_warm", return_value=b"audio"):
             result = engine.generate_speech(text, "pm_santa", "wav")
         assert result == b"audio"
 
@@ -175,15 +175,15 @@ class TestModelNotLoaded:
             svc.warm_up()
 
 
-# --- Test vibrato_warm pipeline invocation ---
+# --- Test radio_warm pipeline invocation ---
 
 
-class TestVibratoWarmPipeline:
+class TestRadioWarmPipeline:
     @patch("comadre.service.subprocess.run")
     def test_calls_ffmpeg_with_vibrato_filter(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"processed")
         wav = _create_wav_bytes()
-        _apply_vibrato_warm(wav, "wav")
+        _apply_radio_warm(wav, "wav")
         # Stage 1 call
         assert mock_run.call_count >= 1
         cmd = mock_run.call_args_list[0]
@@ -196,27 +196,26 @@ class TestVibratoWarmPipeline:
     ) -> None:
         mock_run.return_value = MagicMock(stdout=b"processed")
         wav = _create_wav_bytes()
-        _apply_vibrato_warm(wav, "wav")
+        _apply_radio_warm(wav, "wav")
         stage1_call = mock_run.call_args_list[0]
         cmd_args = stage1_call[0][0]
         af_idx = cmd_args.index("-af")
         filter_chain = cmd_args[af_idx + 1]
-        # All 10 filter stages must be present
+        # All 9 filter stages must be present
         for filt in [
-            "vibrato=f=4.5:d=0.06",
-            "highpass=f=80",
-            "bass=g=3:f=200",
-            "equalizer=f=2500:width_type=o:width=1.5:g=2",
-            "aexciter=freq=4500",
-            "asoftclip=type=tanh",
-            "acompressor=ratio=4:threshold=-20dB:attack=5:release=50",
-            "lowpass=f=8000",
-            "aecho=0.8:0.8:40:0.12",
-            "loudnorm=I=-18:TP=-2:LRA=7",
+            "highpass=f=100",
+            "bass=g=5:f=150",
+            "equalizer=f=250:width_type=o:width=1:g=3",
+            "equalizer=f=600:width_type=o:width=2:g=-4",
+            "equalizer=f=3500:width_type=o:width=1.5:g=5",
+            "acompressor=ratio=6:threshold=-24dB:attack=2:release=100:makeup=2",
+            "asoftclip=type=tanh:param=0.3",
+            "lowpass=f=7000",
+            "loudnorm=I=-16:TP=-1:LRA=4",
         ]:
             assert filt in filter_chain, f"Missing filter: {filt}"
-        # Verify order: vibrato first, loudnorm last
-        assert filter_chain.index("vibrato") < filter_chain.index("loudnorm")
+        # Verify order: highpass first, loudnorm last
+        assert filter_chain.index("highpass") < filter_chain.index("loudnorm")
 
     @patch("comadre.service.subprocess.run")
     def test_wav_format_without_noise_calls_ffmpeg_twice(
@@ -224,7 +223,7 @@ class TestVibratoWarmPipeline:
     ) -> None:
         mock_run.return_value = MagicMock(stdout=b"wav_data")
         wav = _create_wav_bytes()
-        result = _apply_vibrato_warm(wav, "wav")
+        result = _apply_radio_warm(wav, "wav")
         assert result == b"wav_data"
         # Stage 1 (effects) + encode_final (second loudnorm)
         assert mock_run.call_count == 2
@@ -238,7 +237,7 @@ class TestOggOutput:
     def test_ogg_format_calls_ffmpeg_twice(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
-        _apply_vibrato_warm(wav, "ogg")
+        _apply_radio_warm(wav, "ogg")
         # Stage 1 (effects) + encode (to ogg)
         assert mock_run.call_count == 2
 
@@ -246,7 +245,7 @@ class TestOggOutput:
     def test_ogg_encoding_params(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
-        _apply_vibrato_warm(wav, "ogg")
+        _apply_radio_warm(wav, "ogg")
         encode_call = mock_run.call_args_list[1]
         cmd_args = encode_call[0][0]
         assert "libopus" in cmd_args
@@ -261,7 +260,7 @@ class TestOggOutput:
     ) -> None:
         mock_run.return_value = MagicMock(stdout=b"ogg_data")
         wav = _create_wav_bytes()
-        _apply_vibrato_warm(wav, "ogg")
+        _apply_radio_warm(wav, "ogg")
         encode_call = mock_run.call_args_list[1]
         cmd_args = encode_call[0][0]
         af_idx = cmd_args.index("-af")
@@ -283,7 +282,7 @@ class TestNoiseMixing:
         hiss_file.write_bytes(_create_wav_bytes())
 
         wav = _create_wav_bytes()
-        result = _apply_vibrato_warm(wav, "ogg", noise_dir=tmp_path)
+        result = _apply_radio_warm(wav, "ogg", noise_dir=tmp_path)
         assert result == b"mixed_audio"
         # Stage 1 + stage 2 (with noise)
         assert mock_run.call_count == 2
@@ -296,7 +295,7 @@ class TestNoiseMixing:
         (tmp_path / "room.wav").write_bytes(_create_wav_bytes())
         (tmp_path / "hiss.wav").write_bytes(_create_wav_bytes())
 
-        _apply_vibrato_warm(_create_wav_bytes(), "ogg", noise_dir=tmp_path)
+        _apply_radio_warm(_create_wav_bytes(), "ogg", noise_dir=tmp_path)
         stage2_call = mock_run.call_args_list[1]
         cmd_args = stage2_call[0][0]
         fc_idx = cmd_args.index("-filter_complex")
@@ -313,7 +312,7 @@ class TestNoiseMixing:
         mock_run.return_value = MagicMock(stdout=b"clean_audio")
         wav = _create_wav_bytes()
         # noise_dir exists but has no noise files
-        result = _apply_vibrato_warm(wav, "ogg", noise_dir=tmp_path)
+        result = _apply_radio_warm(wav, "ogg", noise_dir=tmp_path)
         assert result == b"clean_audio"
 
     @patch("comadre.service.subprocess.run")
@@ -325,7 +324,7 @@ class TestNoiseMixing:
     ) -> None:
         mock_run.return_value = MagicMock(stdout=b"clean")
         with request_logger.at_level(logging.WARNING, logger="request"):
-            _apply_vibrato_warm(_create_wav_bytes(), "ogg", noise_dir=tmp_path)
+            _apply_radio_warm(_create_wav_bytes(), "ogg", noise_dir=tmp_path)
         warnings = [r for r in request_logger.records if r.levelno == logging.WARNING]
         assert any(
             "missing" in r.message.lower() or "noise" in r.message.lower()
@@ -337,7 +336,7 @@ class TestNoiseMixing:
 
 
 class TestMultiChunkGeneration:
-    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_radio_warm")
     @patch("comadre.service.chunk_text")
     @patch("comadre.service.normalize_text")
     def test_multi_chunk_calls_create_per_chunk(
@@ -353,7 +352,7 @@ class TestMultiChunkGeneration:
         engine.generate_speech("chunk one. chunk two.", "pm_santa", "wav")
         assert engine._kokoro.create.call_count == 2  # type: ignore[union-attr]
 
-    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_radio_warm")
     @patch("comadre.service.chunk_text")
     @patch("comadre.service.normalize_text")
     def test_single_chunk_only_one_create_call(
@@ -369,7 +368,7 @@ class TestMultiChunkGeneration:
         engine.generate_speech("short text", "pm_santa", "wav")
         assert engine._kokoro.create.call_count == 1  # type: ignore[union-attr]
 
-    @patch("comadre.service._apply_vibrato_warm")
+    @patch("comadre.service._apply_radio_warm")
     def test_logs_chunk_count(
         self,
         mock_pipeline: MagicMock,
@@ -1051,15 +1050,15 @@ class TestWhatsappSubtleNoiseMixing:
 
 class TestNoiseVolumeRefactoring:
     @patch("comadre.service.subprocess.run")
-    def test_vibrato_warm_still_uses_kokoro_volumes(
+    def test_radio_warm_still_uses_kokoro_volumes(
         self, mock_run: MagicMock, tmp_path: Path
     ) -> None:
-        """Regression: vibrato_warm must still pass 0.45/0.24 after refactoring."""
+        """Regression: radio_warm must still pass 0.45/0.24 after refactoring."""
         mock_run.return_value = MagicMock(stdout=b"mixed")
         (tmp_path / "room.wav").write_bytes(_create_wav_bytes())
         (tmp_path / "hiss.wav").write_bytes(_create_wav_bytes())
 
-        _apply_vibrato_warm(_create_wav_bytes(), "ogg", noise_dir=tmp_path)
+        _apply_radio_warm(_create_wav_bytes(), "ogg", noise_dir=tmp_path)
         stage2_call = mock_run.call_args_list[1]
         cmd_args = stage2_call[0][0]
         fc_idx = cmd_args.index("-filter_complex")

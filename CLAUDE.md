@@ -26,7 +26,7 @@ uv run pre-commit run --all-files  # All quality checks
 - **Dual-engine + filesystem voice discovery**: voice param format is `engine/name` (e.g. `kokoro/pm_santa`, `qwen/galvani`). Kokoro voices: `.npy` files in `/voices/kokoro/` or built-in from `.npz`. Qwen3 voices: `.wav` files in `/voices/qwen/`. Drop a file → available immediately, no restart. See `docs/voice-management.md`.
 - **Single FIFO queue** per instance (`asyncio.Lock`). No multi-worker model. Scale horizontally via Caddy.
 - **Engine-specific preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
-- **Engine-specific post-processing**: Kokoro → vibrato_warm pipeline. Qwen3 → whatsapp-subtle pipeline. Both output OGG Opus.
+- **Engine-specific post-processing**: Kokoro → radio_warm pipeline. Qwen3 → whatsapp-subtle pipeline. Both output OGG Opus.
 - **Siglas**: Kokoro handles them natively via espeak-ng pt_extra dictionary (67 entries, 34/34 verified). Qwen3 uses spaced format (`C N P J`).
 - **Module boundaries enforced**: no HTTP concerns in `service.py`, no business logic in `api.py`, no raw `os.environ` (use pydantic-settings), no raw `HTTPException` (use `ComadreError` hierarchy).
 - **HTTPS via Caddy**: Caddy reverse proxy terminates TLS (auto Let's Encrypt or self-signed). TTS service also exposed on port 8000 for direct HTTP access and health checks. Configure domain via `DOMAIN` env var.

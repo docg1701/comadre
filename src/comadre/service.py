@@ -155,7 +155,7 @@ class KokoroEngine:
             wav_bytes = _concatenate_wavs(wav_parts)
             if raw:
                 return _encode_final(wav_bytes, response_format)
-            return _apply_vibrato_warm(wav_bytes, response_format, noise_dir)
+            return _apply_radio_warm(wav_bytes, response_format, noise_dir)
         except (InvalidRequestError, GenerationError):
             raise
         except Exception as exc:
@@ -200,28 +200,27 @@ def _concatenate_wavs(wav_bytes_list: list[bytes]) -> bytes:
     return output.getvalue()
 
 
-def _apply_vibrato_warm(
+def _apply_radio_warm(
     wav_bytes: bytes,
     response_format: str,
     noise_dir: Path | None = None,
 ) -> bytes:
-    """Apply vibrato_warm post-processing pipeline via ffmpeg.
+    """Apply radio_warm post-processing pipeline via ffmpeg.
 
-    Stage 1: Audio effects (vibrato, EQ, compression, echo, loudnorm)
+    Stage 1: Audio effects (EQ, compression, saturation, loudnorm)
     Stage 2: Noise mixing + final encoding (OGG Opus or WAV)
     """
     # Stage 1: Audio effects
     stage1_filter = (
-        "vibrato=f=4.5:d=0.06,"
-        "highpass=f=80,"
-        "bass=g=3:f=200,"
-        "equalizer=f=2500:width_type=o:width=1.5:g=2,"
-        "aexciter=freq=4500,"
-        "asoftclip=type=tanh,"
-        "acompressor=ratio=4:threshold=-20dB:attack=5:release=50,"
-        "lowpass=f=8000,"
-        "aecho=0.8:0.8:40:0.12,"
-        "loudnorm=I=-18:TP=-2:LRA=7"
+        "highpass=f=100,"
+        "bass=g=5:f=150,"
+        "equalizer=f=250:width_type=o:width=1:g=3,"
+        "equalizer=f=600:width_type=o:width=2:g=-4,"
+        "equalizer=f=3500:width_type=o:width=1.5:g=5,"
+        "acompressor=ratio=6:threshold=-24dB:attack=2:release=100:makeup=2,"
+        "asoftclip=type=tanh:param=0.3,"
+        "lowpass=f=7000,"
+        "loudnorm=I=-16:TP=-1:LRA=4"
     )
 
     stage1_cmd = [
