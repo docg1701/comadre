@@ -392,6 +392,8 @@ async def run_scenario(
     api_key: str,
     voice: str,
     output_dir: Path,
+    *,
+    insecure: bool = False,
 ) -> ScenarioResults:
     print(f"\n{'=' * 70}")
     print(f"  SCENARIO: {config.name} — {config.description}")
@@ -411,7 +413,7 @@ async def run_scenario(
     lock = asyncio.Lock()
     live = LiveState()
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=not insecure) as client:
 
         async def _health_loop() -> None:
             while not stop.is_set():
@@ -643,6 +645,11 @@ async def main() -> None:
         help="Scenario to run: " + ", ".join(["all", *SCENARIOS]),
     )
     parser.add_argument("--output", default="results", help="Output directory")
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip TLS certificate verification (like curl -k)",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -678,7 +685,7 @@ async def main() -> None:
     print(f"Output: {output_dir.resolve()}")
 
     # Quick connectivity check
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=not args.insecure) as client:
         try:
             r = await client.get(f"{args.url}/health", timeout=10)
             health = r.json()
@@ -694,7 +701,12 @@ async def main() -> None:
 
     for scenario_cfg in to_run:
         res = await run_scenario(
-            scenario_cfg, args.url, args.api_key, args.voice, output_dir
+            scenario_cfg,
+            args.url,
+            args.api_key,
+            args.voice,
+            output_dir,
+            insecure=args.insecure,
         )
 
         write_request_csv(

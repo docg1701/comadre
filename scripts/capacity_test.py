@@ -184,6 +184,8 @@ async def run_tier(
     api_key: str,
     voice: str,
     output_dir: Path,
+    *,
+    insecure: bool = False,
 ) -> TierResult:
     interval = 60.0 / target_rate
     num_requests = max(TIER_REQUESTS, target_rate * 2)
@@ -205,7 +207,7 @@ async def run_tier(
     live_mem = 0.0
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=not insecure) as client:
 
         async def _health_loop() -> None:
             nonlocal live_qd, live_mem
@@ -554,6 +556,11 @@ async def main() -> None:
         default=",".join(str(r) for r in RATE_TIERS),
         help="Comma-separated target rates (req/min)",
     )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip TLS certificate verification (like curl -k)",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -573,7 +580,7 @@ async def main() -> None:
     print(f"Tiers: {tiers} req/min")
     print(f"Output: {output_dir.resolve()}")
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=not args.insecure) as client:
         try:
             r = await client.get(f"{args.url}/health", timeout=10)
             h = r.json()
@@ -592,6 +599,7 @@ async def main() -> None:
             args.api_key,
             args.voice,
             output_dir,
+            insecure=args.insecure,
         )
         all_results.append(res)
         all_metrics.extend(res.requests)

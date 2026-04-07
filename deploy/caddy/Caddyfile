@@ -1,3 +1,7 @@
+{
+	default_sni {$DOMAIN:localhost}
+}
+
 {$DOMAIN:localhost} {
 	reverse_proxy tts-service:8000
 	encode gzip
