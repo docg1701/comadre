@@ -261,11 +261,10 @@
         minute: "0"
         hour: "*/6"
         job: >-
-          docker inspect --format '{{ "{{" }}.State.Running{{ "}}" }}'
-          tts-service 2>/dev/null | grep -q true &&
-          docker exec tts-service find /audio -type f
+          cd ~/comadre &&
+          docker compose exec -T tts-service find /audio -type f
           \( -name '*.ogg' -o -name '*.wav' \)
-          -mmin +1440 -delete
+          -mmin +1440 -delete 2>/dev/null || true
 
     # =========================================================================
     # Health Check
@@ -273,7 +272,8 @@
 
     - name: "[Health] Wait for service to become healthy"
       ansible.builtin.uri:
-        url: "http://localhost:{{ port }}/health"
+        url: "https://localhost/health"
+        validate_certs: false
         return_content: true
       register: health_check
       until: >-
@@ -305,10 +305,10 @@
           UFW:             Active (22, 80, 443)
 
           Test command (copy-paste ready):
-          curl -X POST \
+          curl -k -X POST \
             -H "Authorization: Bearer $COMADRE_API_KEY" \
             -H "Content-Type: application/json" \
-            http://{{ ansible_host }}:8000/v1/audio/speech \
+            https://{{ ansible_host }}/v1/audio/speech \
             -d '{"input":"Olá mundo","voice":"kokoro/pm_santa"}' \
             --output test.ogg
 

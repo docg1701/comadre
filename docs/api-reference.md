@@ -216,7 +216,7 @@ Returns service health status. No authentication required.
   "queue_depth": 0,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
-  "version": "1.5.2"
+  "version": "1.5.3"
 }
 ```
 
@@ -232,7 +232,7 @@ Returned while models are still loading after startup:
   "queue_depth": 0,
   "uptime_seconds": 15,
   "memory_mb": 800,
-  "version": "1.5.2"
+  "version": "1.5.3"
 }
 ```
 
@@ -262,7 +262,7 @@ Qwen3-TTS voices use reference WAV files for voice cloning. Voices are discovere
 **Kokoro request (fast, built-in voice):**
 
 ```bash
-curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
@@ -272,7 +272,7 @@ curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
 **Qwen3 request (cloned voice):**
 
 ```bash
-curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
@@ -282,7 +282,7 @@ curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
 **Instagram destination (AAC M4A output):**
 
 ```bash
-curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Confira nosso novo produto!", "voice":"kokoro/pf_dora", "destination":"instagram"}' \
@@ -294,7 +294,7 @@ curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
 **Missing authentication (error example):**
 
 ```bash
-curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"input":"Teste sem autenticacao."}'
 ```
@@ -314,5 +314,5 @@ Response (401):
 **Health check:**
 
 ```bash
-curl http://YOUR_VPS_IP:8000/health
+curl https://YOUR_VPS_DOMAIN/health
 ```

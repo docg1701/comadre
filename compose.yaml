@@ -23,7 +23,6 @@ services:
 
   tts-service:
     build: .
-    container_name: tts-service
     restart: unless-stopped
     logging:
       driver: json-file
@@ -32,8 +31,6 @@ services:
         max-file: "5"
     expose:
       - "8000"
-    ports:
-      - "8000:8000"
     volumes:
       - comadre-models:/models:rw
       - comadre-voices:/voices:ro
@@ -58,6 +55,7 @@ services:
       RATE_LIMIT_SPEECH: "${RATE_LIMIT_SPEECH:-30/minute}"
       RATE_LIMIT_HEALTH: "${RATE_LIMIT_HEALTH:-60/minute}"
     deploy:
+      replicas: 1
       resources:
         limits:
           cpus: "4"

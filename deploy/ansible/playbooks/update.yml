@@ -40,19 +40,19 @@
         success_msg: "API key is configured."
 
     - name: "[Prereq] Verify service is running"
-      community.docker.docker_container_info:
-        name: tts-service
-      register: tts_container
+      ansible.builtin.command:
+        cmd: docker compose -f ~/comadre/compose.yaml ps -q --status running tts-service
+      register: tts_running_containers
+      changed_when: false
 
     - name: "[Prereq] Fail if service is not running"
       ansible.builtin.assert:
         that:
-          - tts_container.exists
-          - tts_container.container.State.Running
+          - tts_running_containers.stdout_lines | length > 0
         fail_msg: >-
-          Comadre service is not running.
+          Comadre service has no running containers.
           Investigate why the service is down before attempting an update.
-          Check logs with: docker compose logs
+          Check logs with: cd ~/comadre && docker compose logs
         success_msg: "Comadre service is running."
 
     # =========================================================================
@@ -110,7 +110,8 @@
 
     - name: "[Health] Wait for service to become healthy"
       ansible.builtin.uri:
-        url: "http://localhost:{{ port }}/health"
+        url: "https://localhost/health"
+        validate_certs: false
         return_content: true
       register: health_check
       until: >-

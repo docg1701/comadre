@@ -26,7 +26,7 @@ To add a custom Kokoro voice:
 
 ```bash
 # Copy the .npy file into the volume
-docker cp joao.npy tts-service:/voices/kokoro/
+docker compose cp joao.npy tts-service:/voices/kokoro/
 ```
 
 The voice is immediately available as `kokoro/joao`.
@@ -39,7 +39,7 @@ To add a Qwen3 voice:
 
 ```bash
 # Copy the reference WAV into the volume
-docker cp galvani.wav tts-service:/voices/qwen/
+docker compose cp galvani.wav tts-service:/voices/qwen/
 ```
 
 The voice is immediately available as `qwen/galvani`.
@@ -100,7 +100,7 @@ If `voice` is omitted, the service uses the `DEFAULT_VOICE` environment variable
 The `/health` endpoint returns all available voices:
 
 ```bash
-curl -s http://localhost:8000/health | jq '.voices'
+curl -sk https://localhost/health | jq '.voices'
 ```
 
 Output:

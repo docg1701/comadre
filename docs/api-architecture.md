@@ -121,7 +121,7 @@ Body: [audio bytes]
   "queue_depth": 3,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
-  "version": "1.5.2"
+  "version": "1.5.3"
 }
 ```
 
@@ -310,8 +310,14 @@ For detailed voice setup instructions, see [voice-management.md](voice-managemen
 services:
   tts-service:
     build: .
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "4"
+          memory: 6G
     environment:
       - API_KEY=${API_KEY}
       - DEFAULT_VOICE=kokoro/pm_santa
@@ -322,7 +328,7 @@ services:
     restart: unless-stopped
 ```
 
-Two containers: tts-service (TTS API) + caddy (HTTPS reverse proxy). No Redis, no workers.
+Two services: tts-service (TTS API, internal port 8000) + caddy (HTTPS reverse proxy, ports 80/443). All external access goes through Caddy. Scale by changing `replicas` — Caddy load-balances across replicas via Docker DNS round-robin. No Redis, no workers.
 
 ## Character Limits
 

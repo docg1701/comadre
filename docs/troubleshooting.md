@@ -49,7 +49,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 **Resolution:**
 
-1. Verify the binary exists inside the container: `docker exec tts-service ls -la /usr/local/bin/qwen3-tts-cli`
+1. Verify the binary exists inside the container: `docker compose exec tts-service ls -la /usr/local/bin/qwen3-tts-cli`
 2. Check the Dockerfile copies the binary from `deploy/bin/qwen3-tts-cli`
 3. If rebuilding the binary is needed, see [building-qwen3-tts-cli.md](building-qwen3-tts-cli.md)
 
@@ -65,7 +65,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 1. Wait for model loading to complete (can take 1-3 minutes depending on download speed)
 2. Monitor progress: `docker compose logs -f`
-3. Check health endpoint: `curl http://localhost:8000/health`
+3. Check health endpoint: `curl -k https://localhost/health`
 4. If 503 persists beyond 5 minutes, check logs for download or loading errors
 
 ### 401 authentication error
@@ -78,7 +78,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 1. Verify header format: `Authorization: Bearer YOUR_API_KEY` (note the space after "Bearer")
 2. Check the key matches what is in `.env` on the VPS
-3. Verify the key is loaded (check length, not the value): `docker exec tts-service sh -c 'echo API_KEY length: ${#API_KEY}'`
+3. Verify the key is loaded (check length, not the value): `docker compose exec tts-service sh -c 'echo API_KEY length: ${#API_KEY}'`
 
 ### 404 voice not found
 
@@ -88,7 +88,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 **Resolution:**
 
-1. Check available voices via health endpoint: `curl http://localhost:8000/health | jq .voices`
+1. Check available voices via health endpoint: `curl -k https://localhost/health | jq .voices`
 2. Voice names use the `engine/name` format: `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/female`, `qwen/galvani`, etc.
 3. Voice names are case-sensitive. The engine prefix (`kokoro/` or `qwen/`) is required. See [voice-management.md](voice-management.md) for the full list of available voices and how to add new ones.
 
@@ -114,7 +114,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 **Resolution:**
 
 1. Reduce text length (max 500 chars for Kokoro, 300 chars for Qwen3)
-2. Check queue depth: `curl http://localhost:8000/health | jq .queue_depth`
+2. Check queue depth: `curl -k https://localhost/health | jq .queue_depth`
 3. If queue is consistently backed up, consider scaling horizontally
 
 ## Engine-Specific Issues
@@ -141,7 +141,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 1. Check service.py to verify the `-l pt` flag is passed to the CLI command
 2. This should be handled automatically by the application code
-3. If the issue persists, check the qwen3-tts-cli binary version: `docker exec tts-service qwen3-tts-cli --version`
+3. If the issue persists, check the qwen3-tts-cli binary version: `docker compose exec tts-service qwen3-tts-cli --version`
 
 ### Clone voice sounds different
 
@@ -152,7 +152,7 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 **Resolution:**
 
 1. Verify reference WAV quality: 3-10 seconds, mono, 16kHz+, clear speech, minimal background noise
-2. Check the reference file exists: `docker exec tts-service ls -la /voices/`
+2. Check the reference file exists: `docker compose exec tts-service ls -la /voices/`
 3. Seed reproducibility gives similar (not identical) results across runs -- some variation is expected
 4. Try a different reference recording with clearer audio
 
@@ -244,10 +244,10 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 **Resolution:**
 
 1. Check disk usage: `df -h /`
-2. Check audio volume size: `docker exec tts-service du -sh /audio`
+2. Check audio volume size: `docker compose exec tts-service du -sh /audio`
 3. Verify the audio cleanup cron is active: `crontab -l | grep comadre-audio-cleanup`
 4. Expected: runs every 6 hours, deletes audio files older than 24 hours
-5. Manual cleanup: `docker exec tts-service find /audio -type f \( -name '*.ogg' -o -name '*.wav' \) -mmin +1440 -delete`
+5. Manual cleanup: `docker compose exec tts-service find /audio -type f \( -name '*.ogg' -o -name '*.wav' \) -mmin +1440 -delete`
 
 ## Log Format
 

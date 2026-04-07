@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-1.5.2-blue" alt="Version 1.5.2">
+  <img src="https://img.shields.io/badge/version-1.5.3-blue" alt="Version 1.5.3">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-Kokoro_fp32-ff6f00" alt="Kokoro TTS">
   <img src="https://img.shields.io/badge/TTS-Qwen3_Q8__0-8b5cf6" alt="Qwen3 TTS">
@@ -29,14 +29,14 @@ cp .env.example .env   # Set API_KEY
 docker compose up --build -d
 
 # Test with Kokoro (fast)
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
 
 # Test with Qwen3 (cloned voice, if configured)
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
@@ -83,7 +83,7 @@ Each engine has its own:
 - **OpenAI-compatible API** (`POST /v1/audio/speech`) -- works with any HTTP client or workflow tool
 - **Network-isolated** -- zero external API calls after deployment
 - **CPU-only** -- runs on a 4 vCPU / 8 GB RAM VPS or any PC
-- **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally for concurrency
+- **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally via `deploy.replicas` in compose.yaml
 - **HTTPS via Caddy** -- auto-TLS reverse proxy with Let's Encrypt or self-signed certs
 - **Rate limiting** -- per-IP rate limiting via slowapi (configurable per endpoint)
 - **API key rotation** -- one-command key rotation without redeployment
@@ -92,7 +92,7 @@ Each engine has its own:
 
 - 4 vCPUs, 8 GB RAM (VPS or bare metal)
 - ~2 GB disk for models (Kokoro auto-downloads; Qwen3 requires manual setup -- see [deployment guide](docs/deployment-guide.md))
-- Docker and Docker Compose v2
+- Docker and Docker Compose v2 (Caddy reverse proxy handles all external access on ports 80/443)
 - Optional: 5-10 second WAV recording for voice cloning (Qwen3 engine)
 
 ## Deployment
@@ -123,11 +123,11 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml -e "ansible_b
 ```bash
 # Saturation test (concurrency-based, 6 scenarios)
 uv run --group test python scripts/loadtest.py \
-  --url http://YOUR_VPS_IP:8000 --api-key KEY --scenario all
+  --url https://YOUR_VPS_DOMAIN --api-key KEY --scenario all
 
 # Capacity test (rate-based, WhatsApp context, ElevenLabs cost comparison)
 uv run --group test python scripts/capacity_test.py \
-  --url http://YOUR_VPS_IP:8000 --api-key KEY
+  --url https://YOUR_VPS_DOMAIN --api-key KEY
 ```
 
 ## Development

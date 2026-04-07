@@ -203,7 +203,7 @@
 
           Application artifacts removed:
 
-            ✓ Containers stopped and removed (tts-service, caddy)
+            ✓ Containers stopped and removed (tts-service replicas, caddy)
             ✓ Docker volumes removed (models, voices, audio, caddy-data, caddy-config)
             ✓ Docker images and build cache pruned
             ✓ Cron jobs removed (daily-restart, audio-cleanup)

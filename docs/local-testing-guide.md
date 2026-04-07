@@ -145,7 +145,7 @@ Startup phases:
 Check the health endpoint:
 
 ```bash
-curl -s http://localhost:8000/health | python3 -m json.tool
+curl -sk https://localhost/health | python3 -m json.tool
 ```
 
 Expected response when fully ready:
@@ -173,21 +173,21 @@ If you skipped Qwen3 models, `qwen3.loaded` will be `false` and only Kokoro voic
 
 ```bash
 # kokoro/pm_santa (male, default)
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test-santa.ogg
 
 # kokoro/pf_dora (female)
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"kokoro/pf_dora"}' \
   --output test-dora.ogg
 
 # kokoro/pm_alex (male)
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"O FGTS foi depositado na sua conta.", "voice":"kokoro/pm_alex"}' \
@@ -198,21 +198,21 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ```bash
 # qwen/female
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen/female"}' \
   --output test-qwen-female.ogg
 
 # qwen/male
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen/male"}' \
   --output test-qwen-male.ogg
 
 # qwen/galvani (uses galvani.wav reference)
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"Esta e a voz clonada falando.", "voice":"qwen/galvani"}' \
@@ -222,7 +222,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ### WAV output (instead of OGG Opus)
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer my-local-test-key" \
   -H "Content-Type: application/json" \
   -d '{"input":"Teste em formato WAV.", "voice":"kokoro/pm_santa", "response_format":"wav"}' \
@@ -235,14 +235,14 @@ Stream audio directly to speakers without saving a file. Requires WAV format for
 
 ```bash
 # Kokoro female voice
-curl -s -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -s -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.","voice":"kokoro/pf_dora","response_format":"wav"}' \
   | ffplay -nodisp -autoexit -
 
 # Qwen3 cloned voice
-curl -s -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -s -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.","voice":"qwen/female","response_format":"wav"}' \
@@ -254,7 +254,7 @@ OGG Opus does not support pipe streaming. Use `response_format: wav` when piping
 ### Error example (missing auth)
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"input":"Teste sem autenticacao."}'
 ```

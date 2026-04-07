@@ -35,21 +35,22 @@
     # Container State
     # =========================================================================
 
-    - name: "[Docker] Check TTS container state"
-      community.docker.docker_container_info:
-        name: tts-service
-      register: tts_container
+    - name: "[Docker] Check TTS service state"
+      ansible.builtin.command:
+        cmd: docker compose -f ~/comadre/compose.yaml ps -q --status running tts-service
+      register: tts_running_containers
+      changed_when: false
 
     - name: "[Docker] Check Caddy container state"
       community.docker.docker_container_info:
         name: caddy
       register: caddy_container
 
-    - name: "[Docker] Report TTS container not running"
-      when: not (tts_container.exists and (tts_container.container.State.Running | default(false)))
+    - name: "[Docker] Report TTS service not running"
+      when: tts_running_containers.stdout_lines | length == 0
       ansible.builtin.debug:
         msg: >-
-          WARNING: TTS service container is not running.
+          WARNING: TTS service has no running containers.
           Check logs with: cd ~/comadre && docker compose logs tts-service
           Restart with: cd ~/comadre && docker compose up -d
 
@@ -66,9 +67,10 @@
     # =========================================================================
 
     - name: "[Health] Query health endpoint"
-      when: tts_container.exists and (tts_container.container.State.Running | default(false))
+      when: tts_running_containers.stdout_lines | length > 0
       ansible.builtin.uri:
-        url: "http://localhost:{{ port }}/health"
+        url: "https://localhost/health"
+        validate_certs: false
         return_content: true
         status_code: [200, 503]
       register: health_check
@@ -107,9 +109,9 @@
       changed_when: false
 
     - name: "[Disk] Check audio volume size"
-      when: tts_container.exists and (tts_container.container.State.Running | default(false))
+      when: tts_running_containers.stdout_lines | length > 0
       ansible.builtin.command:
-        cmd: docker exec tts-service du -sh /audio
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service du -sh /audio
       register: audio_volume_size
       changed_when: false
       ignore_errors: true
@@ -146,7 +148,7 @@
 
     - name: "[Summary] Full diagnostic report"
       vars:
-        container_running: "{{ tts_container.exists and (tts_container.container.State.Running | default(false)) }}"
+        container_running: "{{ tts_running_containers.stdout_lines | length > 0 }}"
         caddy_running: "{{ caddy_container.exists and (caddy_container.container.State.Running | default(false)) }}"
         hc: "{{ health_check.json | default({}) }}"
         has_health: >-

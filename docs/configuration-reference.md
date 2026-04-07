@@ -45,12 +45,22 @@ All URL variables (`KOKORO_MODEL_URL`, `KOKORO_VOICES_URL`, `QWEN3_MODEL_URL`, `
 In production, environment variables are set in `compose.yaml` (not `.env` directly). The compose file maps host `.env` values to container environment:
 
 ```yaml
-environment:
-  API_KEY: ${API_KEY:?API_KEY must be set}
-  PORT: "${PORT:-8000}"
+tts-service:
+  build: .
+  expose:
+    - "8000"
+  deploy:
+    replicas: 1
+    resources:
+      limits:
+        cpus: "4"
+        memory: 6G
+  environment:
+    API_KEY: ${API_KEY:?API_KEY must be set}
+    PORT: "8000"
 ```
 
-The `API_KEY` uses the `?` syntax, which causes Docker Compose to error immediately if the variable is not set in `.env`.
+The `API_KEY` uses the `?` syntax, which causes Docker Compose to error immediately if the variable is not set in `.env`. The TTS service is not exposed on the host network — all external access goes through Caddy (ports 80/443). Scale horizontally by increasing `replicas`.
 
 This is a simplified example. The actual `compose.yaml` maps 18+ environment variables. See the full `compose.yaml` for all mappings.
 

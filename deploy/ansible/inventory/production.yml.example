@@ -23,9 +23,6 @@ all:
     # Default voice for TTS when none specified (format: engine/name)
     default_voice: "kokoro/pm_santa"
 
-    # Service port — must match compose.yaml PORT env var
-    port: 8000
-
     # Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert)
     # Use "localhost" for self-signed cert on private networks
     domain: "localhost"

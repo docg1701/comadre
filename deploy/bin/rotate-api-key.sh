@@ -28,7 +28,7 @@ docker compose up -d --no-build tts-service
 echo "Container restarted. Waiting for health check..."
 
 for _ in $(seq 1 30); do
-    if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+    if curl -sfk https://localhost/health > /dev/null 2>&1; then
         echo "Service is healthy. Key rotation complete."
         exit 0
     fi

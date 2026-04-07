@@ -135,14 +135,14 @@ Comadre TTS Service -- Bootstrap Complete
 
 Service Status:  healthy
 Loaded Voices:   kokoro/pf_dora, kokoro/pm_alex, kokoro/pm_santa, qwen/female, qwen/galvani
-Endpoint URL:    http://YOUR_VPS_IP:8000
+Endpoint URL:    https://YOUR_VPS_DOMAIN
 ============================================
 ```
 
 **Test the deployment:**
 
 ```bash
-curl -X POST http://YOUR_VPS_IP:8000/v1/audio/speech \
+curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Ola mundo", "voice":"kokoro/pm_santa"}' \
@@ -332,7 +332,7 @@ DOMAIN=tts.example.com
 
 Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certificate. Clients must accept self-signed certs or use `--insecure`/`-k` with curl.
 
-**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` with gzip compression and JSON logging to stdout (captured by Docker log driver).
+**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` via Docker internal DNS with gzip compression and JSON logging to stdout (captured by Docker log driver). Caddy is the sole external access point — the TTS service is not exposed on the host network. With multiple replicas, Docker DNS automatically round-robins across all healthy containers.
 
 ## API Key Rotation
 
@@ -449,3 +449,54 @@ Verify cron is active:
 ```bash
 ssh YOUR_SSH_USER@YOUR_VPS_IP "crontab -l | grep comadre"
 ```
+
+## Horizontal Scaling
+
+Each Comadre instance processes one request at a time (single FIFO queue via `asyncio.Lock`). To increase throughput, add replicas instead of increasing CPU per instance.
+
+### How to scale
+
+Change `replicas` in `compose.yaml` and redeploy:
+
+```yaml
+deploy:
+  replicas: 2    # or 3, 4, etc.
+  resources:
+    limits:
+      cpus: "4"
+      memory: 6G
+```
+
+```bash
+cd ~/comadre
+docker compose up -d --build
+```
+
+Caddy automatically load-balances across all healthy replicas via Docker DNS round-robin. No Caddy configuration changes needed.
+
+### Resource requirements per replica
+
+| Resource | Per replica | 2 replicas | 3 replicas |
+|----------|-----------|------------|------------|
+| CPU      | 4 cores   | 8 cores    | 12 cores   |
+| RAM      | 6 GB      | 12 GB      | 18 GB      |
+| Disk     | Shared (models + voices volumes) | Same | Same |
+
+Memory breakdown per replica: Kokoro ONNX model ~3.4 GB + Qwen3 subprocess ~1.5 GB peak + Python overhead. The 6 GB limit provides ~500 MB headroom. Qwen3 has a 4-core sweet spot — beyond 4 cores per replica, diminishing returns (<2% gain).
+
+### What is shared vs per-instance
+
+| Component | Scope | Notes |
+|-----------|-------|-------|
+| Models (`comadre-models`) | Shared volume | All replicas read the same model files |
+| Voices (`comadre-voices`) | Shared volume (read-only) | All replicas discover the same voices |
+| Audio (`comadre-audio`) | Shared volume | Cleanup cron runs on one replica |
+| FIFO queue (`asyncio.Lock`) | Per-instance | Each replica has its own queue |
+| Rate limiting (slowapi) | Per-instance in-memory | Effective limit = configured limit x replica count |
+| Health endpoint | Per-instance | Reports queue depth and memory for that replica only |
+
+### Caveats
+
+- **Rate limiting is per-instance.** With 2 replicas, a client can send 60 req/min (30 per replica) instead of 30. For strict global rate limiting, an external store (Redis) would be needed.
+- **Queue depth is per-instance.** The `/health` endpoint reports the queue depth of whichever replica handles the request. For cluster-wide monitoring, check all replicas or use centralized logging.
+- **Audio cleanup cron** runs `docker compose exec` which targets one replica. Since the audio volume is shared, this is sufficient.
