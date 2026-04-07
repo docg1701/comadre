@@ -482,7 +482,7 @@ Caddy automatically load-balances across all healthy replicas via Docker DNS rou
 | RAM      | 6 GB      | 12 GB      | 18 GB      |
 | Disk     | Shared (models + voices volumes) | Same | Same |
 
-Memory breakdown per replica: Kokoro ONNX model ~3.4 GB + Qwen3 subprocess ~1.5 GB peak + Python overhead. The 6 GB limit provides ~500 MB headroom. Qwen3 has a 4-core sweet spot — beyond 4 cores per replica, diminishing returns (<2% gain).
+Memory breakdown per replica: Python process with Kokoro loaded ~4.2 GB peak RSS + Qwen3 subprocess ~1.5 GB peak during inference = ~5.7 GB combined. The 6 GB limit provides ~300 MB headroom. Qwen3 has a 4-core sweet spot — beyond 4 cores per replica, diminishing returns (<2% gain).
 
 ### What is shared vs per-instance
 
@@ -500,3 +500,6 @@ Memory breakdown per replica: Kokoro ONNX model ~3.4 GB + Qwen3 subprocess ~1.5 
 - **Rate limiting is per-instance.** With 2 replicas, a client can send 60 req/min (30 per replica) instead of 30. For strict global rate limiting, an external store (Redis) would be needed.
 - **Queue depth is per-instance.** The `/health` endpoint reports the queue depth of whichever replica handles the request. For cluster-wide monitoring, check all replicas or use centralized logging.
 - **Audio cleanup cron** runs `docker compose exec` which targets one replica. Since the audio volume is shared, this is sufficient.
+- **All replicas restart simultaneously.** The daily restart cron (`docker compose up -d --no-build`) and key rotation script recreate all replicas at once. Each replica loads ~3.4 GB of models on startup, causing a memory spike of `N * 3.4 GB`. With 2+ replicas on a VPS with limited RAM, this can trigger OOM kills. To mitigate, restart replicas individually: `for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 120; done`.
+- **First deployment with replicas > 1** should start with `replicas: 1` to download and cache models in the shared volume. After models are cached, scale up. Concurrent downloads from multiple replicas to the same temp file can corrupt the model.
+- **Caddy blocks on all replicas healthy.** The `depends_on: condition: service_healthy` in compose.yaml means Caddy waits for every replica to pass its healthcheck before starting. If any single replica fails (e.g., OOM during concurrent model loading), Caddy never starts and the entire service is unreachable. For multi-replica deployments, consider changing to `condition: service_started`.

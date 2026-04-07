@@ -264,7 +264,8 @@
           cd ~/comadre &&
           docker compose exec -T tts-service find /audio -type f
           \( -name '*.ogg' -o -name '*.wav' \)
-          -mmin +1440 -delete 2>/dev/null || true
+          -mmin +1440 -delete 2>/dev/null
+          || logger -t comadre-cleanup 'audio cleanup failed — service may be down'
 
     # =========================================================================
     # Health Check

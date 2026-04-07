@@ -25,11 +25,14 @@ Kokoro uses voice style vectors stored as numpy arrays. Two sources:
 To add a custom Kokoro voice:
 
 ```bash
-# Copy the .npy file into the volume
-docker compose cp joao.npy tts-service:/voices/kokoro/
+# Copy the .npy file into the shared volume via a helper container
+docker run --rm -v comadre-voices:/voices -v "$(pwd)":/src:ro \
+  alpine cp /src/joao.npy /voices/kokoro/
 ```
 
 The voice is immediately available as `kokoro/joao`.
+
+For bulk deployment, use the `deploy-voices.yml` Ansible playbook (see [Deploy via Ansible](#deploy-via-ansible) below).
 
 ### Qwen3 Voices (.wav files)
 
@@ -38,8 +41,9 @@ Qwen3 uses reference audio files (3-10 seconds, WAV format) for voice cloning vi
 To add a Qwen3 voice:
 
 ```bash
-# Copy the reference WAV into the volume
-docker compose cp galvani.wav tts-service:/voices/qwen/
+# Copy the reference WAV into the shared volume via a helper container
+docker run --rm -v comadre-voices:/voices -v "$(pwd)":/src:ro \
+  alpine cp /src/galvani.wav /voices/qwen/
 ```
 
 The voice is immediately available as `qwen/galvani`.
