@@ -1,0 +1,238 @@
+request_id,timestamp,text_length,text_category,status_code,latency,response_bytes,audio_valid,audio_duration,queue_depth,error
+3,1775600066.687,42,short,200,1.745,8059,True,2.55,20,
+19,1775600066.691,195,medium,200,8.898,38732,True,12.61,20,
+14,1775600066.690,35,short,200,10.583,8015,True,2.52,20,
+18,1775600066.691,213,medium,200,17.702,39515,True,12.71,20,
+1,1775600066.686,35,short,200,19.311,8015,True,2.52,20,
+10,1775600066.689,460,long,200,33.893,81527,True,26.51,20,
+7,1775600066.688,194,medium,200,40.798,37988,True,12.31,20,
+8,1775600066.688,192,medium,200,47.220,34913,True,11.31,20,
+4,1775600066.687,37,short,200,49.028,8616,True,2.74,20,
+5,1775600066.687,213,medium,200,56.516,39515,True,12.71,20,
+0,1775600066.686,53,short,200,58.499,9973,True,3.21,20,
+30,1775600125.185,37,short,429,0.006,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+31,1775600125.191,213,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+32,1775600125.194,195,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+33,1775600125.197,194,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+34,1775600125.200,192,medium,429,0.005,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+35,1775600125.205,207,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+36,1775600125.208,460,long,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+37,1775600125.211,476,long,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+38,1775600125.214,482,long,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+39,1775600125.217,53,short,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+40,1775600125.220,35,short,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+41,1775600125.224,36,short,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+42,1775600125.227,42,short,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+43,1775600125.230,37,short,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+44,1775600125.233,213,medium,429,0.008,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+45,1775600125.241,195,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+46,1775600125.244,194,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+47,1775600125.247,192,medium,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+48,1775600125.250,207,medium,429,0.022,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+49,1775600125.272,460,long,429,0.004,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+50,1775600125.276,476,long,429,0.005,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+51,1775600125.281,482,long,429,0.012,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+52,1775600125.292,53,short,429,0.005,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+53,1775600125.297,35,short,429,0.003,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+54,1775600125.300,36,short,429,0.013,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+55,1775600125.313,42,short,429,0.061,122,False,0.00,20,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+56,1775600125.374,37,short,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+57,1775600125.382,213,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+58,1775600125.386,195,medium,429,0.007,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+59,1775600125.393,194,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+60,1775600125.396,192,medium,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+61,1775600125.404,207,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+62,1775600125.407,460,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+63,1775600125.410,476,long,429,0.006,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+64,1775600125.416,482,long,429,0.060,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+65,1775600125.477,53,short,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+66,1775600125.481,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+67,1775600125.484,36,short,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+68,1775600125.492,42,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+69,1775600125.496,37,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+70,1775600125.500,213,medium,429,0.006,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+71,1775600125.506,195,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+72,1775600125.510,194,medium,429,0.061,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+73,1775600125.571,192,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+74,1775600125.575,207,medium,429,0.006,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+75,1775600125.582,460,long,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+76,1775600125.585,476,long,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+77,1775600125.589,482,long,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+78,1775600125.597,53,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+79,1775600125.600,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+80,1775600125.603,36,short,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+81,1775600125.609,42,short,429,0.062,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+82,1775600125.671,37,short,429,0.006,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+83,1775600125.676,213,medium,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+84,1775600125.684,195,medium,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+85,1775600125.689,194,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+86,1775600125.692,192,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+87,1775600125.696,207,medium,429,0.010,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+88,1775600125.706,460,long,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+89,1775600125.710,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+90,1775600125.713,482,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+91,1775600125.716,53,short,429,0.058,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+92,1775600125.774,35,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+93,1775600125.778,36,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+94,1775600125.782,42,short,429,0.012,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+95,1775600125.793,37,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+96,1775600125.796,213,medium,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+97,1775600125.805,195,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+98,1775600125.808,194,medium,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+99,1775600125.813,192,medium,429,0.057,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+100,1775600125.870,207,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+101,1775600125.874,460,long,429,0.006,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+102,1775600125.881,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+103,1775600125.884,482,long,429,0.009,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+104,1775600125.893,53,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+105,1775600125.896,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+106,1775600125.899,36,short,429,0.006,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+107,1775600125.905,42,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+108,1775600125.908,37,short,429,0.013,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+109,1775600125.921,213,medium,429,0.061,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+110,1775600125.982,195,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+111,1775600125.986,194,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+112,1775600125.990,192,medium,429,0.007,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+113,1775600125.997,207,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+114,1775600126.001,460,long,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+115,1775600126.009,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+116,1775600126.012,482,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+117,1775600126.016,53,short,429,0.062,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+118,1775600126.078,35,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+119,1775600126.082,36,short,429,0.007,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+120,1775600126.089,42,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+121,1775600126.093,37,short,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+122,1775600126.101,213,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+123,1775600126.104,195,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+124,1775600126.107,194,medium,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+125,1775600126.113,192,medium,429,0.057,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+126,1775600126.170,207,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+127,1775600126.174,460,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+128,1775600126.178,476,long,429,0.007,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+129,1775600126.185,482,long,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+130,1775600126.189,53,short,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+131,1775600126.197,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+132,1775600126.200,36,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+133,1775600126.204,42,short,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+134,1775600126.209,37,short,429,0.062,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+135,1775600126.270,213,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+136,1775600126.274,195,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+137,1775600126.278,194,medium,429,0.007,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+138,1775600126.285,192,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+139,1775600126.288,207,medium,429,0.009,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+140,1775600126.297,460,long,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+141,1775600126.305,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+142,1775600126.308,482,long,429,0.062,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+143,1775600126.370,53,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+144,1775600126.375,35,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+145,1775600126.379,36,short,429,0.018,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+146,1775600126.397,42,short,429,0.008,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+147,1775600126.405,37,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+148,1775600126.408,213,medium,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+149,1775600126.413,195,medium,429,0.057,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+150,1775600126.471,194,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+151,1775600126.474,192,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+152,1775600126.478,207,medium,429,0.012,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+153,1775600126.490,460,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+154,1775600126.493,476,long,429,0.013,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+155,1775600126.506,482,long,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+156,1775600126.510,53,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+157,1775600126.514,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+158,1775600126.517,36,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+159,1775600126.520,42,short,429,0.053,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+160,1775600126.573,37,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+161,1775600126.577,213,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+162,1775600126.581,195,medium,429,0.005,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+163,1775600126.586,194,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+164,1775600126.589,192,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+165,1775600126.592,207,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+166,1775600126.596,460,long,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+167,1775600126.600,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+168,1775600126.603,482,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+169,1775600126.606,53,short,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+170,1775600126.610,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+171,1775600126.613,36,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+172,1775600126.616,42,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+173,1775600126.619,37,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+174,1775600126.622,213,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+175,1775600126.625,195,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+176,1775600126.628,194,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+177,1775600126.631,192,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+178,1775600126.635,207,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+179,1775600126.638,460,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+180,1775600126.641,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+181,1775600126.644,482,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+182,1775600126.647,53,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+183,1775600126.650,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+184,1775600126.653,36,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+185,1775600126.656,42,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+186,1775600126.660,37,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+187,1775600126.663,213,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+188,1775600126.665,195,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+189,1775600126.668,194,medium,429,0.004,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+190,1775600126.672,192,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+191,1775600126.675,207,medium,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+192,1775600126.679,460,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+193,1775600126.682,476,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+194,1775600126.685,482,long,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+195,1775600126.688,53,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+196,1775600126.690,35,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+197,1775600126.693,36,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+198,1775600126.696,42,short,429,0.003,122,False,0.00,19,"{""error"":{""message"":""Rate limit exceeded"",""type"":""rate_limit_error"",""hint"":""Too many requests. Try again in 60 seconds.""}}"
+2,1775600066.687,36,short,200,60.297,7489,True,2.35,19,
+6,1775600066.688,195,medium,200,67.452,38732,True,12.61,20,
+9,1775600066.689,207,medium,200,74.805,40018,True,13.01,20,
+12,1775600066.689,482,long,200,89.140,81352,True,26.51,20,
+11,1775600066.689,476,long,200,103.914,84198,True,27.41,20,
+13,1775600066.690,53,short,200,105.965,9973,True,3.21,20,
+17,1775600066.690,37,short,200,107.704,8616,True,2.74,20,
+16,1775600066.690,42,short,200,109.480,8059,True,2.55,20,
+15,1775600066.690,36,short,200,111.090,7489,True,2.35,20,
+20,1775600068.432,194,medium,200,116.324,37988,True,12.31,20,
+21,1775600075.589,192,medium,200,115.641,34913,True,11.31,20,
+22,1775600077.273,207,medium,200,121.312,40018,True,13.01,20,
+23,1775600084.393,460,long,200,128.529,81527,True,26.51,19,
+24,1775600085.998,476,long,0,130.002,0,False,0.00,20,timeout
+25,1775600100.582,482,long,0,130.005,0,False,0.00,20,timeout
+26,1775600107.486,53,short,0,130.002,0,False,0.00,21,timeout
+27,1775600113.908,35,short,0,130.002,0,False,0.00,21,timeout
+28,1775600115.715,36,short,0,130.002,0,False,0.00,20,timeout
+29,1775600123.204,42,short,200,125.773,8059,True,2.55,20,
+199,1775600126.699,37,short,200,124.020,8616,True,2.74,20,
+200,1775600126.983,213,medium,0,130.003,0,False,0.00,20,timeout
+201,1775600134.140,195,medium,0,130.003,0,False,0.00,20,timeout
+202,1775600141.493,194,medium,0,130.002,0,False,0.00,20,timeout
+203,1775600155.829,192,medium,200,122.777,34913,True,11.31,20,
+204,1775600170.603,207,medium,200,115.392,40018,True,13.01,20,
+205,1775600172.655,460,long,200,127.555,81527,True,26.51,19,
+206,1775600174.395,476,long,0,130.002,0,False,0.00,20,timeout
+207,1775600176.171,482,long,0,130.002,0,False,0.00,21,timeout
+208,1775600177.780,53,short,0,130.002,0,False,0.00,22,timeout
+209,1775600184.756,35,short,0,130.002,0,False,0.00,23,timeout
+210,1775600191.229,36,short,0,130.002,0,False,0.00,23,timeout
+211,1775600198.585,42,short,0,130.003,0,False,0.00,24,timeout
+212,1775600212.922,37,short,200,125.278,8616,True,2.74,20,
+213,1775600216.000,213,medium,200,129.428,39515,True,12.71,20,
+214,1775600230.587,195,medium,200,121.966,38732,True,12.61,20,
+215,1775600237.488,194,medium,200,121.970,37988,True,12.31,20,
+216,1775600243.910,192,medium,200,122.216,34913,True,11.31,20,
+217,1775600245.717,207,medium,200,127.776,40018,True,13.01,20,
+218,1775600248.976,460,long,0,130.007,0,False,0.00,20,timeout
+219,1775600250.719,476,long,0,130.003,0,False,0.00,20,timeout
+220,1775600256.986,482,long,0,130.011,0,False,0.00,20,timeout
+221,1775600264.143,53,short,0,130.038,0,False,0.00,20,timeout
+222,1775600271.495,35,short,0,130.012,0,False,0.00,20,timeout
+223,1775600278.606,36,short,0,130.012,0,False,0.00,20,timeout
+224,1775600285.995,42,short,0,130.009,0,False,0.00,20,timeout
+225,1775600300.210,37,short,200,125.098,8616,True,2.74,20,
+226,1775600304.397,213,medium,200,128.034,39515,True,12.71,20,
+227,1775600306.173,195,medium,0,130.052,0,False,0.00,20,timeout
+228,1775600307.782,194,medium,0,130.006,0,False,0.00,20,timeout
+229,1775600314.758,192,medium,0,130.013,0,False,0.00,20,timeout
+230,1775600321.232,207,medium,0,130.012,0,False,0.00,20,timeout
+231,1775600328.589,460,long,0,130.013,0,False,0.00,20,timeout
+232,1775600338.200,476,long,0,130.012,0,False,0.00,20,timeout
+233,1775600345.428,482,long,0,130.010,0,False,0.00,20,timeout
+234,1775600352.553,53,short,0,130.010,0,False,0.00,20,timeout
+235,1775600359.458,35,short,0,130.009,0,False,0.00,20,timeout
+236,1775600366.126,36,short,0,130.008,0,False,0.00,20,timeout
