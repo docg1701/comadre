@@ -24,7 +24,7 @@ uv run pre-commit run --all-files  # All quality checks
 ## Architecture — What You Must Know
 
 - **Dual-engine + filesystem voice discovery**: voice param format is `engine/name` (e.g. `kokoro/pm_santa`, `qwen/galvani`). Kokoro voices: `.npy` files in `/voices/kokoro/` or built-in from `.npz`. Qwen3 voices: `.wav` files in `/voices/qwen/`. Drop a file → available immediately, no restart. See `docs/voice-management.md`.
-- **Single FIFO queue** per instance (`asyncio.Lock`). No multi-worker model. Scale horizontally by increasing `deploy.replicas` in `compose.yaml` — Caddy load-balances via Docker DNS round-robin.
+- **Single FIFO queue** per instance (`asyncio.Lock`). No multi-worker model. Scale horizontally by increasing `deploy.replicas` in `compose.yaml` — Caddy load-balances across replicas via the `dynamic a` upstream resolver in `Caddyfile` (re-resolves Docker DNS every 5s, round-robin policy).
 - **Engine-specific preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
 - **Engine-specific post-processing**: Kokoro → radio_warm pipeline. Qwen3 → whatsapp-subtle pipeline. Both output OGG Opus.
 - **Siglas**: Kokoro handles them natively via espeak-ng pt_extra dictionary (67 entries, 34/34 verified). Qwen3 uses spaced format (`C N P J`).

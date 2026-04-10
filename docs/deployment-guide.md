@@ -332,7 +332,7 @@ DOMAIN=tts.example.com
 
 Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certificate. Clients must accept self-signed certs or use `--insecure`/`-k` with curl.
 
-**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` via Docker internal DNS with gzip compression and JSON logging to stdout (captured by Docker log driver). Caddy is the sole external access point — the TTS service is not exposed on the host network. With multiple replicas, Docker DNS automatically round-robins across all healthy containers.
+**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` via Docker internal DNS with gzip compression and JSON logging to stdout (captured by Docker log driver). Caddy is the sole external access point — the TTS service is not exposed on the host network. For multi-replica deployments, the Caddyfile uses the `dynamic a` upstream resolver to re-query Docker DNS every 5 seconds and load-balance across all healthy replica IPs with the `round_robin` policy. Plain `reverse_proxy host:port` resolves DNS only once at startup and would pin all traffic to a single replica — `dynamic a` is required.
 
 ## API Key Rotation
 
@@ -472,7 +472,7 @@ cd ~/comadre
 docker compose up -d --build
 ```
 
-Caddy automatically load-balances across all healthy replicas via Docker DNS round-robin. No Caddy configuration changes needed.
+Caddy load-balances across all healthy replicas using the `dynamic a` upstream resolver in `deploy/caddy/Caddyfile`, which re-queries Docker DNS every 5 seconds and applies the `round_robin` policy. No Caddy configuration changes are needed when adding or removing replicas — only the `replicas` field in `compose.yaml`.
 
 ### Resource requirements per replica
 

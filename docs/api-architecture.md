@@ -328,7 +328,7 @@ services:
     restart: unless-stopped
 ```
 
-Two services: tts-service (TTS API, internal port 8000) + caddy (HTTPS reverse proxy, ports 80/443). All external access goes through Caddy. Scale by changing `replicas` — Caddy load-balances across replicas via Docker DNS round-robin. No Redis, no workers.
+Two services: tts-service (TTS API, internal port 8000) + caddy (HTTPS reverse proxy, ports 80/443). All external access goes through Caddy. Scale by changing `replicas` — Caddy load-balances across replicas via the `dynamic a` upstream resolver in `deploy/caddy/Caddyfile` (re-resolves Docker DNS every 5s, round-robin policy). No Redis, no workers.
 
 ## Character Limits
 
