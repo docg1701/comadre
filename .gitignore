@@ -50,8 +50,9 @@ Thumbs.db
 # Logs
 *.log
 
-# Load test results
+# Load test results (loadtest.py, capacity_test.py output dirs)
 results/
+results-*/
 
 # Audio test files
 *.wav
@@ -65,4 +66,3 @@ models/
 *.onnx
 *.bin
 *.safetensors
-results-capacity/
