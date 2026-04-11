@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
-**Comadre Manda Audio Direto, Rapido e Eficiente**
+**Comadre Manda Áudio Direto, Rápido e Eficiente**
 
 Self-hosted dual-engine TTS API optimized for Brazilian Portuguese. Kokoro fp32 for fast built-in voices with perfect sigla pronunciation. Qwen3-TTS C++ Q8_0 for voice cloning. OpenAI-compatible endpoint, CPU-only, network-isolated.
 
