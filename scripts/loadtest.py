@@ -720,7 +720,11 @@ async def main() -> None:
         default="all",
         help="Scenario to run: " + ", ".join(["all", *SCENARIOS]),
     )
-    parser.add_argument("--output", default="results", help="Output directory")
+    parser.add_argument(
+        "--output",
+        default="tests/results/loadtest",
+        help="Output directory (default: tests/results/loadtest)",
+    )
     parser.add_argument(
         "--insecure",
         action="store_true",

@@ -51,8 +51,7 @@ Thumbs.db
 *.log
 
 # Load test results (loadtest.py, capacity_test.py output dirs)
-results/
-results-*/
+tests/results/
 
 # Audio test files
 *.wav

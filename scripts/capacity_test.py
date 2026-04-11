@@ -8,8 +8,9 @@ with ElevenLabs cost comparison.
 Usage:
     uv run --group test scripts/capacity_test.py \
         --url https://YOUR_VPS_DOMAIN \
-        --api-key <key> \
-        --output results-capacity
+        --api-key <key>
+
+Default output directory: tests/results/capacity (override with --output).
 """
 
 from __future__ import annotations
@@ -612,8 +613,8 @@ async def main() -> None:
     )
     parser.add_argument(
         "--output",
-        default="results-capacity",
-        help="Output directory",
+        default="tests/results/capacity",
+        help="Output directory (default: tests/results/capacity)",
     )
     parser.add_argument(
         "--tiers",
