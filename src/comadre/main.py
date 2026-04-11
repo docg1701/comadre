@@ -21,7 +21,7 @@ from comadre.download import ensure_kokoro_models, ensure_qwen3_models
 from comadre.exceptions import RateLimitError, register_exception_handlers
 from comadre.health import build_health_response
 from comadre.logging import get_logger, setup_logging
-from comadre.rate_limit import limiter
+from comadre.rate_limit import get_client_ip, limiter
 from comadre.service import EngineRouter, KokoroEngine, QwenEngine
 
 logger = get_logger("startup")
@@ -213,9 +213,7 @@ def create_app() -> FastAPI:
         start = time.monotonic()
         response: Response = await call_next(request)
         duration = time.monotonic() - start
-        client_ip = request.headers.get(
-            "x-forwarded-for", request.client.host if request.client else "-"
-        )
+        client_ip = get_client_ip(request)
         access_logger.info(
             "%s %s %s %d %.1fs",
             client_ip,
