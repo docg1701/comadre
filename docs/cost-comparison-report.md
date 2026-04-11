@@ -154,17 +154,17 @@ This table maps a customer's sustained req/min to the recommended Comadre config
 | Customer profile | Sustained req/min | Audios/month | Audio minutes/month | Comadre config | Comadre cost/mo | AI33.pro Edge | AI33.pro EL/MM | ElevenLabs Scale+ |
 |---|---|---|---|---|---|---|---|---|
 | Micro chatbot | 5 | 52,800 | 6,811 | 1 replica × 4 CPU | **~$7** | $14 | $26 | $1,139 |
-| Pequeno (small) | 10 | 105,600 | 13,622 | 1 replica × 4 CPU | **~$7** | $28 | $51 | $2,308 |
-| Em crescimento (growing) | 13 (1r ceiling) | 137,280 | 17,709 | 1 replica × 4 CPU | **~$7** | $36 | $66 | $3,009 |
-| Grande operação (large) | 20 (2r ceiling) | 211,200 | 27,245 | **2 replicas × 4 CPU** | **~$21** | $56 | $102 | $4,646 |
-| Tier alto (high) | 28 | 295,680 | 38,143 | 3 replicas × 4 CPU (extrapolated) | **~$30–45** | $78 | $143 | $6,516 |
-| Tier muito alto (very high) | 38 | 401,280 | 51,765 | 4 replicas × 4 CPU (extrapolated) | **~$45** | $106 | $194 | $8,854 |
+| Small business | 10 | 105,600 | 13,622 | 1 replica × 4 CPU | **~$7** | $28 | $51 | $2,308 |
+| Growing business | 13 (1r ceiling) | 137,280 | 17,709 | 1 replica × 4 CPU | **~$7** | $36 | $66 | $3,009 |
+| Large operation | 20 (2r ceiling) | 211,200 | 27,245 | **2 replicas × 4 CPU** | **~$21** | $56 | $102 | $4,646 |
+| High-volume | 28 | 295,680 | 38,143 | 3 replicas × 4 CPU (extrapolated) | **~$30–45** | $78 | $143 | $6,516 |
+| Very-high-volume | 38 | 401,280 | 51,765 | 4 replicas × 4 CPU (extrapolated) | **~$45** | $106 | $194 | $8,854 |
 
 The 1- and 2-replica rows are **measured** (1,830 audios verified end-to-end on 2026-04-11). The 3- and 4-replica rows are **extrapolated** from the linearity observed between 1r and 2r (each additional 4-CPU replica adds ~7 req/min of sustained capacity). The recommended scaling topology is **one larger VPS with N replicas**, not multiple small VPSs each running one replica — intra-host scaling with `least_conn` validated 2026-04-11 makes single-host multi-replica deployments operationally simpler and slightly cheaper than the multi-VPS approach.
 
 ### Cost per minute of audio
 
-| Platform | Cost/min at "Pequeno" (10 req/min, ~227 hours audio/mo) | Cost/min at "Grande operação" (20 req/min, ~454 hours audio/mo) | Pricing model |
+| Platform | Cost/min at "Small business" (10 req/min, ~227 hours audio/mo) | Cost/min at "Large operation" (20 req/min, ~454 hours audio/mo) | Pricing model |
 |----------|-------------|-------------|-------|
 | **Comadre 1 replica** | **$0.00051/min** | n/a (above 1r ceiling) | Fixed VPS |
 | **Comadre 2 replicas** | n/a (below 2r utilization) | **$0.00077/min** | Fixed VPS |
@@ -172,7 +172,7 @@ The 1- and 2-replica rows are **measured** (1,830 audios verified end-to-end on 
 | AI33.pro EL/MM | $0.00375/min | $0.00375/min | Per-credit |
 | ElevenLabs Scale+overage | ~$0.169/min | ~$0.171/min | Per-character |
 
-At the "Grande operação" tier (20 req/min sustained, ~454 hours of audio per month), Comadre on a single 8-CPU VPS is **~5x cheaper than AI33.pro Edge tier**, **~10x cheaper than AI33.pro EL/MM tier**, and **~220x cheaper than ElevenLabs**. Above this tier the gap widens further because Comadre's marginal cost is the next VPS upgrade tier (~$15–25 to double capacity), while AI33.pro and ElevenLabs scale linearly with consumption forever.
+At the "Large operation" tier (20 req/min sustained, ~454 hours of audio per month), Comadre on a single 8-CPU VPS is **~5x cheaper than AI33.pro Edge tier**, **~10x cheaper than AI33.pro EL/MM tier**, and **~220x cheaper than ElevenLabs**. Above this tier the gap widens further because Comadre's marginal cost is the next VPS upgrade tier (~$15–25 to double capacity), while AI33.pro and ElevenLabs scale linearly with consumption forever.
 
 ### Why the Comadre cost stays flat
 

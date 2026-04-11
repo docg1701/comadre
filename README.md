@@ -32,7 +32,7 @@ Comadre exists for one reason: **scaling WhatsApp audio production without payin
 | LGPD / data privacy | Inherent — audio never leaves your server | Same |
 | Per-minute cost at saturation | **$0.00051/min** | **$0.00077/min** |
 
-**Cost comparison at the "Grande operação" tier (~211,000 audios/month, ~454 hours of audio):**
+**Cost comparison at the "Large operation" tier (~211,000 audios/month, ~454 hours of audio):**
 
 | Platform | Monthly cost | Pricing model |
 |---|---|---|
