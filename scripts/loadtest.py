@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import contextlib
 import csv
+import random
 import statistics
 import subprocess
 import sys
@@ -27,7 +28,10 @@ from pathlib import Path
 import httpx
 
 # ---------------------------------------------------------------------------
-# Text corpus — realistic BR-PT chatbot messages, grouped by size
+# Text corpus — realistic BR-PT chatbot messages, grouped by size.
+# Topics intentionally varied (orders, shipping, payment, returns, support,
+# scheduling, complaints, fidelity, NF-e) so adjacent random picks are
+# unlikely to share vocabulary or theme.
 # ---------------------------------------------------------------------------
 
 TEXTS_SHORT = [
@@ -36,6 +40,9 @@ TEXTS_SHORT = [
     "Pode me enviar o cardápio por favor?",
     "Qual o prazo de entrega para minha região?",
     "Bom dia! Gostaria de fazer um pedido.",
+    "Vocês têm desconto para pagamento à vista?",
+    "Preciso cancelar meu pedido, como faço?",
+    "Olá! Vocês aceitam pagamento por Pix nesta loja?",
 ]
 
 TEXTS_MEDIUM = [
@@ -63,6 +70,21 @@ TEXTS_MEDIUM = [
         "Vi no site de vocês que tem uma promoção de frete grátis para compras "
         "acima de cem reais. Isso vale para todo o Brasil ou só para algumas "
         "regiões? Quero aproveitar mas preciso ter certeza antes de finalizar."
+    ),
+    (
+        "Recebi o produto hoje mas percebi que veio um item a menos do que tinha "
+        "no meu pedido original. Como faço para resolver isso? Tirei foto da "
+        "embalagem aberta e tenho o comprovante completo da compra."
+    ),
+    (
+        "Boa noite! Estou tentando gerar o boleto bancário pelo aplicativo de "
+        "vocês mas aparece uma mensagem de erro estranha toda vez que clico em "
+        "finalizar. Já reinstalei o app e o problema continua igual."
+    ),
+    (
+        "Bom dia! Sou profissional autônomo e preciso de uma nota fiscal "
+        "eletrônica do meu último pedido. Vocês emitem direto pelo sistema da "
+        "loja ou tenho que solicitar pelo email do financeiro?"
     ),
 ]
 
@@ -99,19 +121,69 @@ TEXTS_LONG = [
         " com imagens explicativas. Agradeço desde já pela atenção"
         " e aguardo o retorno de vocês."
     ),
+    (
+        "Boa tarde! Comprei um equipamento de cozinha pelo site na"
+        " semana passada, mas quando chegou estava com a embalagem"
+        " amassada e o produto não funciona corretamente. O motor"
+        " faz um barulho estranho e desliga sozinho depois de poucos"
+        " segundos. Já tentei o suporte técnico mas só recebi"
+        " respostas automáticas. Gostaria de solicitar a troca"
+        " completa por um produto novo, ou caso não seja possível,"
+        " o reembolso integral do valor pago."
+    ),
+    (
+        "Olá! Sou cliente desde dois mil e vinte e dois e sempre"
+        " tive uma experiência muito boa com vocês. Hoje estou"
+        " entrando em contato porque preciso de uma orientação"
+        " importante sobre o programa de fidelidade. Acumulei vários"
+        " pontos nos últimos meses mas não consigo ver o saldo"
+        " atualizado no aplicativo. Já desinstalei e instalei"
+        " novamente, fiz login com o email correto, mas continua"
+        " mostrando zero pontos. Pode me ajudar a verificar?"
+    ),
+    (
+        "Bom dia! Estou organizando o estoque da minha pequena loja"
+        " e gostaria de fazer um pedido grande de produtos para"
+        " revenda. Tenho interesse em comprar pelo menos cinquenta"
+        " unidades de três modelos diferentes. Vocês trabalham com"
+        " tabela de preços para revendedores ou descontos por"
+        " volume? Também queria saber sobre prazo de entrega e se"
+        " emitem nota fiscal com meu CNPJ. Posso enviar a lista"
+        " completa pelo WhatsApp?"
+    ),
+    (
+        "Boa noite, tudo bem? Comprei um presente pelo site na"
+        " sexta-feira passada para o aniversário da minha mãe que"
+        " será no próximo sábado. Pedi entrega expressa e paguei o"
+        " frete adicional, mas até agora o status do pedido continua"
+        " mostrando aguardando envio. Estou ficando preocupada"
+        " porque o aniversário está chegando e não quero ficar sem"
+        " o presente. Pode verificar com urgência o que está"
+        " acontecendo e me dar uma previsão real?"
+    ),
+    (
+        "Olá! Tenho uma dúvida importante sobre a garantia do"
+        " produto que comprei há aproximadamente seis meses. Comecei"
+        " a notar que ele apresenta falhas intermitentes que não"
+        " tinha antes. Às vezes funciona normalmente, outras vezes"
+        " simplesmente para de responder. Tentei seguir as instruções"
+        " do manual e do site mas o problema persiste. A garantia"
+        " ainda cobre esse tipo de defeito? Como faço para acionar"
+        " o serviço técnico autorizado?"
+    ),
 ]
 
 ALL_TEXTS = TEXTS_SHORT + TEXTS_MEDIUM + TEXTS_LONG
 
 
-def pick_text(category: str, index: int) -> str:
+def pick_text(rng: random.Random, category: str) -> str:
     if category == "short":
-        return TEXTS_SHORT[index % len(TEXTS_SHORT)]
+        return rng.choice(TEXTS_SHORT)
     if category == "medium":
-        return TEXTS_MEDIUM[index % len(TEXTS_MEDIUM)]
+        return rng.choice(TEXTS_MEDIUM)
     if category == "long":
-        return TEXTS_LONG[index % len(TEXTS_LONG)]
-    return ALL_TEXTS[index % len(ALL_TEXTS)]
+        return rng.choice(TEXTS_LONG)
+    return rng.choice(ALL_TEXTS)
 
 
 def text_category(text: str) -> str:
@@ -307,25 +379,27 @@ async def worker(
     stop: asyncio.Event,
     audio_dir: Path,
     live: LiveState,
+    rng: random.Random,
 ) -> None:
     headers = {"Authorization": f"Bearer {api_key}"}
 
     while not stop.is_set():
+        # Take req_id and the text under the same lock so the rng draw
+        # sequence is deterministic regardless of which worker is racing.
         async with lock:
             req_id = counter["n"]
+            if config.request_count and req_id >= config.request_count:
+                break
             counter["n"] += 1
 
-        if config.request_count and req_id >= config.request_count:
-            break
-
-        if config.text_profile == "cycle":
-            cycle_idx = req_id % 3
-            category = ["short", "medium", "long"][cycle_idx]
-            text = pick_text(category, req_id // 3)
-        elif config.text_profile == "medium":
-            text = pick_text("medium", req_id)
-        else:
-            text = pick_text("mixed", req_id)
+            if config.text_profile == "cycle":
+                cycle_idx = req_id % 3
+                category = ["short", "medium", "long"][cycle_idx]
+                text = pick_text(rng, category)
+            elif config.text_profile == "medium":
+                text = pick_text(rng, "medium")
+            else:
+                text = pick_text(rng, "mixed")
 
         cat = text_category(text)
         t0 = time.time()
@@ -392,6 +466,7 @@ async def run_scenario(
     api_key: str,
     voice: str,
     output_dir: Path,
+    rng: random.Random,
     *,
     insecure: bool = False,
 ) -> ScenarioResults:
@@ -454,6 +529,7 @@ async def run_scenario(
                     stop,
                     audio_dir,
                     live,
+                    rng,
                 )
             )
             for i in range(config.concurrency)
@@ -650,7 +726,14 @@ async def main() -> None:
         action="store_true",
         help="Skip TLS certificate verification (like curl -k)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible workload (default: 42)",
+    )
     args = parser.parse_args()
+    rng = random.Random(args.seed)
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -682,6 +765,7 @@ async def main() -> None:
     print(f"Comadre Load Test — {args.url}")
     print(f"Voice: {args.voice}")
     print(f"Scenarios: {', '.join(s.name for s in to_run)}")
+    print(f"Seed: {args.seed}")
     print(f"Output: {output_dir.resolve()}")
 
     # Quick connectivity check
@@ -706,6 +790,7 @@ async def main() -> None:
             args.api_key,
             args.voice,
             output_dir,
+            rng,
             insecure=args.insecure,
         )
 
@@ -721,6 +806,7 @@ async def main() -> None:
     full_report = "# Comadre Load Test Results\n\n"
     full_report += f"- URL: {args.url}\n"
     full_report += f"- Voice: {args.voice}\n"
+    full_report += f"- Seed: {args.seed}\n"
     full_report += f"- Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     full_report += "\n".join(all_summaries)
 

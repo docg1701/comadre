@@ -220,7 +220,7 @@ Caddy (reverse proxy + load balancer)
 tts.example.com {
     reverse_proxy {
         to vps1.internal:8000 vps2.internal:8000
-        lb_policy round_robin
+        lb_policy least_conn
         health_uri /health
         health_interval 30s
     }

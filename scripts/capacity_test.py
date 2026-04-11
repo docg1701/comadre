@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import contextlib
 import csv
+import random
 import statistics
 import subprocess
 import sys
@@ -29,17 +30,23 @@ import httpx
 
 # ---------------------------------------------------------------------------
 # Text corpus — BR-PT chatbot messages producing 5-12s audio
-# Calibrated from baseline: ~100 chars → ~5s, ~200 chars → ~12s
+# Calibrated from baseline: ~60 chars → ~5s, ~200 chars → ~12s
+# Topics intentionally varied (orders, shipping, payment methods, returns,
+# scheduling, complaints, fidelity, NF-e) so adjacent random picks are
+# unlikely to share vocabulary or theme.
 # ---------------------------------------------------------------------------
 
 TEXTS = [
-    # ~5-6s audio (80-110 chars)
-    "Oi, bom dia! Gostaria de saber o horário de funcionamento da loja hoje.",
-    "Obrigado pela ajuda! Vou seguir as instruções que você me passou.",
-    "Pode me informar o valor do frete para o CEP três cinco zero?",
-    "Quero cancelar meu pedido. O número é sete oito nove dois.",
+    # ~5-6s audio (55-75 chars) — short queries
+    "Oi! Qual o horário de funcionamento da loja de vocês hoje?",
+    "Obrigado pela ajuda! Vou seguir as instruções que você passou.",
+    "Pode me informar o valor do frete para o CEP três cinco quatro?",
+    "Quero cancelar meu pedido número sete oito nove dois cinco.",
     "Boa tarde! Vocês aceitam pagamento por Pix? Qual a chave?",
-    # ~8-10s audio (130-170 chars)
+    "Como faço pra rastrear minha encomenda pelo site de vocês?",
+    "Olá, tudo bem? Vocês têm alguma loja física em Belo Horizonte?",
+    "Tem algum cupom de desconto disponível para clientes novos?",
+    # ~8-10s audio (130-150 chars) — medium queries
     (
         "Olá! Fiz um pedido na semana passada e ainda não recebi."
         " Poderia verificar o status do meu pedido? O número é"
@@ -60,7 +67,27 @@ TEXTS = [
         " algumas dúvidas. Quais são as formas de pagamento"
         " aceitas? Tem desconto à vista?"
     ),
-    # ~10-12s audio (170-210 chars)
+    (
+        "Recebi o produto hoje e percebi que veio um item a menos"
+        " do que tinha pedido. Como faço para resolver isso?"
+        " Tenho o comprovante do pedido."
+    ),
+    (
+        "Boa noite! Comprei pelo site mas não consigo gerar o"
+        " boleto na hora do pagamento. Aparece uma mensagem de"
+        " erro estranha. Já tentei várias vezes."
+    ),
+    (
+        "Olá! Gostaria de marcar uma visita técnica para a"
+        " semana que vem. É possível agendar para terça ou"
+        " quarta de manhã, no bairro Pinheiros?"
+    ),
+    (
+        "Bom dia! Sou autônomo e preciso de uma nota fiscal"
+        " eletrônica do meu pedido. Vocês emitem direto pelo"
+        " sistema ou tenho que solicitar separado?"
+    ),
+    # ~10-12s audio (180-200 chars) — long queries
     (
         "Vi no site de vocês que tem uma promoção de frete"
         " grátis para compras acima de cem reais. Isso vale"
@@ -78,6 +105,36 @@ TEXTS = [
         " Gostaria de saber se existe algum programa de"
         " fidelidade ou desconto para clientes antigos."
         " Compro com vocês todo mês."
+    ),
+    (
+        "Preciso entender melhor a política de devolução."
+        " Comprei um item em promoção mas não me adaptei."
+        " Posso devolver mesmo sendo de promoção e como"
+        " funciona o reembolso pelo cartão?"
+    ),
+    (
+        "Estou tentando finalizar uma compra grande para"
+        " minha empresa, são quase dois mil reais em produtos."
+        " Vocês oferecem desconto para pagamento à vista no"
+        " boleto ou emissão de nota com CNPJ?"
+    ),
+    (
+        "Olá! Comprei dois produtos diferentes mas só recebi"
+        " um deles na entrega de ontem. O entregador disse que"
+        " o outro viria depois mas não deu prazo nenhum. Como"
+        " faço para confirmar?"
+    ),
+    (
+        "Bom dia! Trabalho como revendedor e gostaria de saber"
+        " se vocês têm tabela de preços diferenciada para quem"
+        " compra em quantidade. Faço pedidos mensais de"
+        " cinquenta a cem peças."
+    ),
+    (
+        "Boa tarde, tudo bem? Recebi um produto que não combina"
+        " com a descrição do site. A cor é diferente e o tamanho"
+        " parece menor que o anunciado. Posso trocar ou só me"
+        " resta o reembolso?"
     ),
 ]
 
@@ -184,11 +241,16 @@ async def run_tier(
     api_key: str,
     voice: str,
     output_dir: Path,
+    rng: random.Random,
     *,
     insecure: bool = False,
 ) -> TierResult:
     interval = 60.0 / target_rate
     num_requests = max(TIER_REQUESTS, target_rate * 2)
+
+    # Pre-compute the text sequence for this tier under the shared rng so
+    # the workload is fully deterministic regardless of asyncio scheduling.
+    texts_for_tier = [rng.choice(TEXTS) for _ in range(num_requests)]
 
     print(f"\n{'=' * 70}")
     print(
@@ -230,7 +292,7 @@ async def run_tier(
                     await asyncio.wait_for(stop.wait(), timeout=1.0)
 
         async def _send(req_id: int) -> None:
-            text = TEXTS[req_id % len(TEXTS)]
+            text = texts_for_tier[req_id]
             t0 = time.time()
             status = 0
             resp_bytes = 0
@@ -363,6 +425,7 @@ def build_report(
     tiers: list[TierResult],
     url: str,
     voice: str,
+    seed: int,
 ) -> str:
     lines: list[str] = []
     ln = lines.append
@@ -371,6 +434,7 @@ def build_report(
     ln("")
     ln(f"- **Server:** {url}")
     ln(f"- **Voice:** {voice}")
+    ln(f"- **Seed:** {seed}")
     ln(f"- **Date:** {time.strftime('%Y-%m-%d %H:%M:%S')}")
     ln("- **VPS:** Hetzner CX33 — 4 vCPU shared, 8 GB RAM")
     ln("")
@@ -561,7 +625,14 @@ async def main() -> None:
         action="store_true",
         help="Skip TLS certificate verification (like curl -k)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible workload (default: 42)",
+    )
     args = parser.parse_args()
+    rng = random.Random(args.seed)
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -578,6 +649,7 @@ async def main() -> None:
     print(f"Comadre Capacity Test — {args.url}")
     print(f"Voice: {args.voice}")
     print(f"Tiers: {tiers} req/min")
+    print(f"Seed: {args.seed}")
     print(f"Output: {output_dir.resolve()}")
 
     async with httpx.AsyncClient(verify=not args.insecure) as client:
@@ -599,6 +671,7 @@ async def main() -> None:
             args.api_key,
             args.voice,
             output_dir,
+            rng,
             insecure=args.insecure,
         )
         all_results.append(res)
@@ -606,7 +679,7 @@ async def main() -> None:
 
     write_csv(output_dir / "all_requests.csv", all_metrics)
 
-    report = build_report(all_results, args.url, args.voice)
+    report = build_report(all_results, args.url, args.voice, args.seed)
     report_path = output_dir / "capacity_report.md"
     report_path.write_text(report)
 
