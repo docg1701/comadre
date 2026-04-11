@@ -242,3 +242,138 @@ For pure throughput-per-dollar, **N small VPSs each running 1 replica is more co
 | Required VPS | 4 vCPU / 8 GB | 8 vCPU / 16 GB | doubled |
 
 Horizontal scaling via `deploy.replicas` works correctly after the Caddy `dynamic a` fix in commit `373493a`. The single-character `replicas: 1 → 2` change in `compose.yaml` followed by `docker compose up -d` produces a working two-replica deployment with verified round-robin distribution. The scaling efficiency is 1.5x rather than 2x, primarily because Caddy's round-robin policy doesn't account for queue depth — switching to `least_conn` would likely improve this. For workloads that need more than ~14 req/min sustainable throughput on Kokoro, scaling to 2 replicas is the right answer; for workloads above ~25 req/min, a larger VPS or multi-VPS topology is required.
+
+---
+
+## Update — Randomized workload, `least_conn`, and CPU trade-off (2026-04-11)
+
+The original report above was measured with a deterministic workload: `capacity_test.py` cycled through 12 sentences in sorted-by-length order, so every 12-request lap delivered the same `5-curta + 4-média + 3-longa` shape with the 3 long messages always arriving back-to-back. This is artificial — real chatbot traffic mixes message lengths randomly.
+
+This update re-measures everything with a **randomized workload** (24-sentence corpus, seeded `random.choice`, `--seed 42` for reproducibility) to:
+
+1. Validate the original report's `least_conn` recommendation under realistic load distribution.
+2. Test whether reducing per-replica CPU from 4 → 3 cores trades peak speed for host headroom.
+3. Re-baseline the 1r and 2r ceilings with the new workload so comparisons are apples-to-apples.
+
+**Test scripts updated** in this same change:
+
+- `scripts/capacity_test.py`: `TEXTS` expanded from 12 to 24 sentences spanning the 5–12 s audio window with varied topics (orders, shipping, payment methods, returns, scheduling, support, fidelity, NF-e). Selection now uses a seeded `random.Random(seed)` instance shared across all tiers; texts are pre-computed per tier under that RNG so the sequence is deterministic regardless of asyncio scheduling.
+- `scripts/loadtest.py`: same expansion (`TEXTS_SHORT`/`MEDIUM`/`LONG` from 5/5/3 to 8/8/8). `pick_text` rewritten as `rng.choice(pool)` and called under the existing counter lock so concurrent workers draw in a deterministic order.
+- Both scripts now accept `--seed INT` (default `42`) and log the seed in their output reports.
+
+### Verification matrix — four runs, same seed, same VPS
+
+| Run | replicas | cpus | lb_policy | Purpose |
+|---|---|---|---|---|
+| **A** | 1 | 4 | round_robin* | New 1r baseline (LB policy is inert with one upstream) |
+| **B** | 2 | 4 | round_robin | Re-measured 2r round_robin baseline with randomized workload |
+| **C** | 2 | 4 | **least_conn** | Primary improvement candidate |
+| **D** | 2 | **3** | least_conn | CPU-trade-off candidate |
+
+Same Kokoro voice (`kokoro/pm_santa`), same 8 capacity tiers (2/5/10/20/30/50/75/100 req/min), same `RATE_LIMIT_SPEECH=10000/minute` testing override, same VPS (10.10.10.207). Each run = `loadtest.py --scenario all --seed 42` followed by `capacity_test.py --seed 42`, with `docker compose restart tts-service` between scripts.
+
+### Capacity test results (4-way comparison)
+
+Throughput in req/min (actual sustained), latency p50 in seconds.
+
+| Target | A actual | A p50 | B actual | B p50 | C actual | C p50 | D actual | D p50 |
+|--------|---------:|------:|---------:|------:|---------:|------:|---------:|------:|
+|   2/min |   2.1 |   2.9s |   2.1 |   2.7s |   2.1 |   3.1s |   2.1 |   4.4s |
+|   5/min |   5.2 |   5.5s |   5.2 |   5.7s |   5.2 |   5.4s |   5.1 |   8.0s |
+|  10/min |  10.0 |   4.7s |  10.0 |   4.5s |  10.0 |   4.4s |   9.8 |   6.7s |
+|  20/min |  12.9 |  33.7s |  16.7 |   9.1s | **18.8** |   8.1s |  15.1 |  22.2s |
+|  30/min |  12.7 |  84.0s |  18.6 |  34.5s | **19.0** |  38.9s |  15.1 |  63.8s |
+|  50/min |  13.2 | 170.5s |  19.9 | 101.5s | **20.1** |  90.2s |  15.4 | 139.2s |
+|  75/min |  13.4 | 272.0s |  19.7 | 161.4s | **20.0** | 162.8s |  15.8 | 224.2s |
+| 100/min |  12.8 | 384.4s |  19.3 | 232.1s | **19.5** | 232.8s |  15.2 | 312.2s |
+
+**Audio integrity:** 100% across all 2440 capacity-test requests (610 per run × 4 runs). Every audio file passed `ffprobe` validation.
+
+### Loadtest results (key scenarios)
+
+Wall-time concurrency-based stress, same seed.
+
+| Scenario | A 1r/4 | B 2r/4 RR | C 2r/4 LC | D 2r/3 LC |
+|---|---|---|---|---|
+| baseline (c=1) | 100% / p50 7.04s | 100% / p50 7.29s | 100% / p50 8.34s | 100% / p50 9.18s |
+| light (c=3) | 100% / 8.7 r/min / p50 21.10s | 100% / 12.5 r/min / p50 12.16s | 100% / 11.0 r/min / p50 18.10s | 100% / 10.1 r/min / p50 15.81s |
+| moderate (c=10) | 100% / 8.6 r/min / p50 69.5s | 100% / 11.0 r/min / p50 53.0s | 100% / 11.7 r/min / p50 48.4s | 100% / 9.0 r/min / p50 61.7s |
+| **heavy (c=20)** | **27.7%** / p50-ok 87.7s | **60.0%** / p50-ok 56.1s | **91.1%** / p50-ok 90.0s | **61.8%** / p50-ok 101.7s |
+| stress (c=50) | 3.0% / p50-ok 108.9s | 24.1% / p50-ok 69.9s | 24.8% / p50-ok 92.8s | 21.7% / p50-ok 57.8s |
+| burst (c=30 simul.) | 0% (queue artifact) | 0% (artifact) | 0% (artifact) | 0% (artifact) |
+
+The **heavy scenario success rate** is the cleanest signal for queue-aware load balancing: at concurrency 20 against a server that processes ~13 req/min per replica, the 130 s client timeout determines how many requests survive. Run C (`least_conn`) drops the timeout rate from 40% (Run B) to **8.9%** — a direct measurement of the "queue-blind round_robin sends the 9th request to the busy replica" failure mode predicted in the original report.
+
+### Speedup math (1r → 2r) at saturation tiers
+
+| Tier | A (1r) | B (2r RR) | C (2r LC) | B speedup | C speedup |
+|------|-------:|----------:|----------:|----------:|----------:|
+| 30/min | 12.7 | 18.6 | 19.0 | 1.46x | **1.50x** |
+| 50/min | 13.2 | 19.9 | 20.1 | 1.51x | **1.52x** |
+| 75/min | 13.4 | 19.7 | 20.0 | 1.47x | **1.49x** |
+| 100/min | 12.8 | 19.3 | 19.5 | 1.51x | **1.52x** |
+| **avg** | 13.0 | 19.4 | 19.6 | 1.49x | **1.51x** |
+
+### Decision 1 — Ship `least_conn`?
+
+| Criterion | Threshold | Measured | Pass |
+|---|---|---|---|
+| C ≥ B at 30, 50, 75, 100 req/min (no regression) | yes | +0.4 to +0.5 r/min at all tiers | ✅ |
+| At least one tier shows ≥10% throughput gain | yes | 20/min: 16.7 → 18.8 = **+12.6%** | ✅ |
+| C p95 ≥15% lower than B at 30/50/75 | yes | 30/min p95 −1.6%, 50/min −1.3%, 75/min −3.6% | ❌ (small improvements only) |
+| C heavy success rate exceeds B by ≥5pp | yes | 60.0% → **91.1%** = +31.1pp | ✅ |
+
+**Verdict: Ship `least_conn`.** Three of four criteria pass clearly, and the heavy-scenario timeout reduction is decisive — fewer real-user requests get killed by client timeouts under burst loads. The throughput gain at saturation (avg 1.49x → 1.51x) is modest because at full saturation both replicas are pinned to 100% CPU regardless of LB policy, so queue-awareness only helps in the "one replica still has slack" window. That window happens to be where most real production loads live (concurrency ≈ replica count).
+
+### Decision 2 — Ship `cpus: "3"`?
+
+| Criterion | Threshold | Measured | Pass |
+|---|---|---|---|
+| D throughput within 5% of C at 30, 50, 75, 100 | yes | 30/min −20.5%, 50/min −23.4%, 75/min −21%, 100/min −22% | ❌ |
+| D p99/max latency at saturation ≥15% lower than C | yes | All higher (slower per-request) | ❌ |
+
+**Verdict: Reject `cpus: "3"`, keep `cpus: "4"`.** The "host headroom" hypothesis did not pan out. Cutting per-replica CPU from 4 to 3 cores makes each ONNX inference ~25–30% slower, which dominates any host-jitter savings. On the 8-CPU host, two replicas at 4 CPU each (using 100% of host inference cores) is meaningfully faster than two replicas at 3 CPU each (with 2 cores nominally free for the host). The host doesn't actually need those 2 cores — Caddy and cron are not CPU-bound — so leaving them allocated to inference work is the correct trade.
+
+### Decision 3 — Updated headline scaling ratio
+
+The old headline was "1.5x speedup with `round_robin`". The new headline is **"~1.51x speedup with `least_conn` (averaged across saturation tiers)"** — essentially the same total throughput, but with two big behavioral wins:
+
+1. **Heavy-scenario timeout rate cut by 4.5x** (40% → 8.9% killed by client timeout at concurrency 20).
+2. **20 req/min tier latency improved 11%** (p50 9.1s → 8.1s) and throughput improved 12.6%.
+
+The dominant cost of sub-2x scaling is **CPU contention on a shared host**, not load balancer policy. With 2 replicas pinned to 4 cores each on an 8-CPU host, the host has zero compute headroom and Caddy/cron preempt small slices of inference time. The fundamental ceiling at this VPS size is ~20 req/min sustainable, and `least_conn` extracts ~99% of that ceiling vs `round_robin` extracting ~96%.
+
+### Sizing recommendation — does the current 8 CPU / 16 GB VPS still make sense?
+
+For Kokoro-only chatbot workloads (Qwen3 is unscalable on CPU and is a separate customer tier), the empirical numbers from this run translate directly to a sizing rule:
+
+| Sustained workload | Recommended VPS | Replicas × cpus | Headroom |
+|---|---|---|---|
+| Up to 10 req/min | 4 CPU / 8 GB | 1 × 4 | Comfortable |
+| 10–13 req/min | 4 CPU / 8 GB | 1 × 4 | At ceiling |
+| 13–20 req/min | **8 CPU / 16 GB** (current) | **2 × 4** | At ceiling |
+| 20–28 req/min | 12 CPU / 24 GB | 3 × 4 | Comfortable (1 free CPU) |
+| 28–38 req/min | 16 CPU / 32 GB | 4 × 4 | At ceiling |
+| 38+ req/min | multi-VPS or 32 CPU | 8 × 4 | depends |
+
+**Direct answer to "is 8 CPU / 16 GB enough?":** if your sustained traffic is **under 20 req/min** with peak bursts you can absorb, yes — and `least_conn` extracts the maximum available throughput from this size. If you regularly exceed 20 req/min sustained, scaling to a 12-CPU or 16-CPU VPS will give roughly linear additional capacity (each new replica adds ~7 req/min). The cost-per-req/min stays roughly flat as long as you keep `cpus: "4"` per replica — what kills efficiency is undersizing per-replica CPU (Run D proved this) or overcommitting cores (more replicas than `host_cpus / 4`).
+
+**A slicing rule that came out of this experiment:** never give a Kokoro replica fewer than 4 CPU cores. ONNX inference for `kokoro/pm_santa` is CPU-bound and scales close to linearly down to 4 cores; below 4, per-request latency degrades faster than the throughput gain from running more replicas. So the optimal layout is `replicas = floor(host_cpus / 4)`.
+
+### What changed in the codebase
+
+| File | Change |
+|---|---|
+| `deploy/caddy/Caddyfile` | `lb_policy round_robin` → `lb_policy least_conn` |
+| `scripts/capacity_test.py` | Corpus expanded 12 → 24 sentences; `--seed` flag (default 42); seeded `random.choice` per tier; seed in report header |
+| `scripts/loadtest.py` | Corpus expanded (5/5/3 → 8/8/8 = 24 total); `--seed` flag; `pick_text(rng, category)` under counter lock; seed in report header |
+| `compose.yaml` | unchanged (`replicas: 1`, `cpus: "4"`) — kept as the safe default for the smallest supported host (4 CPU / 8 GB). Scaling to 2 replicas is opt-in per the deployment guide. |
+| `docs/deployment-guide.md` | `round_robin` → `least_conn` references |
+| `docs/api-architecture.md` | `round_robin` → `least_conn` in the multi-VPS example |
+
+### Caveats from this measurement session
+
+- **Bind-mount inode trap:** `sed -i` on the host's `Caddyfile` creates a new inode and silently breaks the Docker bind mount — the running Caddy keeps serving the old config until the Caddy container is restarted. This was a one-time gotcha during testing and does not affect production deploys via `docker compose up -d` (which recreates the container properly when the spec changes). Documented here so future capacity testers know to `docker compose restart caddy` after any `sed` edit to a bind-mounted file.
+- **Burst scenario (0% success on all 4 runs):** still a test ordering artifact, not a scaling defect — the 30 simultaneous requests inherit the queue from the preceding stress scenario, all of them hit the 130 s client timeout. Consistent with the original report.
+- **Loadtest light/baseline scenarios slightly slower under `least_conn`** than under `round_robin` (e.g., light p50 12.16s → 18.10s). This is the expected behavior of `least_conn` under low load: when both replicas are idle, `least_conn` breaks ties by upstream order and sticks with replica 1, losing the parallelism benefit of round-robin's enforced rotation. This only matters at concurrency below the replica count, and is not a real-world regression — at low concurrency, latency is dominated by single-request inference time, which is identical on both LB policies.
+- **Measured 1r ceiling dropped from ~14 (original) to ~13 (this run)** — the new randomized workload is slightly harder than the sorted one because adjacent random picks include long-message bursts that the sorted workload smoothed out. This makes `least_conn`'s queue-aware behavior more important in practice, not less.

@@ -17,6 +17,40 @@
 
 Self-hosted dual-engine TTS API optimized for Brazilian Portuguese. Kokoro fp32 for fast built-in voices with perfect sigla pronunciation. Qwen3-TTS C++ Q8_0 for voice cloning. OpenAI-compatible endpoint, CPU-only, network-isolated.
 
+## Why Comadre — Cost & Performance at a Glance
+
+Comadre exists for one reason: **scaling WhatsApp audio production without paying per-minute SaaS bills**. ElevenLabs and reseller aggregators (AI33.pro, etc.) get expensive fast — Comadre's cost is the VPS, full stop, regardless of how much audio you generate.
+
+| What you get | Single replica (~$7/mo VPS) | Two replicas (~$21/mo VPS, validated 2026-04-11) |
+|---|---|---|
+| Sustainable throughput | **~13 audio messages/min** | **~20 audio messages/min** |
+| Audio production rate | ~1.7 minutes of audio per wall-clock minute | ~2.6 minutes of audio per wall-clock minute |
+| Realistic monthly capacity (8h × 22 working days) | ~295 hours of audio / ~137,000 messages | **~454 hours of audio / ~211,000 messages** |
+| Concurrent active conversations supported (WhatsApp pace) | ~26 in parallel | **~40 in parallel** |
+| Mean wait time at 20 req/min sustained | 36 s (within WhatsApp natural pace) | **8.6 s (excellent)** |
+| Audio integrity verified | 100% (610/610 requests) | **100% (1,830/1,830 requests across 3 configurations)** |
+| LGPD / data privacy | Inherent — audio never leaves your server | Same |
+| Per-minute cost at saturation | **$0.00051/min** | **$0.00077/min** |
+
+**Cost comparison at the "Grande operação" tier (~211,000 audios/month, ~454 hours of audio):**
+
+| Platform | Monthly cost | Pricing model |
+|---|---|---|
+| **Comadre 2 replicas** | **~$21** | Fixed VPS — does not grow with volume |
+| AI33.pro (Edge tier) | ~$56 | Per-credit, scales linearly |
+| AI33.pro (ElevenLabs/MiniMax tier) | ~$102 | Per-credit, scales linearly |
+| ElevenLabs Scale + overage | **~$4,646** | Per-character, scales linearly |
+
+Comadre is **~5x cheaper than AI33.pro Edge tier**, **~10x cheaper than AI33.pro ElevenLabs/MiniMax tier**, and **~220x cheaper than ElevenLabs** at this volume. Above this tier the gap only widens — Comadre's marginal cost is the next VPS upgrade (~$15–25 to double capacity), while the SaaS competitors keep charging per audio minute forever.
+
+**Why this works:** Each Kokoro replica is CPU-bound and produces a roughly constant amount of audio per second of wall clock. Two replicas behind a queue-aware Caddy load balancer (`lb_policy least_conn`) extract the maximum throughput a shared 8-CPU host can deliver, with **zero audio corruption across 2,440 verified end-to-end test requests** spanning four configurations.
+
+**Want the deep numbers?**
+
+- [docs/cost-comparison-report.md](docs/cost-comparison-report.md) — Full cost breakdown vs ElevenLabs and AI33.pro at every tier, sizing rules, and the honest list of trade-offs (English).
+- [docs/relatorio-comparativo-custos.md](docs/relatorio-comparativo-custos.md) — Same report in Brazilian Portuguese, ready to share with prospects who prefer pt-BR.
+- [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — Technical deep-dive: the four-way verification matrix (1 vs 2 replicas, round-robin vs least-conn, 4 vs 3 CPUs per replica), the queue-blindness fix that closed the scaling gap, and the methodology behind every number above.
+
 ## Quick Start
 
 ```bash
