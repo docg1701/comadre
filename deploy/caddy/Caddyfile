@@ -10,6 +10,7 @@
 			refresh 5s
 		}
 		lb_policy least_conn
+		trusted_proxies private_ranges
 	}
 	encode gzip
 
