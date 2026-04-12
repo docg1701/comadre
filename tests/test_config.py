@@ -169,6 +169,19 @@ class TestSettings:
         with pytest.raises(ValidationError):
             Settings()
 
+    def test_qwen3_enabled_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.qwen3_enabled is True
+
+    def test_qwen3_enabled_from_env_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("QWEN3_ENABLED", "false")
+        settings = Settings()
+        assert settings.qwen3_enabled is False
+
     def test_qwen3_threads_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "test-key")
         settings = Settings()

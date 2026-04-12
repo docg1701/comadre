@@ -56,13 +56,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model_url=settings.kokoro_model_url,
         voices_url=settings.kokoro_voices_url,
     )
-    await asyncio.to_thread(
-        ensure_qwen3_models,
-        model_path=settings.qwen3_model_path,
-        tokenizer_path=settings.qwen3_tokenizer_path,
-        model_url=settings.qwen3_model_url,
-        tokenizer_url=settings.qwen3_tokenizer_url,
-    )
+    if settings.qwen3_enabled:
+        await asyncio.to_thread(
+            ensure_qwen3_models,
+            model_path=settings.qwen3_model_path,
+            tokenizer_path=settings.qwen3_tokenizer_path,
+            model_url=settings.qwen3_model_url,
+            tokenizer_url=settings.qwen3_tokenizer_url,
+        )
+    else:
+        logger.info("Qwen3 disabled (QWEN3_ENABLED=false), skipping model check")
     logger.info("Model check complete")
 
     # Phase 2.7: Verify noise directory
@@ -110,28 +113,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             espeak_data_path=settings.espeak_data_path,
         )
 
-        # Phase 6: Verify Qwen3 binary
-        logger.info("Verifying qwen3-tts-cli binary...")
+        # Phase 6: Verify Qwen3 binary (skip when disabled)
         qwen = QwenEngine()
-        qwen.load_model(
-            cli_path=settings.qwen3_cli_path,
-            model_path=settings.qwen3_model_path,
-            tokenizer_path=settings.qwen3_tokenizer_path,
-            threads=settings.qwen3_threads,
-        )
+        if settings.qwen3_enabled:
+            logger.info("Verifying qwen3-tts-cli binary...")
+            qwen.load_model(
+                cli_path=settings.qwen3_cli_path,
+                model_path=settings.qwen3_model_path,
+                tokenizer_path=settings.qwen3_tokenizer_path,
+                threads=settings.qwen3_threads,
+            )
+        else:
+            logger.info("Qwen3 disabled, skipping engine load")
 
         # Phase 7: Warm up Kokoro
         logger.info("Warming up Kokoro engine...")
         kokoro.warm_up()
 
         # Phase 8: Warm up Qwen3 (using first available reference WAV)
-        logger.info("Warming up Qwen3 engine...")
-        qwen_warmup_ref: Path | None = None
-        if qwen_voices_dir.is_dir():
-            wavs = sorted(qwen_voices_dir.glob("*.wav"))
-            if wavs:
-                qwen_warmup_ref = wavs[0]
-        qwen.warm_up(reference_path=qwen_warmup_ref)
+        if settings.qwen3_enabled:
+            logger.info("Warming up Qwen3 engine...")
+            qwen_warmup_ref: Path | None = None
+            if qwen_voices_dir.is_dir():
+                wavs = sorted(qwen_voices_dir.glob("*.wav"))
+                if wavs:
+                    qwen_warmup_ref = wavs[0]
+            qwen.warm_up(reference_path=qwen_warmup_ref)
     except Exception:
         logger.critical("Startup failed during engine initialization", exc_info=True)
         raise

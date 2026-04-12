@@ -720,6 +720,15 @@ class EngineRouter:
                 text, voice, response_format, noise_dir, raw=raw
             )
         # engine == "qwen"
+        if not self._qwen.is_loaded:
+            raise InvalidRequestError(
+                message="Qwen3 engine is disabled on this host",
+                hint=(
+                    "Use a kokoro/* voice. Qwen3 is unavailable when"
+                    " QWEN3_ENABLED=false (e.g. on aarch64 hosts where the"
+                    " x86_64 binary cannot run)."
+                ),
+            )
         ref_path = self._resolve_qwen_voice(name)
         return self._qwen.generate_speech(
             text, ref_path, response_format, noise_dir, seed, raw=raw
@@ -741,12 +750,13 @@ class EngineRouter:
                 if f.suffix == ".npy" and f.is_file():
                     voices.add(f"kokoro/{f.stem}")
 
-        # Qwen3 voices from .wav files
-        qwen_dir = self._voices_dir / "qwen"
-        if qwen_dir.is_dir():
-            for f in qwen_dir.iterdir():
-                if f.suffix == ".wav" and f.is_file():
-                    voices.add(f"qwen/{f.stem}")
+        # Qwen3 voices from .wav files (only if engine is loaded)
+        if self._qwen.is_loaded:
+            qwen_dir = self._voices_dir / "qwen"
+            if qwen_dir.is_dir():
+                for f in qwen_dir.iterdir():
+                    if f.suffix == ".wav" and f.is_file():
+                        voices.add(f"qwen/{f.stem}")
 
         return sorted(voices)
 

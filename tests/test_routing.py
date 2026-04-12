@@ -263,3 +263,40 @@ class TestEngineStatus:
         status = router.engine_status()
         assert status["kokoro"]["loaded"] is False
         assert status["qwen3"]["loaded"] is False
+
+
+# --- Disabled Qwen3 (e.g. ARM hosts where the binary cannot run) ---
+
+
+class TestRouterWithDisabledQwen:
+    """Router behavior when QwenEngine is intentionally not loaded."""
+
+    def test_available_voices_excludes_qwen_when_unloaded(
+        self, kokoro: KokoroEngine, voices_dir: Path
+    ) -> None:
+        """Even when qwen .wav files exist, they are hidden when engine is off."""
+        unloaded_qwen = QwenEngine()  # _loaded stays False
+        router = EngineRouter(kokoro, unloaded_qwen, voices_dir)
+        voices = router.available_voices()
+        assert all(not v.startswith("qwen/") for v in voices)
+        # Kokoro voices remain available
+        assert "kokoro/pm_santa" in voices
+        assert "kokoro/custom_voice" in voices
+
+    def test_engine_status_qwen_not_loaded(
+        self, kokoro: KokoroEngine, voices_dir: Path
+    ) -> None:
+        unloaded_qwen = QwenEngine()
+        router = EngineRouter(kokoro, unloaded_qwen, voices_dir)
+        status = router.engine_status()
+        assert status["qwen3"]["loaded"] is False
+        assert status["qwen3"]["voices"] == []
+
+    def test_qwen_request_raises_invalid_request(
+        self, kokoro: KokoroEngine, voices_dir: Path
+    ) -> None:
+        """Requesting a qwen voice with disabled engine returns 400, not 500."""
+        unloaded_qwen = QwenEngine()
+        router = EngineRouter(kokoro, unloaded_qwen, voices_dir)
+        with pytest.raises(InvalidRequestError, match="Qwen3 engine is disabled"):
+            router.generate_speech("Olá", "qwen/female-reference", "ogg", None)

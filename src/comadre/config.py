@@ -30,6 +30,15 @@ class Settings(BaseSettings):
         default="models/voices-v1.0.bin",
         description="Path to the Kokoro voices binary file",
     )
+    qwen3_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Qwen3 engine (set false on hosts where the binary is"
+            " unavailable, e.g. aarch64). When false, Qwen3 model download,"
+            " load, and warm-up are skipped at startup, and qwen/* voices"
+            " are excluded from the available list."
+        ),
+    )
     qwen3_cli_path: str = Field(
         default="/usr/local/bin/qwen3-tts-cli",
         description="Path to the qwen3-tts-cli binary",
