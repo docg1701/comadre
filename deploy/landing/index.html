@@ -731,7 +731,9 @@
       // Load voices from /health (no auth required)
       async function loadVoices() {
         try {
-          const r = await fetch('/health');
+          const ac = new AbortController();
+          setTimeout(() => ac.abort(), 10000);
+          const r = await fetch('/health', { signal: ac.signal });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const data = await r.json();
           const voices = (data.voices || [])
@@ -803,6 +805,8 @@
         submitBtn.textContent = 'Gerando…';
 
         try {
+          const ac = new AbortController();
+          setTimeout(() => ac.abort(), 90000);
           const r = await fetch('/v1/audio/speech', {
             method: 'POST',
             headers: {
@@ -810,6 +814,7 @@
               'Content-Type': 'application/json',
             },
             body: JSON.stringify(body),
+            signal: ac.signal,
           });
 
           if (!r.ok) {
