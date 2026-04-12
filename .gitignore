@@ -27,6 +27,7 @@ env/
 
 # Ansible inventory (real credentials)
 deploy/ansible/inventory/production.yml
+deploy/ansible/inventory/oracle.yml
 
 # Docker
 .docker/

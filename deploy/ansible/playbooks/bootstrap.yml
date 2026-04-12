@@ -226,6 +226,7 @@
           DOMAIN={{ domain }}
           RATE_LIMIT_SPEECH={{ rate_limit_speech }}
           RATE_LIMIT_HEALTH={{ rate_limit_health }}
+          QWEN3_ENABLED={{ qwen3_enabled | default(true) | string | lower }}
           QWEN3_MODEL_URL={{ qwen3_model_url }}
           QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
           KOKORO_MODEL_URL={{ kokoro_model_url }}

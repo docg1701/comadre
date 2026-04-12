@@ -38,6 +38,11 @@ all:
     kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
     kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
+    # Enable Qwen3 engine. Set to false on hosts where the x86_64 binary
+    # cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). When false, Qwen3
+    # model download, load, and warm-up are skipped at startup.
+    qwen3_enabled: true
+
     # Qwen3 GGUF model download URLs (auto-download on first startup)
     qwen3_model_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf"
     qwen3_tokenizer_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf"

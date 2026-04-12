@@ -1,0 +1,47 @@
+all:
+  hosts:
+    comadre_vps:
+      # Oracle Cloud Ampere A1 (Always Free Tier) — aarch64 host
+      ansible_host: "CHANGE_ME"        # IP or DNS of the Oracle VM
+      ansible_user: "ubuntu"
+      ansible_ssh_private_key_file: "~/.ssh/CHANGE_ME.key"
+      ansible_ssh_common_args: "-o ForwardAgent=yes"
+
+  vars:
+    # API authentication key — reads from COMADRE_API_KEY env var (required)
+    # Set it before running any playbook: export COMADRE_API_KEY="your-secret-key"
+    api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
+
+    # Optional: local directory containing kokoro/ subdir with voice files
+    voices_local_dir: "{{ playbook_dir }}/../../../voices"
+
+    # Git repository URL and branch to clone on the VM
+    repo_url: "git@github.com:docg1701/comadre.git"
+    repo_branch: "master"
+
+    # Default voice for TTS when none specified
+    default_voice: "kokoro/pm_santa"
+
+    # Real domain → Caddy provisions Let's Encrypt cert via ACME HTTP-01
+    domain: "CHANGE_ME.duckdns.org"
+
+    # Rate limiting (per client IP, behind Caddy via X-Forwarded-For)
+    rate_limit_speech: "30/minute"
+    rate_limit_health: "60/minute"
+
+    # Daily restart hour (0-23)
+    restart_hour: 3
+
+    # Kokoro model download URLs (auto-download on first startup)
+    kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+    kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+
+    # Qwen3 disabled — the prebuilt qwen3-tts-cli binary is x86_64-only
+    # and cannot run on aarch64. Kokoro covers ~99% of real workload anyway.
+    qwen3_enabled: false
+    qwen3_model_url: ""
+    qwen3_tokenizer_url: ""
+
+    # Not used when qwen3_enabled is false
+    qwen3_model_local: ""
+    qwen3_tokenizer_local: ""
