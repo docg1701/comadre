@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from slowapi.middleware import SlowAPIMiddleware
 from starlette.responses import Response
 
 from comadre import __version__
@@ -245,6 +246,7 @@ def create_app() -> FastAPI:
         redirect_slashes=False,
     )
     app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
     access_logger = get_logger("access")
 
     @app.middleware("http")
