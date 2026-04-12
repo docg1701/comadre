@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from comadre.schemas import Destination, ResponseFormat, SpeechRequest
+from comadre.schemas import ResponseFormat, SpeechRequest
 
 
 class TestSpeechRequestDefaults:
@@ -13,7 +13,7 @@ class TestSpeechRequestDefaults:
         assert req.voice is None
         assert req.response_format == ResponseFormat.ogg
         assert req.speed == 1.0
-        assert req.destination == Destination.whatsapp
+        assert req.raw is False
 
     def test_valid_with_all_fields(self) -> None:
         req = SpeechRequest(
@@ -21,12 +21,12 @@ class TestSpeechRequestDefaults:
             voice="kokoro/pm_santa",
             response_format="wav",
             speed=2.0,
-            destination="telegram",
+            raw=True,
         )
         assert req.voice == "kokoro/pm_santa"
         assert req.response_format == ResponseFormat.wav
         assert req.speed == 2.0
-        assert req.destination == Destination.telegram
+        assert req.raw is True
 
 
 class TestSpeechRequestInputValidation:
@@ -51,10 +51,6 @@ class TestSpeechRequestEnumValidation:
     def test_invalid_response_format_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SpeechRequest(input="test", response_format="mp3")
-
-    def test_invalid_destination_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            SpeechRequest(input="test", destination="discord")
 
     def test_valid_ogg_format(self) -> None:
         req = SpeechRequest(input="test", response_format="ogg")

@@ -282,43 +282,52 @@
       margin-bottom: 0;
     }
 
-    .checkbox-group {
+    .radio-group {
+      display: flex;
+      gap: 12px;
+    }
+
+    .radio-option {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 12px 14px;
+      gap: 8px;
+      padding: 12px 18px;
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 8px;
       cursor: pointer;
-      transition: border-color 0.2s ease;
+      transition: border-color 0.2s ease, background 0.2s ease;
+      flex: 1;
+      justify-content: center;
+      margin: 0;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 14px;
+      color: var(--text);
     }
 
-    .checkbox-group:hover {
+    .radio-option:hover {
       border-color: var(--border-hover);
     }
 
-    .checkbox-group input[type="checkbox"] {
+    .radio-option input[type="radio"] {
       width: 16px;
       height: 16px;
       accent-color: var(--accent);
       cursor: pointer;
     }
 
-    .checkbox-group label {
-      margin: 0;
-      text-transform: none;
-      letter-spacing: 0;
-      font-size: 14px;
-      color: var(--text);
-      cursor: pointer;
+    .radio-option:has(input:checked) {
+      border-color: var(--accent);
+      background: var(--accent-dim);
     }
 
     /* ─── Submit button ─── */
 
     button[type="submit"] {
-      width: 100%;
-      padding: 13px 24px;
+      display: block;
+      margin: 8px auto 0;
+      padding: 13px 20px;
       background: var(--accent);
       color: var(--text);
       border: 1px solid var(--accent-hover);
@@ -328,7 +337,6 @@
       font-weight: 500;
       cursor: pointer;
       transition: background 0.2s ease, transform 0.1s ease;
-      margin-top: 8px;
       letter-spacing: 0.3px;
     }
 
@@ -601,7 +609,7 @@
         </div>
 
         <div class="form-group">
-          <label for="input">Mensagem (até 500 caracteres — limite do engine Kokoro)</label>
+          <label for="input">Mensagem (máximo de 500 caracteres)</label>
           <textarea id="input" maxlength="500" required
                     placeholder="Bom dia! Como posso ajudar?"></textarea>
           <div class="char-counter"><span id="charCount">0</span>/500</div>
@@ -622,22 +630,17 @@
               </select>
             </div>
           </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label for="destination">Destino (pós-processamento)</label>
-              <select id="destination">
-                <option value="whatsapp">WhatsApp</option>
-                <option value="telegram">Telegram</option>
-                <option value="messenger">Messenger</option>
-                <option value="instagram">Instagram</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="raw">&nbsp;</label>
-              <div class="checkbox-group">
-                <input type="checkbox" id="raw">
-                <label for="raw">Pular pós-processamento</label>
-              </div>
+          <div class="form-group">
+            <label>Pós-processamento (EQ, compressão, ruído de fundo)</label>
+            <div class="radio-group">
+              <label class="radio-option">
+                <input type="radio" name="postprocess" value="on" checked>
+                <span>Sim</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="postprocess" value="off">
+                <span>Não</span>
+              </label>
             </div>
           </div>
         </details>
@@ -696,8 +699,6 @@
       const charCount = document.getElementById('charCount');
       const speedEl = document.getElementById('speed');
       const formatEl = document.getElementById('format');
-      const destinationEl = document.getElementById('destination');
-      const rawEl = document.getElementById('raw');
       const submitBtn = document.getElementById('submit');
       const errorBox = document.getElementById('error');
       const errorType = document.getElementById('errorType');
@@ -789,13 +790,13 @@
           return;
         }
 
+        const postprocess = document.querySelector('input[name="postprocess"]:checked');
         const body = {
           input: inputEl.value,
           voice: voiceEl.value,
           response_format: formatEl.value,
           speed: parseFloat(speedEl.value),
-          destination: destinationEl.value,
-          raw: rawEl.checked,
+          raw: postprocess ? postprocess.value === 'off' : false,
         };
 
         submitBtn.disabled = true;

@@ -216,7 +216,7 @@ Returns service health status. No authentication required.
   "queue_depth": 0,
   "uptime_seconds": 3600,
   "memory_mb": 4200,
-  "version": "1.5.4"
+  "version": "1.6.0"
 }
 ```
 
@@ -232,7 +232,7 @@ Returned while models are still loading after startup:
   "queue_depth": 0,
   "uptime_seconds": 15,
   "memory_mb": 800,
-  "version": "1.5.4"
+  "version": "1.6.0"
 }
 ```
 

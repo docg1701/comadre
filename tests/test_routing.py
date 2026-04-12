@@ -187,7 +187,22 @@ class TestGenerateSpeechDispatch:
         with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
             router.generate_speech("text", "kokoro/pm_santa", "ogg", seed=42)
             # KokoroEngine.generate_speech() does not accept seed
-            assert len(mock_gen.call_args[0]) == 4  # text, voice, format, noise_dir
+            # Positional args: text, voice, format, noise_dir, speed
+            assert len(mock_gen.call_args[0]) == 5
+
+    def test_speed_forwarded_to_kokoro(
+        self, router: EngineRouter, kokoro: KokoroEngine
+    ) -> None:
+        with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
+            router.generate_speech("text", "kokoro/pm_santa", "ogg", speed=2.5)
+            assert mock_gen.call_args[0][4] == 2.5  # speed is 5th positional arg
+
+    def test_speed_default_is_1(
+        self, router: EngineRouter, kokoro: KokoroEngine
+    ) -> None:
+        with patch.object(kokoro, "generate_speech", return_value=b"data") as mock_gen:
+            router.generate_speech("text", "kokoro/pm_santa", "ogg")
+            assert mock_gen.call_args[0][4] == 1.0
 
     def test_noise_dir_forwarded(
         self, router: EngineRouter, kokoro: KokoroEngine

@@ -95,6 +95,7 @@ class KokoroEngine:
         voice: str | NDArray[np.float32],
         response_format: str,
         noise_dir: Path | None = None,
+        speed: float = 1.0,
         *,
         raw: bool = False,
     ) -> bytes:
@@ -105,6 +106,9 @@ class KokoroEngine:
             voice: Built-in voice name (str) or custom voice style vector (NDArray).
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
+            speed: Playback speed multiplier (1.0 = normal). Forwarded natively
+                to ``kokoro_onnx.create(speed=...)``, which adjusts phoneme
+                duration during synthesis. Range 0.25-4.0 enforced upstream.
 
         Returns:
             Audio bytes in the requested format.
@@ -147,7 +151,7 @@ class KokoroEngine:
                 samples, sample_rate = self._kokoro.create(
                     text=chunk,
                     voice=voice,
-                    speed=1.0,
+                    speed=speed,
                     lang="pt-br",
                 )
                 wav_parts.append(_samples_to_wav(samples, sample_rate))
@@ -504,6 +508,7 @@ class QwenEngine:
         response_format: str,
         noise_dir: Path | None = None,
         seed: int = -1,
+        speed: float = 1.0,
         *,
         raw: bool = False,
     ) -> bytes:
@@ -515,6 +520,11 @@ class QwenEngine:
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
             seed: Random seed (-1 = random, N = deterministic).
+            speed: Accepted for API parity with Kokoro but currently ignored —
+                the qwen3-tts-cli binary does not expose a speed flag, and the
+                whatsapp-subtle post-processing pipeline already applies a
+                fixed atempo 1.15x step. Plumbing user-controlled speed into
+                that pipeline would require compounding the two factors.
 
         Returns:
             Audio bytes in the requested format.
@@ -696,6 +706,7 @@ class EngineRouter:
         response_format: str = "ogg",
         noise_dir: Path | None = None,
         seed: int = -1,
+        speed: float = 1.0,
         *,
         raw: bool = False,
     ) -> bytes:
@@ -707,6 +718,9 @@ class EngineRouter:
             response_format: Output format — "wav" or "ogg".
             noise_dir: Directory containing room/hiss noise WAV files.
             seed: Random seed (forwarded to Qwen3 only).
+            speed: Playback speed multiplier (1.0 = normal). Honored natively
+                by Kokoro; accepted but currently ignored by Qwen3 (see
+                ``QwenEngine.generate_speech`` for the rationale).
             raw: Skip audio post-processing.
 
         Returns:
@@ -717,7 +731,7 @@ class EngineRouter:
         if engine == "kokoro":
             voice = self._resolve_kokoro_voice(name)
             return self._kokoro.generate_speech(
-                text, voice, response_format, noise_dir, raw=raw
+                text, voice, response_format, noise_dir, speed, raw=raw
             )
         # engine == "qwen"
         if not self._qwen.is_loaded:
@@ -731,7 +745,7 @@ class EngineRouter:
             )
         ref_path = self._resolve_qwen_voice(name)
         return self._qwen.generate_speech(
-            text, ref_path, response_format, noise_dir, seed, raw=raw
+            text, ref_path, response_format, noise_dir, seed, speed, raw=raw
         )
 
     def available_voices(self) -> list[str]:

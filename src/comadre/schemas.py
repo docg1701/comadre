@@ -12,15 +12,6 @@ class ResponseFormat(StrEnum):
     wav = "wav"
 
 
-class Destination(StrEnum):
-    """Target messaging platform for audio optimization."""
-
-    whatsapp = "whatsapp"
-    telegram = "telegram"
-    messenger = "messenger"
-    instagram = "instagram"
-
-
 _KOKORO_CHAR_LIMIT = 500
 _QWEN_CHAR_LIMIT = 300
 
@@ -32,10 +23,9 @@ class SpeechRequest(BaseModel):
     voice: str | None = None
     response_format: ResponseFormat = ResponseFormat.ogg
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
-    destination: Destination = Destination.whatsapp
     raw: bool = Field(
         default=False,
-        description="Skip audio post-processing (vibrato, EQ, compression, noise)",
+        description="Skip audio post-processing (EQ, compression, noise mixing)",
     )
 
     @model_validator(mode="after")
