@@ -24,9 +24,9 @@
       --border-hover: #2e2e55;
       --text: #ededf5;
       --text-secondary: #8e8ea8;
-      --accent: #ff6f00;
-      --accent-hover: #ff8a33;
-      --accent-dim: rgba(255, 111, 0, 0.12);
+      --accent: #b85515;
+      --accent-hover: #d4691c;
+      --accent-dim: rgba(184, 85, 21, 0.12);
       --error: #f06c8e;
       --error-dim: rgba(240, 108, 142, 0.12);
       --success: #4eeabb;
@@ -49,7 +49,7 @@
     }
 
     .container {
-      max-width: 720px;
+      max-width: 1100px;
       margin: 0 auto;
       padding: 0 32px;
       width: 100%;
@@ -83,19 +83,9 @@
     }
 
     .logo-img {
-      width: clamp(120px, 22vw, 180px);
+      width: clamp(180px, 26vw, 300px);
       height: auto;
-      margin-bottom: 24px;
-    }
-
-    .logo-name {
-      font-family: 'Bungee', cursive;
-      font-size: clamp(28px, 6vw, 44px);
-      color: var(--accent);
-      letter-spacing: 2px;
-      line-height: 1;
-      text-shadow: 3px -3px 0 #b34d00;
-      margin-bottom: 16px;
+      margin-bottom: 28px;
     }
 
     .tagline {
@@ -120,7 +110,7 @@
       justify-content: center;
       gap: 8px;
       padding: 0 32px 24px;
-      max-width: 720px;
+      max-width: 900px;
       margin: 0 auto;
     }
 
@@ -284,6 +274,15 @@
       margin-top: 20px;
     }
 
+    .form-row.first-row {
+      margin-top: 0;
+      margin-bottom: 20px;
+    }
+
+    .form-row.first-row .form-group {
+      margin-bottom: 0;
+    }
+
     .checkbox-group {
       display: flex;
       align-items: center;
@@ -320,21 +319,23 @@
 
     button[type="submit"] {
       width: 100%;
-      padding: 14px 24px;
+      padding: 13px 24px;
       background: var(--accent);
-      color: #1a0a00;
-      border: none;
+      color: var(--text);
+      border: 1px solid var(--accent-hover);
       border-radius: 8px;
       font-family: inherit;
-      font-size: 15px;
-      font-weight: 600;
+      font-size: 14px;
+      font-weight: 500;
       cursor: pointer;
       transition: background 0.2s ease, transform 0.1s ease;
       margin-top: 8px;
+      letter-spacing: 0.3px;
     }
 
     button[type="submit"]:hover:not(:disabled) {
       background: var(--accent-hover);
+      border-color: var(--accent-hover);
     }
 
     button[type="submit"]:active:not(:disabled) {
@@ -503,7 +504,7 @@
 
     @media (max-width: 900px) {
       .container {
-        max-width: 640px;
+        max-width: 720px;
       }
       .card {
         padding: 28px;
@@ -558,7 +559,6 @@
   <header class="hero">
     <div class="hero-content">
       <img src="/logo-comadre.webp" alt="Comadre" class="logo-img">
-      <div class="logo-name">Comadre</div>
       <p class="tagline">
         Comadre <strong>Manda Áudio</strong> Direto, Rápido e Eficiente.<br>
         Text-to-speech para WhatsApp em PT-BR, rodando na nuvem.
@@ -577,10 +577,6 @@
       até <strong>500</strong>&nbsp;caracteres
     </span>
     <span class="info-badge">
-      <svg viewBox="0 0 24 24"><path d="M12 14l9-5-9-5-9 5 9 5zm0 2.7L4.2 12 2 13.2 12 19l10-5.8L19.8 12 12 16.7z"/></svg>
-      <strong>Kokoro fp32</strong>&nbsp;PT-BR
-    </span>
-    <span class="info-badge">
       <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V5l-9-4zm-2 16l-4-4 1.4-1.4L10 14.2l6.6-6.6L18 9l-8 8z"/></svg>
       <strong>Sem armazenamento</strong>&nbsp;de áudio
     </span>
@@ -591,17 +587,18 @@
     <div class="container">
       <form id="form" class="card" autocomplete="off">
 
-        <div class="form-group">
-          <label for="apiKey">API Key</label>
-          <input type="password" id="apiKey" required autocomplete="off"
-                 placeholder="Cole sua chave aqui">
-        </div>
-
-        <div class="form-group">
-          <label for="voice">Voz</label>
-          <select id="voice" required>
-            <option value="">Carregando vozes…</option>
-          </select>
+        <div class="form-row first-row">
+          <div class="form-group">
+            <label for="apiKey">API Key</label>
+            <input type="password" id="apiKey" required autocomplete="off"
+                   placeholder="Cole sua chave aqui">
+          </div>
+          <div class="form-group">
+            <label for="voice">Voz</label>
+            <select id="voice" required>
+              <option value="">Carregando vozes…</option>
+            </select>
+          </div>
         </div>
 
         <div class="form-group">
@@ -688,7 +685,7 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>&copy; 2026 PixelOddity Enterprises &middot; Comadre é open source sob licença MIT</span>
+        <span>&copy; 2026 PixelOddity Enterprises</span>
       </div>
     </div>
   </footer>
@@ -724,13 +721,27 @@
         charCount.parentElement.classList.toggle('warn', len > 480);
       });
 
+      // Voices to expose: only Portuguese (pf_*, pm_*) and custom (no known
+      // locale prefix). Skips other locales (en, fr, de, hi, it, ja, zh, ...)
+      // because the page targets the PT-BR audience.
+      const LOCALE_PREFIX_RE = /^kokoro\/(af|am|bf|bm|ef|em|ff|hf|hm|if|im|jf|jm|zf|zm)_/;
+
+      function isVoiceAllowed(v) {
+        if (!v.startsWith('kokoro/')) return false;
+        if (v.startsWith('kokoro/pf_') || v.startsWith('kokoro/pm_')) return true;
+        return !LOCALE_PREFIX_RE.test(v);
+      }
+
       // Load voices from /health (no auth required)
       async function loadVoices() {
         try {
           const r = await fetch('/health');
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const data = await r.json();
-          const voices = (data.voices || []).slice().sort();
+          const voices = (data.voices || [])
+            .filter(isVoiceAllowed)
+            .slice()
+            .sort();
           voiceEl.innerHTML = '';
           if (voices.length === 0) {
             voiceEl.innerHTML = '<option value="">Nenhuma voz disponível</option>';
