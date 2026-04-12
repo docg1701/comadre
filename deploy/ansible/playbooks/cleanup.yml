@@ -125,8 +125,8 @@
       ansible.builtin.apt_repository:
         repo: >-
           deb [signed-by=/etc/apt/keyrings/docker.asc]
-          https://download.docker.com/linux/{{ ansible_distribution | lower }}
-          {{ ansible_distribution_release }} stable
+          https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}
+          {{ ansible_facts['distribution_release'] }} stable
         state: absent
         filename: docker
 

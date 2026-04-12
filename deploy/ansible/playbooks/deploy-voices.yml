@@ -120,7 +120,7 @@
         - name: "[Voices] Copy Kokoro .npy files into volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
-            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/kokoro/{{ item.path | basename }}"
+            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/kokoro/{{ item.path | basename }}"
             container_path: "/voices/kokoro/{{ item.path | basename }}"
             owner_id: 0
             group_id: 0
@@ -132,7 +132,7 @@
         - name: "[Voices] Copy Qwen3 .wav files into volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
-            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/qwen/{{ item.path | basename }}"
+            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/qwen/{{ item.path | basename }}"
             container_path: "/voices/qwen/{{ item.path | basename }}"
             owner_id: 0
             group_id: 0

@@ -28,7 +28,7 @@
           Install on a supported distribution and retry.
         success_msg: >-
           OS family {{ ansible_os_family }}
-          ({{ ansible_distribution }} {{ ansible_distribution_version }})
+          ({{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }})
           is supported.
 
     - name: "[Prereq] Verify SSH connectivity"
@@ -76,7 +76,7 @@
     - name: "[Docker] Download Docker GPG key"
       become: true
       ansible.builtin.get_url:
-        url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+        url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg"
         dest: /etc/apt/keyrings/docker.asc
         mode: "0644"
 
@@ -85,8 +85,8 @@
       ansible.builtin.apt_repository:
         repo: >-
           deb [signed-by=/etc/apt/keyrings/docker.asc]
-          https://download.docker.com/linux/{{ ansible_distribution | lower }}
-          {{ ansible_distribution_release }} stable
+          https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}
+          {{ ansible_facts['distribution_release'] }} stable
         state: present
         filename: docker
 
@@ -192,8 +192,8 @@
     - name: "[Caddy] Use API-only Caddyfile (landing page disabled)"
       when: not (landing_enabled | default(true) | bool)
       ansible.builtin.copy:
-        src: "{{ ansible_env.HOME }}/comadre/deploy/caddy/Caddyfile-no-landing"
-        dest: "{{ ansible_env.HOME }}/comadre/deploy/caddy/Caddyfile"
+        src: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/caddy/Caddyfile-no-landing"
+        dest: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/caddy/Caddyfile"
         remote_src: true
         mode: "0644"
 

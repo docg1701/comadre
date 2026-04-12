@@ -79,8 +79,8 @@
     - name: "[Caddy] Use API-only Caddyfile (landing page disabled)"
       when: not (landing_enabled | default(true) | bool)
       ansible.builtin.copy:
-        src: "{{ ansible_env.HOME }}/comadre/deploy/caddy/Caddyfile-no-landing"
-        dest: "{{ ansible_env.HOME }}/comadre/deploy/caddy/Caddyfile"
+        src: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/caddy/Caddyfile-no-landing"
+        dest: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/caddy/Caddyfile"
         remote_src: true
         mode: "0644"
 

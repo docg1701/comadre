@@ -96,7 +96,7 @@
         - name: "[Models] Copy TTS model into models volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
-            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/qwen3-tts-0.6b-q8_0.gguf"
+            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/qwen3-tts-0.6b-q8_0.gguf"
             container_path: "/models/qwen3-tts-0.6b-q8_0.gguf"
             owner_id: 0
             group_id: 0
@@ -105,7 +105,7 @@
         - name: "[Models] Copy tokenizer into models volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
-            path: "{{ ansible_env.HOME }}/comadre/deploy/staging/qwen3-tts-tokenizer-f16.gguf"
+            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/qwen3-tts-tokenizer-f16.gguf"
             container_path: "/models/qwen3-tts-tokenizer-f16.gguf"
             owner_id: 0
             group_id: 0
