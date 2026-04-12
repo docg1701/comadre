@@ -25,9 +25,9 @@ echo ""
 
 cd "$COMADRE_DIR"
 docker compose up -d --no-build tts-service
-echo "Container restarted. Waiting for health check..."
+echo "Container restarted. Waiting for health check (model warm-up may take 60-120s on slower hosts)..."
 
-for _ in $(seq 1 30); do
+for _ in $(seq 1 90); do
     if curl -sfk https://localhost/health > /dev/null 2>&1; then
         echo "Service is healthy. Key rotation complete."
         exit 0
@@ -35,6 +35,6 @@ for _ in $(seq 1 30); do
     sleep 2
 done
 
-echo "WARNING: Service did not become healthy within 60s." >&2
+echo "WARNING: Service did not become healthy within 180s." >&2
 echo "Check: docker compose logs --tail 20" >&2
 exit 1
