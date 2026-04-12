@@ -33,9 +33,8 @@ OpenAI-compatible endpoint. n8n sends text, receives audio.
 | `input` | string | Yes | — | max 500 chars (Kokoro) / 300 chars (Qwen3) | Text to synthesize in pt-BR |
 | `voice` | string | No | — | `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/<name>` | Voice selection (engine/name format, see [voice-management.md](voice-management.md)) |
 | `response_format` | string | No | `"ogg"` | `ogg`, `wav` | Output format |
-| `speed` | float | No | `1.0` | 0.25 — 4.0 | Speed multiplier. Accepted by schema but not yet applied by engines. |
+| `speed` | float | No | `1.0` | 0.25 — 4.0 | Speed multiplier. Applied by Kokoro (adjusts phoneme duration). Accepted but ignored by Qwen3. |
 | `raw` | boolean | No | `false` | true/false | Skip audio post-processing (vibrato, EQ, compression, noise) |
-| `destination` | string | No | `"whatsapp"` | `whatsapp`, `telegram`, `messenger`, `instagram` | Target platform. When `instagram`, encode as AAC M4A instead of OGG Opus. |
 
 #### Engine routing (based on `voice` prefix)
 
@@ -86,7 +85,7 @@ noise(room=0.15, hiss=0.08) → loudnorm(-17 LUFS) →
 OGG Opus 24kbps 16kHz mono
 ```
 
-**`speed` parameter:** Accepted by the schema but not yet applied by either engine. When `raw=false` (default), Qwen3's whatsapp-subtle pipeline applies a fixed 1.15x atempo adjustment independently of the `speed` field.
+**`speed` parameter:** Applied by Kokoro -- `kokoro_onnx.create(speed=...)` adjusts phoneme duration during synthesis. Accepted but ignored by Qwen3 (the C++ binary has no speed flag). When `raw=false` (default), Qwen3's whatsapp-subtle pipeline applies a fixed 1.15x atempo adjustment independently of the `speed` field.
 
 #### Response
 
@@ -104,6 +103,7 @@ Body: [audio bytes]
 | 400 | Malformed request or voice format |
 | 401 | Invalid or missing API_KEY |
 | 404 | Voice not found |
+| 405 | Method not allowed |
 | 429 | Rate limit exceeded |
 | 500 | TTS generation failed |
 | 503 | Engine not loaded |
@@ -262,7 +262,7 @@ n8n workflow:
 - n8n can alert the sysop about overload
 - n8n can fall back to text message if both instances fail
 - n8n controls retry logic per conversation context
-- Caddy round-robin doesn't know about queue depth or overload
+- Caddy least_conn doesn't know about queue depth or overload
 
 **n8n timeout configuration:**
 
@@ -328,7 +328,7 @@ services:
     restart: unless-stopped
 ```
 
-Two services: tts-service (TTS API, internal port 8000) + caddy (HTTPS reverse proxy, ports 80/443). All external access goes through Caddy. Scale by changing `replicas` — Caddy load-balances across replicas via the `dynamic a` upstream resolver in `deploy/caddy/Caddyfile` (re-resolves Docker DNS every 5s, round-robin policy). No Redis, no workers.
+Two services: tts-service (TTS API, internal port 8000) + caddy (HTTPS reverse proxy, ports 80/443). All external access goes through Caddy. The Caddyfile uses `handle` blocks to route API paths (`/v1/*`, `/health`, `/docs`, `/openapi.json`, `/redoc`) to the reverse proxy and everything else to `file_server` for the landing page (served from `/srv/www`). The `reverse_proxy` block includes `trusted_proxies private_ranges` (for reliable `X-Forwarded-For` client IP extraction) and `lb_policy least_conn`. Scale by changing `replicas` -- Caddy load-balances across replicas via the `dynamic a` upstream resolver (re-resolves Docker DNS every 5s). No Redis, no workers.
 
 ## Character Limits
 

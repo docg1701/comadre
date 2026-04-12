@@ -17,6 +17,7 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `QWEN3_MODEL_PATH` | `models/qwen3-tts-0.6b-q8_0.gguf` | Path to the Qwen3 TTS Q8_0 GGUF model file. | `/models/qwen3-tts-0.6b-q8_0.gguf` |
 | `QWEN3_TOKENIZER_PATH` | `models/qwen3-tts-tokenizer-f16.gguf` | Path to the Qwen3 TTS tokenizer GGUF file. | `/models/qwen3-tts-tokenizer-f16.gguf` |
 | `VOICES_DIR` | `/voices` | Root directory for voice discovery. Must contain `kokoro/` (`.npy` files) and/or `qwen/` (`.wav` files) subdirectories. See [voice-management.md](voice-management.md). | `/voices` |
+| `QWEN3_ENABLED` | `true` | Enable/disable Qwen3 engine. Set `false` on hosts where the x86_64 binary cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). When false, Qwen3 model download, load, and warm-up are skipped, and `qwen/*` voices are hidden from the API. | `false` |
 | `QWEN3_THREADS` | `4` | Number of CPU threads for Qwen3 inference. Minimum: 1. Beyond 4 cores, diminishing returns. | `4` |
 | `KOKORO_MODEL_URL` | *(GitHub release URL)* | URL to download Kokoro ONNX model on first start. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx` |
 | `KOKORO_VOICES_URL` | *(GitHub release URL)* | URL to download Kokoro voices binary on first start. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin` |
@@ -49,31 +50,50 @@ tts-service:
   build: .
   expose:
     - "8000"
+  volumes:
+    - comadre-models:/models:rw
+    - comadre-voices:/voices:ro
+    - comadre-audio:/audio:rw
+  environment:
+    API_KEY: ${API_KEY:?API_KEY must be set}
+    DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
+    PORT: "8000"
+    ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
+    NOISE_DIR: /app/noise
+    VOICES_DIR: /voices
+    KOKORO_MODEL_PATH: /models/kokoro-v1.0.onnx
+    KOKORO_VOICES_PATH: /models/voices-v1.0.bin
+    QWEN3_MODEL_PATH: /models/qwen3-tts-0.6b-q8_0.gguf
+    QWEN3_TOKENIZER_PATH: /models/qwen3-tts-tokenizer-f16.gguf
+    QWEN3_CLI_PATH: /usr/local/bin/qwen3-tts-cli
+    QWEN3_THREADS: "4"
+    QWEN3_ENABLED: "${QWEN3_ENABLED:-true}"
+    QWEN3_MODEL_URL: "${QWEN3_MODEL_URL:-}"
+    QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
+    KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
+    KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
+    RATE_LIMIT_SPEECH: "${RATE_LIMIT_SPEECH:-30/minute}"
+    RATE_LIMIT_HEALTH: "${RATE_LIMIT_HEALTH:-60/minute}"
   deploy:
     replicas: 1
     resources:
       limits:
         cpus: "4"
         memory: 6G
-  environment:
-    API_KEY: ${API_KEY:?API_KEY must be set}
-    PORT: "8000"
 ```
 
 The `API_KEY` uses the `?` syntax, which causes Docker Compose to error immediately if the variable is not set in `.env`. The TTS service is not exposed on the host network — all external access goes through Caddy (ports 80/443). Scale horizontally by increasing `replicas`.
 
-This is a simplified example. The actual `compose.yaml` maps 18+ environment variables. See the full `compose.yaml` for all mappings.
-
 ## Complete .env.example
 
 ```bash
-# Comadre -- Environment Configuration
+# Comadre — Environment Configuration
 # Copy to .env and fill in values
 
 # API authentication key (required)
 API_KEY=your-secret-api-key-here
 
-# Default voice for TTS when none specified
+# Default voice for TTS when none specified (format: engine/name)
 DEFAULT_VOICE=kokoro/pm_santa
 
 # Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert)
@@ -84,11 +104,20 @@ DOMAIN=localhost
 RATE_LIMIT_SPEECH=30/minute
 RATE_LIMIT_HEALTH=60/minute
 
+# Enable Qwen3 engine. Set to false on hosts where the x86_64 binary
+# cannot run (e.g. aarch64 / Oracle Cloud Ampere A1).
+QWEN3_ENABLED=true
+
 # Override bundled espeak-ng data for updated pt-BR pronunciation (optional)
+# Set to the path of espeak-ng-data built from source (PR #2344)
 # ESPEAK_DATA_PATH=/usr/share/espeak-ng-data-custom
 
 # Directory containing room/hiss noise WAV files for post-processing
 # NOISE_DIR=/app/noise
+
+# Base directory for voice files (kokoro/ and qwen/ subdirectories)
+# See docs/voice-management.md for details
+# VOICES_DIR=/voices
 
 # --- Kokoro engine paths ---
 # KOKORO_MODEL_PATH=models/kokoro-v1.0.onnx
@@ -105,8 +134,4 @@ RATE_LIMIT_HEALTH=60/minute
 # KOKORO_VOICES_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
 # QWEN3_MODEL_URL=
 # QWEN3_TOKENIZER_URL=
-
-# --- Voice directory ---
-# Root directory for filesystem-based voice discovery (see docs/voice-management.md)
-# VOICES_DIR=/voices
 ```

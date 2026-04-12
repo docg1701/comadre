@@ -119,7 +119,8 @@ Each engine has its own:
 - **CPU-only** -- runs on a 4 vCPU / 8 GB RAM VPS or any PC
 - **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally via `deploy.replicas` in compose.yaml
 - **HTTPS via Caddy** -- auto-TLS reverse proxy with Let's Encrypt or self-signed certs
-- **Rate limiting** -- per-IP rate limiting via slowapi (configurable per endpoint)
+- **Browser demo** -- public landing page at the root path for trying the API from any device (bring your own API key)
+- **Rate limiting** -- per-IP rate limiting via slowapi behind Caddy reverse proxy (configurable per endpoint)
 - **API key rotation** -- one-command key rotation without redeployment
 
 ## Requirements

@@ -103,6 +103,8 @@ If `voice` is omitted, the service uses the `DEFAULT_VOICE` environment variable
 
 The `/health` endpoint returns all available voices:
 
+> **Note:** When `QWEN3_ENABLED=false`, Qwen3 voices are hidden from the `/health` endpoint and the landing page voice picker, even if `.wav` files exist in `/voices/qwen/`. This is controlled by `EngineRouter.available_voices()` which checks `QwenEngine.is_loaded` before scanning the qwen directory.
+
 ```bash
 curl -sk https://localhost/health | jq '.voices'
 ```

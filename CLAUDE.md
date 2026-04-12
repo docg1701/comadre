@@ -24,13 +24,14 @@ uv run pre-commit run --all-files  # All quality checks
 ## Architecture — What You Must Know
 
 - **Dual-engine + filesystem voice discovery**: voice param format is `engine/name` (e.g. `kokoro/pm_santa`, `qwen/galvani`). Kokoro voices: `.npy` files in `/voices/kokoro/` or built-in from `.npz`. Qwen3 voices: `.wav` files in `/voices/qwen/`. Drop a file → available immediately, no restart. See `docs/voice-management.md`.
-- **Single FIFO queue** per instance (`asyncio.Lock`). No multi-worker model. Scale horizontally by increasing `deploy.replicas` in `compose.yaml` — Caddy load-balances across replicas via the `dynamic a` upstream resolver in `Caddyfile` (re-resolves Docker DNS every 5s, round-robin policy).
+- **Single FIFO queue** per instance (`asyncio.Lock`). No multi-worker model. Scale horizontally by increasing `deploy.replicas` in `compose.yaml` — Caddy load-balances across replicas via the `dynamic a` upstream resolver in `Caddyfile` (re-resolves Docker DNS every 5s, `least_conn` policy — queue-depth-aware, exploits the single-FIFO-lock-per-replica design where Caddy's active-connection count equals queued+in-flight requests).
 - **Engine-specific preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
 - **Engine-specific post-processing**: Kokoro → radio_warm pipeline. Qwen3 → whatsapp-subtle pipeline. Both output OGG Opus.
 - **Siglas**: Kokoro handles them natively via espeak-ng pt_extra dictionary (67 entries, 34/34 verified). Qwen3 uses spaced format (`C N P J`).
 - **Module boundaries enforced**: no HTTP concerns in `service.py`, no business logic in `api.py`, no raw `os.environ` (use pydantic-settings), no raw `HTTPException` (use `ComadreError` hierarchy).
 - **HTTPS via Caddy**: Caddy reverse proxy terminates TLS (auto Let's Encrypt or self-signed). Caddy is the sole external access point (ports 80/443) — the TTS service is not exposed on the host network. Configure domain via `DOMAIN` env var.
-- **Rate limiting**: slowapi per-IP rate limiting. Speech: 30/min, Health: 60/min (configurable via `RATE_LIMIT_SPEECH`, `RATE_LIMIT_HEALTH`). Shared limiter instance in `src/comadre/rate_limit.py`.
+- **Rate limiting**: slowapi per-IP rate limiting. Speech: 30/min, Health: 60/min (configurable via `RATE_LIMIT_SPEECH`, `RATE_LIMIT_HEALTH`). Shared limiter instance in `src/comadre/rate_limit.py`. Uses a custom `get_client_ip()` helper that reads the `X-Forwarded-For` header from Caddy, falling back to `request.client.host` for direct connections. Caddy's `trusted_proxies private_ranges` prevents spoofing.
+- **Landing page**: served by Caddy via `file_server` at root path (`/`). API paths (`/v1/*`, `/health`, `/docs`) routed via `@api` handle block to tts-service. Static assets in `deploy/landing/`, bind-mounted as `/srv/www:ro`. Controlled by `landing_enabled` ansible variable (default true).
 - **Import graph flows downward only**: config/logging → exceptions/schemas → preprocessing → service → rate_limit → api/health → main. No circular imports.
 
 ## Code Conventions

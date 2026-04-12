@@ -55,6 +55,8 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 ## Runtime Issues
 
+> **Note:** Health check examples below use `localhost`, but Caddy only responds to the Host header matching its configured domain. Replace `localhost` with your configured domain (e.g. `10.10.10.207` or `comadre-tts.duckdns.org`).
+
 ### 503 warming_up
 
 **Symptom:** All requests return 503 with `"Service is warming up"`.

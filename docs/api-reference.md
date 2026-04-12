@@ -32,8 +32,7 @@ Generate speech audio from text input.
 | `input` | string | Yes | -- | Text to synthesize (1-500 chars for Kokoro, 1-300 chars for Qwen3) |
 | `voice` | string | No | per `DEFAULT_VOICE` env var (default: `kokoro/pm_santa`) | Voice name in `engine/name` format (see voice routing table below and [voice-management.md](voice-management.md)) |
 | `response_format` | string | No | `ogg` | Output format: `ogg` or `wav` |
-| `speed` | float | No | `1.0` | Speed multiplier: 0.25 to 4.0. Accepted by schema but not yet applied by engines. |
-| `destination` | string | No | `whatsapp` | Target platform: `whatsapp`, `telegram`, `messenger`, or `instagram`. Accepted by schema but not yet applied -- all output currently uses OGG Opus regardless of destination. |
+| `speed` | float | No | `1.0` | Speed multiplier: 0.25 to 4.0. Applied by Kokoro (adjusts phoneme duration during synthesis). Accepted but ignored by Qwen3 (the C++ binary has no speed flag; the whatsapp-subtle pipeline applies a fixed 1.15x atempo independently). |
 | `raw` | boolean | No | `false` | Skip audio post-processing (vibrato, EQ, compression, echo, noise mixing). Returns the raw TTS engine output encoded to the requested format. Useful for testing or custom downstream processing. |
 
 ### Voice Routing
@@ -73,17 +72,6 @@ Each engine has a dedicated audio post-processing pipeline applied before output
 **whatsapp-subtle (Qwen3):** EQ shaping, dynamic compression, atempo 1.15x speed adjustment, echo, room/hiss noise layer.
 
 Both pipelines produce the final audio optimized for messaging platform voice notes.
-
-### Platform Output Formats
-
-The `destination` parameter is intended to control the output audio format. Currently all destinations produce OGG Opus. The planned format mapping is:
-
-| Destination | Planned Format | Sample Rate | Bitrate | Channels |
-| --- | --- | --- | --- | --- |
-| `whatsapp` | OGG Opus | 16kHz | 24kbps | Mono |
-| `telegram` | OGG Opus | 16kHz | 24kbps | Mono |
-| `messenger` | OGG Opus | 16kHz | 24kbps | Mono |
-| `instagram` | AAC M4A | 44.1kHz | 64kbps | Mono |
 
 ### Success Response
 
@@ -159,6 +147,18 @@ Wrong API key:
 }
 ```
 
+**405 -- Method Not Allowed:**
+
+```json
+{
+  "error": {
+    "message": "Method not allowed",
+    "type": "method_not_allowed_error",
+    "hint": "Use POST for /v1/audio/speech and GET for /health."
+  }
+}
+```
+
 **429 -- Rate Limit Exceeded:**
 
 ```json
@@ -171,7 +171,7 @@ Wrong API key:
 }
 ```
 
-The 429 response includes a `Retry-After` header. Default limits: 30 req/min for speech (per client IP), 60 req/min for health. Configurable via `RATE_LIMIT_SPEECH` and `RATE_LIMIT_HEALTH` environment variables.
+The 429 response includes a `Retry-After` header. Default limits: 30 req/min for speech (per client IP), 60 req/min for health. Configurable via `RATE_LIMIT_SPEECH` and `RATE_LIMIT_HEALTH` environment variables. Client IP is extracted from the `X-Forwarded-For` header injected by Caddy, falling back to `request.client.host` for direct connections. Caddy's `trusted_proxies private_ranges` directive prevents external clients from spoofing this header.
 
 **500 -- Server Error:**
 
@@ -278,18 +278,6 @@ curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
   --output test_clone.ogg
 ```
-
-**Instagram destination (AAC M4A output):**
-
-```bash
-curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Confira nosso novo produto!", "voice":"kokoro/pf_dora", "destination":"instagram"}' \
-  --output test.m4a
-```
-
-*Note: the `destination` parameter is not yet implemented. This request currently outputs OGG Opus regardless of the destination value.*
 
 **Missing authentication (error example):**
 

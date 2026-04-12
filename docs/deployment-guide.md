@@ -26,7 +26,7 @@ ansible-galaxy collection install community.docker
 
 ## Inventory Configuration
 
-Edit `deploy/ansible/inventory/production.yml` with your server details:
+Copy `deploy/ansible/inventory/production.yml.example` to `production.yml` and fill in your server details:
 
 ```yaml
 all:
@@ -34,35 +34,53 @@ all:
     comadre_vps:
       ansible_host: "YOUR_VPS_IP"
       ansible_user: "YOUR_SSH_USER"
+      ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
     api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
     voices_local_dir: ""
     repo_url: "YOUR_REPO_URL"
     repo_branch: "master"
-    port: 8000
+    default_voice: "kokoro/pm_santa"
+    domain: "localhost"
+    landing_enabled: true
+    rate_limit_speech: "30/minute"
+    rate_limit_health: "60/minute"
     restart_hour: 3
+    kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+    kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+    qwen3_enabled: true
+    qwen3_model_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf"
+    qwen3_tokenizer_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf"
     qwen3_model_local: ""
     qwen3_tokenizer_local: ""
 ```
+
+For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/oracle.yml.example` as a starting point instead. It sets `qwen3_enabled: false` since the Qwen3 binary is x86_64-only, and configures a real domain for Let's Encrypt certificates.
 
 **Variables:**
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `ansible_host` | Yes | VPS IP address |
+| `ansible_host` | Yes | VPS IP address or hostname |
 | `ansible_user` | Yes | SSH user with key-based auth |
 | `api_key_value` | Yes | API authentication key (reads from `COMADRE_API_KEY` env var) |
 | `repo_url` | Yes | Git repository URL |
 | `repo_branch` | No | Branch to deploy (default: `master`) |
-| `port` | No | Service port (default: `8000`) |
-| `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
-| `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
-| `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed) |
+| `default_voice` | No | Default voice for TTS when none specified (default: `kokoro/pm_santa`) |
+| `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed). Set to a real domain for Let's Encrypt auto-cert. |
+| `landing_enabled` | No | Deploy the public landing page at the root URL (default: `true`). When false, Caddy uses `Caddyfile-no-landing` which proxies all paths to the API. The API endpoints (`/v1/*`, `/health`, etc.) are always available regardless. |
+| `qwen3_enabled` | No | Enable Qwen3 engine (default: `true`). Set `false` on hosts where the x86_64 binary cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). Maps to `QWEN3_ENABLED` env var. |
 | `rate_limit_speech` | No | Rate limit for speech endpoint per IP (default: `30/minute`) |
 | `rate_limit_health` | No | Rate limit for health endpoint per IP (default: `60/minute`) |
-| `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model (empty to skip) |
-| `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF (empty to skip) |
+| `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
+| `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
+| `kokoro_model_url` | No | URL to download Kokoro ONNX model on first start (default: GitHub release URL) |
+| `kokoro_voices_url` | No | URL to download Kokoro voices binary on first start (default: GitHub release URL) |
+| `qwen3_model_url` | No | URL to download Qwen3 GGUF model on first start (default: HuggingFace URL). Empty string skips download. |
+| `qwen3_tokenizer_url` | No | URL to download Qwen3 tokenizer GGUF on first start (default: HuggingFace URL). Empty string skips download. |
+| `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model for SCP deployment (empty to skip) |
+| `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF for SCP deployment (empty to skip) |
 
 ## Complete Deployment Flow
 
@@ -332,7 +350,23 @@ DOMAIN=tts.example.com
 
 Leave `DOMAIN` as `localhost` (default). Caddy generates a self-signed certificate. Clients must accept self-signed certs or use `--insecure`/`-k` with curl.
 
-**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It proxies all traffic to `tts-service:8000` via Docker internal DNS with gzip compression and JSON logging to stdout (captured by Docker log driver). Caddy is the sole external access point — the TTS service is not exposed on the host network. For multi-replica deployments, the Caddyfile uses the `dynamic a` upstream resolver to re-query Docker DNS every 5 seconds and load-balance across all healthy replica IPs with the `least_conn` policy (queue-depth-aware: routes each request to the replica with the fewest active connections, which equals the fewest queued+in-flight TTS jobs in Comadre's single-FIFO-lock architecture). Plain `reverse_proxy host:port` resolves DNS only once at startup and would pin all traffic to a single replica — `dynamic a` is required.
+**Configuration:** The Caddyfile is at `deploy/caddy/Caddyfile`. It uses handle-based routing to serve two concerns from a single domain:
+
+- **API paths** (`/v1/*`, `/health`, `/docs`, `/openapi.json`, `/redoc`) are reverse-proxied to `tts-service:8000` via Docker internal DNS.
+- **All other paths** serve a static landing page from `/srv/www` (the `deploy/landing/` directory bind-mounted in `compose.yaml`).
+
+For multi-replica deployments, the Caddyfile uses the `dynamic a` upstream resolver to re-query Docker DNS every 5 seconds and load-balance across all healthy replica IPs with the `least_conn` policy (queue-depth-aware: routes each request to the replica with the fewest active connections, which equals the fewest queued+in-flight TTS jobs in Comadre's single-FIFO-lock architecture). Plain `reverse_proxy host:port` resolves DNS only once at startup and would pin all traffic to a single replica — `dynamic a` is required.
+
+A variant `deploy/caddy/Caddyfile-no-landing` exists for deployments where the landing page is disabled (`landing_enabled: false` in inventory). It proxies all paths to the API with no static file serving. The Ansible playbooks swap in the correct Caddyfile automatically based on the `landing_enabled` variable.
+
+### Landing Page
+
+The default Caddyfile serves a self-contained HTML page at the root URL that lets anyone with a valid API key try Comadre from a browser. Control this with the `landing_enabled` ansible variable:
+
+- **`landing_enabled: true`** (default): Uses the standard `Caddyfile` with handle-based routing. The landing page is served at `/`, API endpoints at their usual paths.
+- **`landing_enabled: false`**: Uses `Caddyfile-no-landing`, which proxies all traffic directly to the TTS service. Useful for internal/private deployments where a public-facing page is not wanted.
+
+The API endpoints (`/v1/*`, `/health`, `/docs`, `/openapi.json`, `/redoc`) are always available regardless of the `landing_enabled` setting.
 
 ## API Key Rotation
 
@@ -379,6 +413,8 @@ Container restarted. Waiting for health check...
 Service is healthy. Key rotation complete.
 ```
 
+The script waits up to 180 seconds for the health check to pass after restarting the container (models must reload).
+
 **Immediately after rotation:**
 
 1. Copy the new key from the output
@@ -422,8 +458,21 @@ If the API is only accessed from known IPs (e.g., your n8n server), you can rest
     @blocked not remote_ip 203.0.113.10 198.51.100.0/24
     respond @blocked 403
 
-    reverse_proxy tts-service:8000
     encode gzip
+
+    @api path /v1/* /health /docs /openapi.json /redoc
+    handle @api {
+        reverse_proxy {
+            dynamic a { name tts-service; port 8000; refresh 5s }
+            lb_policy least_conn
+            trusted_proxies private_ranges
+        }
+    }
+    handle {
+        root * /srv/www
+        file_server
+    }
+
     log {
         output stdout
         format json
