@@ -69,7 +69,7 @@
     - name: "[Health] Query health endpoint"
       when: tts_running_containers.stdout_lines | length > 0
       ansible.builtin.uri:
-        url: "https://localhost/health"
+        url: "https://{{ domain | default('localhost') }}/health"
         validate_certs: false
         return_content: true
         status_code: [200, 503]
