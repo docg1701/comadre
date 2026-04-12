@@ -13,6 +13,7 @@
 		Permissions-Policy "microphone=(), camera=(), geolocation=()"
 		Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
 		-Server
+		-Via
 	}
 
 	reverse_proxy {

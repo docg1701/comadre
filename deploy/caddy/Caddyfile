@@ -13,6 +13,7 @@
 		Permissions-Policy "microphone=(), camera=(), geolocation=()"
 		Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
+		-Via
 	}
 
 	# API paths → tts-service (reverse proxy with rate-limit-aware XFF)
