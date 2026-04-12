@@ -5,6 +5,16 @@
 {$DOMAIN:localhost} {
 	encode gzip
 
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "microphone=(), camera=(), geolocation=()"
+		Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		-Server
+	}
+
 	reverse_proxy {
 		dynamic a {
 			name tts-service
@@ -13,6 +23,8 @@
 		}
 		lb_policy least_conn
 		trusted_proxies private_ranges
+		header_down -server
+		header_down -via
 	}
 
 	log {

@@ -333,3 +333,19 @@ class TestSpeechUnhandledException:
         assert response.status_code == 500
         body = response.json()
         assert body["error"]["type"] == "server_error"
+
+
+class TestDocsDisabled:
+    """Verify OpenAPI documentation endpoints are disabled in production."""
+
+    async def test_docs_returns_404(self, client: AsyncClient) -> None:
+        response = await client.get("/docs")
+        assert response.status_code == 404
+
+    async def test_redoc_returns_404(self, client: AsyncClient) -> None:
+        response = await client.get("/redoc")
+        assert response.status_code == 404
+
+    async def test_openapi_json_returns_404(self, client: AsyncClient) -> None:
+        response = await client.get("/openapi.json")
+        assert response.status_code == 404

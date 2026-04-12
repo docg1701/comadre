@@ -87,8 +87,8 @@ class AuthenticationError(ComadreError):
             status_code=401,
             error_type="authentication_error",
             hint=(
-                "Check the API_KEY environment variable and ensure your"
-                " Authorization header uses 'Bearer <key>'."
+                "Ensure your Authorization header uses the format"
+                " 'Bearer <your-api-key>'."
             ),
         )
 

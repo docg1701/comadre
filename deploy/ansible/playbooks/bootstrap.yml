@@ -163,6 +163,18 @@
         state: enabled
 
     # =========================================================================
+    # SSH Hardening
+    # =========================================================================
+
+    - name: "[SSH] Suppress OS identifier from SSH banner"
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/99-no-banner.conf
+        content: "DebianBanner no\n"
+        mode: "0644"
+      notify: restart sshd
+
+    # =========================================================================
     # Git Clone
     # =========================================================================
 
@@ -292,6 +304,8 @@
         url: "https://{{ domain | default('localhost') }}/health"
         validate_certs: false
         return_content: true
+        headers:
+          Authorization: "Bearer {{ api_key_value }}"
       register: health_check
       until: >-
         health_check.status == 200
@@ -330,3 +344,10 @@
             --output test.ogg
 
           ============================================
+
+  handlers:
+    - name: restart sshd
+      become: true
+      ansible.builtin.service:
+        name: sshd
+        state: restarted

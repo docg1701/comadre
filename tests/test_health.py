@@ -11,7 +11,11 @@ from httpx import ASGITransport, AsyncClient
 
 from comadre import __version__
 from comadre.config import get_settings
-from comadre.health import HealthStatus, build_health_response
+from comadre.health import (
+    HealthStatus,
+    build_health_response,
+    build_minimal_health_response,
+)
 from comadre.main import create_app
 
 
@@ -233,24 +237,39 @@ class TestHealthStatusEnum:
 # --- HTTP-level health endpoint tests ---
 
 
+class TestMinimalHealthResponse:
+    """Tests for build_minimal_health_response (unauthenticated callers)."""
+
+    def test_returns_200_when_ready(self, mock_router: MagicMock) -> None:
+        _, status_code = build_minimal_health_response(router=mock_router, ready=True)
+        assert status_code == 200
+
+    def test_returns_503_when_not_ready(self, mock_router: MagicMock) -> None:
+        _, status_code = build_minimal_health_response(router=mock_router, ready=False)
+        assert status_code == 503
+
+    def test_status_field_is_healthy(self, mock_router: MagicMock) -> None:
+        body, _ = build_minimal_health_response(router=mock_router, ready=True)
+        assert body["status"] == "healthy"
+
+    def test_contains_only_status_and_voices(self, mock_router: MagicMock) -> None:
+        body, _ = build_minimal_health_response(router=mock_router, ready=True)
+        assert set(body.keys()) == {"status", "voices"}
+
+    def test_voices_reflect_router(self, mock_router: MagicMock) -> None:
+        body, _ = build_minimal_health_response(router=mock_router, ready=True)
+        assert body["voices"] == mock_router.available_voices()
+
+
 class TestHealthHTTPEndpoint:
-    """Tests for GET /health via HTTP using AsyncClient."""
+    """Tests for unauthenticated GET /health via HTTP."""
 
     async def test_health_returns_200_when_ready(self, client: AsyncClient) -> None:
         response = await client.get("/health")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "healthy"
-        expected_keys = {
-            "status",
-            "voices",
-            "engines",
-            "queue_depth",
-            "uptime_seconds",
-            "memory_mb",
-            "version",
-        }
-        assert set(body.keys()) == expected_keys
+        assert set(body.keys()) == {"status", "voices"}
 
     async def test_health_returns_503_when_not_ready(
         self, monkeypatch: pytest.MonkeyPatch
@@ -260,6 +279,7 @@ class TestHealthHTTPEndpoint:
         monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
         get_settings.cache_clear()
         app = create_app()
+        app.state.settings = get_settings()
         app.state.ready = False
         app.state.router = None
         app.state.queue_lock = asyncio.Lock()
@@ -273,11 +293,13 @@ class TestHealthHTTPEndpoint:
         assert response.status_code == 503
         body = response.json()
         assert body["status"] == "warming_up"
+        assert set(body.keys()) == {"status", "voices"}
 
     async def test_health_requires_no_authentication(self, client: AsyncClient) -> None:
-        # No Authorization header — should still return 200
         response = await client.get("/health")
         assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {"status", "voices"}
 
     async def test_health_voices_reflect_router(self, client: AsyncClient) -> None:
         response = await client.get("/health")
@@ -289,3 +311,75 @@ class TestHealthHTTPEndpoint:
             "qwen/female-reference",
             "qwen/male-reference",
         ]
+
+
+class TestHealthAuthenticatedEndpoint:
+    """Tests for authenticated GET /health — returns full detail."""
+
+    async def test_authenticated_returns_full_response(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        response = await client.get("/health", headers=auth_headers)
+        assert response.status_code == 200
+        body = response.json()
+        expected_keys = {
+            "status",
+            "voices",
+            "engines",
+            "queue_depth",
+            "uptime_seconds",
+            "memory_mb",
+            "version",
+        }
+        assert set(body.keys()) == expected_keys
+
+    async def test_authenticated_field_order(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        response = await client.get("/health", headers=auth_headers)
+        body = response.json()
+        assert list(body.keys()) == [
+            "status",
+            "voices",
+            "engines",
+            "queue_depth",
+            "uptime_seconds",
+            "memory_mb",
+            "version",
+        ]
+
+    async def test_authenticated_warming_up_returns_full_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
+        monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
+        get_settings.cache_clear()
+        app = create_app()
+        app.state.settings = get_settings()
+        app.state.ready = False
+        app.state.router = None
+        app.state.queue_lock = asyncio.Lock()
+        app.state.queue_depth = 0
+        app.state.start_time = time.monotonic()
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as c:
+            response = await c.get(
+                "/health",
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "warming_up"
+        expected_keys = {
+            "status",
+            "voices",
+            "engines",
+            "queue_depth",
+            "uptime_seconds",
+            "memory_mb",
+            "version",
+        }
+        assert set(body.keys()) == expected_keys

@@ -35,6 +35,30 @@ def _get_uptime_seconds(start_time: float) -> int:
     return int(time.monotonic() - start_time)
 
 
+def build_minimal_health_response(
+    *,
+    router: EngineRouter,
+    ready: bool,
+) -> tuple[dict[str, Any], int]:
+    """Build minimal health response for unauthenticated callers.
+
+    Returns only status and voice list — no engine internals,
+    memory, uptime, version, or queue depth.
+    """
+    if ready:
+        status = HealthStatus.healthy
+        status_code = 200
+    else:
+        status = HealthStatus.warming_up
+        status_code = 503
+
+    body: dict[str, Any] = {
+        "status": str(status),
+        "voices": router.available_voices(),
+    }
+    return body, status_code
+
+
 def build_health_response(
     *,
     router: EngineRouter,

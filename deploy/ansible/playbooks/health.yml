@@ -31,6 +31,14 @@
           Run bootstrap.yml first to deploy the service.
         success_msg: "Comadre directory found."
 
+    - name: "[Prereq] Warn if API key is missing (diagnostics will be limited)"
+      when: (api_key_value | default('')) | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: COMADRE_API_KEY is not set. Health diagnostics will be
+          limited (no engine status, memory, version). Export the variable
+          for full diagnostics.
+
     # =========================================================================
     # Container State
     # =========================================================================
@@ -73,6 +81,8 @@
         validate_certs: false
         return_content: true
         status_code: [200, 503]
+        headers:
+          Authorization: "Bearer {{ api_key_value }}"
       register: health_check
       ignore_errors: true
 

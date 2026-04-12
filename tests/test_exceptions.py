@@ -139,10 +139,10 @@ class TestAuthenticationError:
         err = AuthenticationError("Token expired")
         assert err.message == "Token expired"
 
-    def test_hint_mentions_api_key(self) -> None:
+    def test_hint_mentions_bearer_format(self) -> None:
         err = AuthenticationError()
-        assert "API_KEY" in err.hint
         assert "Bearer" in err.hint
+        assert "API_KEY" not in err.hint
 
     def test_is_comadre_error(self) -> None:
         err = AuthenticationError()

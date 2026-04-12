@@ -130,6 +130,8 @@
         url: "https://{{ domain | default('localhost') }}/health"
         validate_certs: false
         return_content: true
+        headers:
+          Authorization: "Bearer {{ api_key_value }}"
       register: health_check
       until: >-
         health_check.status == 200

@@ -15,11 +15,11 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from comadre import __version__
-from comadre.api import api_router
+from comadre.api import api_router, verify_api_key
 from comadre.config import get_settings
 from comadre.download import ensure_kokoro_models, ensure_qwen3_models
 from comadre.exceptions import RateLimitError, register_exception_handlers
-from comadre.health import build_health_response
+from comadre.health import build_health_response, build_minimal_health_response
 from comadre.logging import get_logger, setup_logging
 from comadre.rate_limit import get_client_ip, limiter
 from comadre.service import EngineRouter, KokoroEngine, QwenEngine
@@ -239,6 +239,9 @@ def create_app() -> FastAPI:
         title="Comadre",
         version=__version__,
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.state.limiter = limiter
     access_logger = get_logger("access")
@@ -265,30 +268,53 @@ def create_app() -> FastAPI:
     app.add_exception_handler(429, _rate_limit_exceeded_handler)
     app.include_router(api_router)
 
+    async def _try_auth(request: Request) -> bool:
+        """Return True if the request carries a valid API key."""
+        try:
+            await verify_api_key(
+                request,
+                authorization=request.headers.get("authorization", ""),
+            )
+        except Exception:
+            return False
+        return True
+
     @app.get("/health")
     @limiter.limit(settings.rate_limit_health)
     async def health_endpoint(request: Request) -> JSONResponse:
+        authenticated = await _try_auth(request)
+
         if not getattr(request.app.state, "ready", False):
             router = getattr(request.app.state, "router", None)
             if router is None:
-                return JSONResponse(
-                    content={
-                        "status": "warming_up",
-                        "voices": [],
-                        "engines": {},
-                        "queue_depth": 0,
-                        "uptime_seconds": 0,
-                        "memory_mb": 0,
-                        "version": __version__,
-                    },
-                    status_code=503,
-                )
-        body, status_code = build_health_response(
-            router=request.app.state.router,
-            ready=request.app.state.ready,
-            start_time=request.app.state.start_time,
-            queue_depth=request.app.state.queue_depth,
-        )
+                minimal: dict[str, Any] = {
+                    "status": "warming_up",
+                    "voices": [],
+                }
+                if authenticated:
+                    minimal.update(
+                        {
+                            "engines": {},
+                            "queue_depth": 0,
+                            "uptime_seconds": 0,
+                            "memory_mb": 0,
+                            "version": __version__,
+                        }
+                    )
+                return JSONResponse(content=minimal, status_code=503)
+
+        if authenticated:
+            body, status_code = build_health_response(
+                router=request.app.state.router,
+                ready=request.app.state.ready,
+                start_time=request.app.state.start_time,
+                queue_depth=request.app.state.queue_depth,
+            )
+        else:
+            body, status_code = build_minimal_health_response(
+                router=request.app.state.router,
+                ready=request.app.state.ready,
+            )
         return JSONResponse(content=body, status_code=status_code)
 
     return app

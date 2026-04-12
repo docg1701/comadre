@@ -5,8 +5,18 @@
 {$DOMAIN:localhost} {
 	encode gzip
 
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "microphone=(), camera=(), geolocation=()"
+		Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		-Server
+	}
+
 	# API paths → tts-service (reverse proxy with rate-limit-aware XFF)
-	@api path /v1/* /health /docs /openapi.json /redoc
+	@api path /v1/* /health
 	handle @api {
 		reverse_proxy {
 			dynamic a {
@@ -16,6 +26,8 @@
 			}
 			lb_policy least_conn
 			trusted_proxies private_ranges
+			header_down -server
+			header_down -via
 		}
 	}
 
