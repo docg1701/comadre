@@ -1,8 +1,5 @@
 {
 	default_sni {$DOMAIN:localhost}
-	servers {
-		header -Server
-	}
 }
 
 {$DOMAIN:localhost} {
