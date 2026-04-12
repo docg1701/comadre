@@ -1,5 +1,8 @@
 {
 	default_sni {$DOMAIN:localhost}
+	servers {
+		header -Server
+	}
 }
 
 {$DOMAIN:localhost} {
@@ -11,7 +14,7 @@
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "microphone=(), camera=(), geolocation=()"
-		Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'; connect-src 'self'; media-src 'self' blob:; upgrade-insecure-requests; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
 		-Via
 	}
@@ -19,6 +22,9 @@
 	# API paths → tts-service (reverse proxy with rate-limit-aware XFF)
 	@api path /v1/* /health
 	handle @api {
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy {
 			dynamic a {
 				name tts-service

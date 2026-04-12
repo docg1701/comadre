@@ -242,6 +242,7 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        redirect_slashes=False,
     )
     app.state.limiter = limiter
     access_logger = get_logger("access")
