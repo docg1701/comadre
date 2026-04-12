@@ -13,6 +13,7 @@ services:
       - "443:443"
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/landing:/srv/www:ro
       - caddy-data:/data
       - caddy-config:/config
     environment:

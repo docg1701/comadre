@@ -3,16 +3,27 @@
 }
 
 {$DOMAIN:localhost} {
-	reverse_proxy {
-		dynamic a {
-			name tts-service
-			port 8000
-			refresh 5s
-		}
-		lb_policy least_conn
-		trusted_proxies private_ranges
-	}
 	encode gzip
+
+	# API paths → tts-service (reverse proxy with rate-limit-aware XFF)
+	@api path /v1/* /health /docs /openapi.json /redoc
+	handle @api {
+		reverse_proxy {
+			dynamic a {
+				name tts-service
+				port 8000
+				refresh 5s
+			}
+			lb_policy least_conn
+			trusted_proxies private_ranges
+		}
+	}
+
+	# Everything else → static landing page
+	handle {
+		root * /srv/www
+		file_server
+	}
 
 	log {
 		output stdout
