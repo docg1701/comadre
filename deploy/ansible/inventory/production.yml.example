@@ -27,6 +27,13 @@ all:
     # Use "localhost" for self-signed cert on private networks
     domain: "localhost"
 
+    # Public landing page at https://<domain>/ — when true (default), Caddy
+    # serves a self-contained HTML form at the root path that lets anyone
+    # with a valid API key try Comadre from a browser. Set to false on
+    # internal/private deployments where you don't want a public face;
+    # the API endpoints under /v1/* and /health are always served either way.
+    landing_enabled: true
+
     # Rate limiting (per client IP)
     rate_limit_speech: "30/minute"
     rate_limit_health: "60/minute"

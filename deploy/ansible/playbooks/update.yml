@@ -64,8 +64,25 @@
         repo: "{{ repo_url }}"
         dest: "~/comadre"
         version: "{{ repo_branch }}"
-        force: false
+        force: true
         update: true
+
+    # =========================================================================
+    # Landing Page Toggle
+    # =========================================================================
+    # When landing_enabled is false, swap the committed Caddyfile (which serves
+    # the public homepage at /) for the API-only variant. force: true on the
+    # git pull above ensures the previous run's swap is reverted before this
+    # task re-applies the toggle, so flipping landing_enabled in either direction
+    # is idempotent across runs.
+
+    - name: "[Caddy] Use API-only Caddyfile (landing page disabled)"
+      when: not (landing_enabled | default(true) | bool)
+      ansible.builtin.copy:
+        src: "{{ ansible_env.HOME }}/comadre/deploy/caddy/Caddyfile-no-landing"
+        dest: "{{ ansible_env.HOME }}/comadre/deploy/caddy/Caddyfile"
+        remote_src: true
+        mode: "0644"
 
     # =========================================================================
     # Configuration Sync

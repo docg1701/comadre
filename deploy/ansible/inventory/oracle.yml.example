@@ -25,6 +25,10 @@ all:
     # Real domain → Caddy provisions Let's Encrypt cert via ACME HTTP-01
     domain: "CHANGE_ME.duckdns.org"
 
+    # Public landing page (true is the default — Oracle hosts are public-facing
+    # so the showcase page makes sense here)
+    landing_enabled: true
+
     # Rate limiting (per client IP, behind Caddy via X-Forwarded-For)
     rate_limit_speech: "30/minute"
     rate_limit_health: "60/minute"
