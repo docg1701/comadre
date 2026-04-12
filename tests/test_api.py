@@ -130,6 +130,45 @@ class TestSpeechSuccess:
         assert call_kwargs.kwargs["raw"] is False
 
 
+class TestMethodNotAllowed:
+    """405 responses use the project's standard error envelope."""
+
+    async def test_get_on_speech_returns_405_with_error_envelope(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.get("/v1/audio/speech")
+        assert response.status_code == 405
+        body = response.json()
+        assert "error" in body
+        assert body["error"]["type"] == "method_not_allowed_error"
+        assert "GET" in body["error"]["message"]
+        assert "/v1/audio/speech" in body["error"]["message"]
+        assert body["error"]["hint"]
+        # Allow header preserved from Starlette
+        assert "Allow" in response.headers
+
+    async def test_put_on_speech_returns_405_with_error_envelope(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.put(
+            "/v1/audio/speech",
+            json={"input": "x", "voice": "kokoro/pm_santa"},
+        )
+        assert response.status_code == 405
+        body = response.json()
+        assert body["error"]["type"] == "method_not_allowed_error"
+
+    async def test_post_on_health_returns_405_with_error_envelope(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.post("/health", json={})
+        assert response.status_code == 405
+        body = response.json()
+        assert body["error"]["type"] == "method_not_allowed_error"
+        assert "POST" in body["error"]["message"]
+        assert "/health" in body["error"]["message"]
+
+
 class TestSpeechAuth:
     """Missing or invalid auth returns 401."""
 

@@ -203,6 +203,34 @@ def _rate_limit_exceeded_handler(request: Request, exc: Exception) -> JSONRespon
     )
 
 
+def _method_not_allowed_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Convert Starlette HTTPException(405) to our standard error format.
+
+    Without this handler, FastAPI returns ``{"detail": "Method Not Allowed"}``
+    which breaks the consistent ``{"error": {message, type, hint}}`` envelope
+    used everywhere else. The Allow header from the original exception is
+    preserved when present.
+    """
+    headers: dict[str, str] | None = None
+    exc_headers = getattr(exc, "headers", None)
+    if isinstance(exc_headers, dict) and "Allow" in exc_headers:
+        headers = {"Allow": exc_headers["Allow"]}
+    return JSONResponse(
+        status_code=405,
+        content={
+            "error": {
+                "message": f"Method {request.method} not allowed on {request.url.path}",
+                "type": "method_not_allowed_error",
+                "hint": (
+                    "Use POST for /v1/audio/speech and GET for /health."
+                    " See docs/api-reference.md for the full method list."
+                ),
+            }
+        },
+        headers=headers,
+    )
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
@@ -233,6 +261,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(405, _method_not_allowed_handler)
     app.add_exception_handler(429, _rate_limit_exceeded_handler)
     app.include_router(api_router)
 
