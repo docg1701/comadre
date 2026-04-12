@@ -8,7 +8,7 @@
 
 - name: Update Comadre TTS Service
   hosts: comadre_vps
-  gather_facts: false
+  gather_facts: true
 
   tasks:
     # =========================================================================
