@@ -1,5 +1,9 @@
 #tmp shit
 tmp/
+
+# Runtime key registry (sqlite DB + WAL sidecars, created by `comadre-keys`)
+data/
+
 # Claude Code local settings
 .claude/
 

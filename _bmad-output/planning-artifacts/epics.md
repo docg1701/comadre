@@ -178,7 +178,7 @@ This document provides the complete epic and story breakdown for Comadre 2.0.0, 
 
 ### UX Design Requirements
 
-- UX-DR1: KeyPanel component — double-border `rich.Panel` for one-shot key display at `issue-key` and `rotate-key`. Key plaintext on its own line at column 0 (no leading whitespace) for triple-click copy. Includes "Copy now — shown only once" warning, prefix, RPM, price, billing mode, first charge date. Complimentary variant shows "R$ 0.00 (bundled externally)" and "paid_until: — (not applicable)".
+- UX-DR1: KeyPanel component — industry-standard three-piece layout (warning Panel + naked plaintext line + context Panel; see `ux-design-specification.md` §KeyPanel) for one-shot key display at `issue-key` and `rotate-key`. Key plaintext is deliberately OUTSIDE any panel (column 0, no leading whitespace, no wrap) for triple-click copy fidelity. Includes "Copy now — shown only once" warning, prefix, RPM, price (pt-BR locale: `R$ 1.234,56`), billing mode, first charge date. Complimentary variant shows "R$ 0,00 (bundled externally)" and "paid_until: — (not applicable)".
 - UX-DR2: StatusTable component — `rich.Table` with color-coded status badges for `list-keys`, `list-customers`, `at-risk`. Columns follow invariant order: identifier → name → status → billing fields → dates. Max 7 columns at 80-col width. Row count shown below. Table title reflects applied filter.
 - UX-DR3: DetailPanel component — single-border `rich.Panel` with labeled key-value pairs for `show`. Labels right-padded to longest label width. Key detail variant: prefix, customer, status, RPM, price, billing, paid until, created, last used, age, notes. Customer detail variant: ID, name, email, tax ID kind, key count, registered, notes.
 - UX-DR4: RevenueReport component — single-border `rich.Panel` with `Rule()` separators and `[bold]` totals for `revenue`. Shows paid/pending/suspended/complimentary counts, MRR, projected total, next charge date. Complimentary keys listed separately with notes.
@@ -341,7 +341,7 @@ So that I can deliver the key to my customer via WhatsApp and start earning reve
 
 **Given** the operator issues a complimentary key
 **When** they run `comadre-keys issue-key --customer cust_01... --rpm 120 --billing-mode complimentary --notes "included in infra bundle"`
-**Then** the KeyPanel shows `billing mode: complimentary`, `price: R$ 0.00 (bundled externally)`, `paid_until: — (not applicable)`
+**Then** the KeyPanel shows `billing mode: complimentary`, `price: R$ 0,00 (bundled externally)` (pt-BR comma-decimal), `paid_until: — (not applicable)`
 **And** `price_monthly` is stored as `0.0` and `paid_until` is stored as NULL
 
 **Given** the referenced customer ID does not exist
@@ -465,7 +465,7 @@ So that I can manage the full key lifecycle without creating new records.
 
 **Given** a key with prefix `cmdr_Pq` exists
 **When** the operator runs `comadre-keys update-key cmdr_Pq --rpm 120 --price 199`
-**Then** the RPM and price are updated, a ConfirmationLine is printed: `Updated: cmdr_Pq (Helena Ribeiro) — rpm: 60→120, price: R$ 149.00→R$ 199.00`
+**Then** the RPM and price are updated, a ConfirmationLine is printed: `Updated: cmdr_Pq (Helena Ribeiro) — rpm: 60→120, price: R$ 149,00→R$ 199,00` (pt-BR comma-decimal)
 **And** the audit log records an `update_key` event
 
 **Given** a key needs rotation (compromised or requested)

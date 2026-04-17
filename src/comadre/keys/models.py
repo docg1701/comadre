@@ -87,9 +87,15 @@ class IssuedKey:
     Carries the plaintext from the command body to the renderer in a
     typed container so the plaintext string is not passed around as a
     bare ``str`` — reduces the chance of accidental logging.
+
+    ``first_charge_date`` is an ISO date string for manual keys, None for
+    complimentary. ``first_charge_days_free`` is the pre-computed whole-day
+    delta from today-in-billing-TZ to that date; the command resolves it
+    before calling the renderer so the display is decoupled from any clock.
     """
 
     plaintext: str
     record: ApiKeyRecord
     customer_name: str
     first_charge_date: str | None
+    first_charge_days_free: int | None

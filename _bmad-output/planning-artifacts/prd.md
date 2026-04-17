@@ -266,7 +266,7 @@ CLI prints:
   prefix:       cmdr_li
   rate limit:   60/min
   billing mode: manual
-  price:        R$ 149.00/month
+  price:        R$ 149,00/month
   first charge: 2026-05-05 (22 days free until then)
 ==============================================================
 ```
@@ -489,7 +489,7 @@ Price and limit update immediately. Customer is billed the new value starting ne
 **Persona:** Ricardo, the same operator. One of his customers, "AgroBots" (a legal entity), subscribes to a R$850/month bundle that includes: a managed VPS, hosted n8n, and Comadre access. The Comadre portion is embedded in the bundle — Ricardo does not bill it separately because the payment arrives from the umbrella infrastructure contract.
 
 **Opening Scene:**
-Ricardo closes the contract with AgroBots. When provisioning, he does not want Comadre's key to show up in the MRR report as "R$ 0.00" or be at risk of suspension every day 06. He wants the key to be **complimentary** — technically active, not billed, not swept by the cron.
+Ricardo closes the contract with AgroBots. When provisioning, he does not want Comadre's key to show up in the MRR report as "R$ 0,00" or be at risk of suspension every day 06. He wants the key to be **complimentary** — technically active, not billed, not swept by the cron.
 
 **Rising Action:**
 He registers the legal entity with a CNPJ (validated by checksum on entry), then:
@@ -512,7 +512,7 @@ CLI returns:
   prefix:       cmdr_li
   rate limit:   120/min
   billing mode: complimentary
-  price:        R$ 0.00 (bundled externally)
+  price:        R$ 0,00 (bundled externally)
   paid_until:   — (not applicable)
   status:       active (permanent until revoked)
 ==============================================================

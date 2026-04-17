@@ -452,7 +452,7 @@ The operator runs `comadre-keys list-customers` and sees one row. Or `comadre-ke
 │ Customer:    Helena Ribeiro (cust_01HF3)│
 │ Status:      active                     │
 │ RPM:         60/min                     │
-│ Price:       R$ 149.00/month            │
+│ Price:       R$ 149,00/month            │
 │ Billing:     manual                     │
 │ Paid until:  2026-06-05                 │
 │ Created:     2026-04-15                 │
@@ -709,18 +709,40 @@ flowchart TD
 
 **Purpose:** Display a newly created or rotated API key with full context. The most critical output component — shown once per key creation, never again.
 
-**Content:**
-- Key plaintext on a dedicated line (no leading whitespace, copy-friendly)
-- "Copy now — shown only once" warning
-- Context fields: prefix, customer name, RPM, billing mode, price, first charge date
+**Layout (industry-standard three-piece design):**
+
+Follows the convention established by AWS IAM console, GitHub Personal Access Tokens, and Stripe live-key reveal: a warning header, the secret on a bare line, and contextual metadata below. The plaintext is deliberately OUTSIDE any bordered panel — wrapping it inside a Panel would flank it with vertical border glyphs (`║`) that break triple-click selection (UX-DR17).
+
+```
+╔═ API KEY (copy now — shown only once) ═╗
+║ Copy the key below now. It is the last ║
+║ time it will be shown — there is no    ║
+║ way to recover it.                     ║
+╚════════════════════════════════════════╝
+cmdr_live_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+╔══════════════════════════════════════════════════╗
+║ prefix:        XXXXXXXX                          ║
+║ customer:      <name> (cust_<ulid>)              ║
+║ rate limit:    60/min                            ║
+║ billing mode:  manual                            ║
+║ price:         R$ 149,00/month                   ║
+║ first charge:  2026-05-05 (22 days free ...)     ║
+╚══════════════════════════════════════════════════╝
+```
+
+1. **Warning Panel** — `box.DOUBLE`, title `"API KEY (copy now — shown only once)"`, body is the single-sentence warning.
+2. **Naked plaintext line** — column 0, no border chars, no label, no wrapping (`no_wrap=True`, `overflow="ignore"`, `crop=False`). Guarantees triple-click selection copies only the key on any terminal width.
+3. **Blank line** — visual separation between the copyable secret and the metadata block.
+4. **Context Panel** — `box.DOUBLE`, labeled key/value rows. Labels right-padded to the longest label width (`billing mode:` / `first charge:` = 13 chars).
 
 **States:**
-- `manual` billing mode: shows price and first charge date
-- `complimentary` billing mode: shows "R$ 0.00 (bundled externally)" and "paid_until: — (not applicable)"
+- `manual` billing mode: shows `price: R$ <amount>/month` (pt-BR format: dot-thousands, comma-decimal, e.g. `R$ 1.234,56`) and `first charge: YYYY-MM-DD (N days free until then)`.
+- `complimentary` billing mode: shows `price: R$ 0,00 (bundled externally)` and `paid until: — (not applicable)` (em-dash U+2014).
 
-**`rich` assembly:** `Panel(content, border_style="double", title="API KEY (copy now — shown only once)")` on stdout
+**Design rationale — DO NOT wrap the plaintext in a Panel.** Earlier drafts of AC1 said "plaintext on its own line at the panel content's column 0, inside the border". That wording contradicts UX-DR17: any Rich `Panel` renders vertical border characters flanking its content, which triple-click selects along with the key. The three-piece layout resolves the tension by placing the plaintext between two panels rather than inside one. Future refactors MUST preserve this structure.
 
-**Accessibility:** Key plaintext is on its own line so screen readers announce it as a distinct element. Warning text precedes the key in reading order.
+**Accessibility:** Key plaintext is on its own line so screen readers announce it as a distinct element. Warning Panel precedes the key in reading order; Context Panel follows.
 
 #### StatusTable
 

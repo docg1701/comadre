@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from comadre.config import get_settings
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import get_cli_actor
+from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import render_confirmation, render_error
 from comadre.keys.crypto import (
     encrypt_tax_id,
@@ -96,13 +97,13 @@ def create_customer(
     try:
         settings = get_settings()
     except ValidationError as exc:
-        if _is_missing_encryption_key(exc):
+        if is_missing_encryption_key(exc):
             render_error(
                 "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
                 _missing_key_hint,
             )
         else:
-            render_error("Configuration error", _first_error_msg(exc))
+            render_error("Configuration error", first_error_msg(exc))
         raise typer.Exit(code=6) from None
     except (OSError, PermissionError) as exc:
         render_error("Configuration error: settings file unreadable", str(exc))
@@ -146,7 +147,7 @@ def create_customer(
     except ValidationError as exc:
         render_error(
             "Usage error: invalid customer attributes",
-            _first_error_msg(exc),
+            first_error_msg(exc),
         )
         raise typer.Exit(code=2) from None
 
@@ -180,26 +181,3 @@ def create_customer(
         "Customer created | id=%s | tax_id_kind=%s", record.id, record.tax_id_kind
     )
     render_confirmation(f"Customer created: {record.id} ({record.name})")
-
-
-def _first_error_msg(exc: ValidationError) -> str:
-    errors = exc.errors()
-    if not errors:
-        return "Check --name and --email values."
-    return str(errors[0].get("msg", "Check --name and --email values."))
-
-
-def _is_missing_encryption_key(exc: ValidationError) -> bool:
-    """Return True when the ValidationError is specifically about the encryption key.
-
-    Matches either the custom model-level validator message or a direct
-    `key_registry_encryption_key` field error.
-    """
-    for err in exc.errors():
-        loc = err.get("loc", ())
-        if loc and loc[0] == "key_registry_encryption_key":
-            return True
-        msg = str(err.get("msg", ""))
-        if "KEY_REGISTRY_ENCRYPTION_KEY" in msg:
-            return True
-    return False

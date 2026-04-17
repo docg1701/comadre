@@ -10,6 +10,7 @@ from __future__ import annotations
 import typer
 
 from comadre.keys.cli.commands.customers import app as customers_app
+from comadre.keys.cli.commands.keys import app as keys_app
 
 app = typer.Typer(
     name="comadre-keys",
@@ -18,6 +19,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.registered_commands.extend(customers_app.registered_commands)
+app.registered_commands.extend(keys_app.registered_commands)
 
 
 @app.callback()

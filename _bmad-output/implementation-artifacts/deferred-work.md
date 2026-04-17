@@ -2,6 +2,16 @@
 
 Items surfaced during code reviews that were judged real but non-gating for the current story. Re-triage when picking up a related story or a hardening pass.
 
+## Deferred from: code review of story-1-2 (2026-04-17)
+
+- **`comadre-keys` CLI requires TTS-side config fields it doesn't need.** Surfaced when Galvani ran the Task 9.1 manual test: `create-customer` failed with "api_key: Field required" because `Settings` is a single monolith mixing TTS runtime config (`api_key`, `domain`, rate limits) with registry CLI config (`key_registry_*`, `billing_*`). The registry CLI should work without the TTS API key set. Split `Settings` into `RuntimeSettings` (TTS API) and `RegistrySettings` (CLI), or make TTS fields optional when the registry CLI loads config. Epic 2 (auth integration) is the natural time to draw this boundary — but flag it on sight; a greenfield deploy hitting this is a poor first-run experience. [`src/comadre/config.py`, `src/comadre/keys/cli/commands/`]
+- **TZ plumbing never exercised with a real timezone.** Tests monkey-patch `_resolve_today_in_tz` with a lambda that ignores the `ZoneInfo` arg. Add real-TZ regression when Epic 3 billing sweep lands. [`src/comadre/keys/cli/commands/keys.py`]
+- **`--rpm` has no upper bound.** Unbounded integer accepted; a 13-digit `--rpm` silently stores. Story 2.2 (dynamic per-key rate limiting) is the natural place to add a sane cap + test. [`src/comadre/keys/cli/commands/keys.py`]
+- **`price_monthly` stored as SQLite `REAL` (binary float).** Classic money-as-float precision drift. Schema defined in Story 1.1's v001 migration; changing requires a v002. Revisit when currencies or higher-precision billing lands. [`migrations/v001_initial.sql`]
+- **Raw `--customer` string interpolated into error title with no length cap.** A multi-KB `--customer` value becomes a multi-KB Rich panel title. Epic 4.5 hardening concern. [`src/comadre/keys/cli/commands/keys.py`]
+- **`paid_until` malformed-ISO crash in `is_payment_current`.** Story 1.2 only writes NULL; reading happens in Story 2.1's auth path. Add `try/except ValueError` when wiring the auth dual-mode branch. [`src/comadre/keys/billing.py`]
+- **`KeyboardInterrupt` between INSERT commit and `render_key_panel` orphans the key.** Row persisted, plaintext lost. Story 1.6 (`rotate-key`) is the recovery path; mid-command signal handling is out of scope for 1.2. [`src/comadre/keys/cli/commands/keys.py`]
+
 ## Deferred from: code review of story-1-1 (2026-04-16)
 
 - **AC7 partial-migration crash scenario unverified.** Current `with conn:` guarantees atomicity so no real defect, but no test exercises crash-between-DDL-and-version-row. Add when touching migration runner next. [`src/comadre/keys/db.py`]

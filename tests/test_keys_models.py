@@ -243,6 +243,7 @@ class TestIssuedKey:
             record=self._make_record(),
             customer_name="Helena",
             first_charge_date="2026-05-05",
+            first_charge_days_free=22,
         )
         with pytest.raises((AttributeError, TypeError)):
             issued.plaintext = "other"  # type: ignore[misc]
@@ -253,5 +254,6 @@ class TestIssuedKey:
             record=self._make_record(),
             customer_name="Helena",
             first_charge_date=None,
+            first_charge_days_free=None,
         )
         assert not hasattr(issued, "__dict__")
