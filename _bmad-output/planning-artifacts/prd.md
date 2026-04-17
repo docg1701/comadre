@@ -1,7 +1,11 @@
 ---
-stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-02b-vision', 'step-02c-executive-summary', 'step-03-success', 'step-04-journeys', 'step-05-domain', 'step-06-innovation-skipped', 'step-07-project-type', 'step-08-scoping', 'step-09-functional', 'step-10-nonfunctional', 'step-11-polish', 'step-12-complete']
+stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-02b-vision', 'step-02c-executive-summary', 'step-03-success', 'step-04-journeys', 'step-05-domain', 'step-06-innovation-skipped', 'step-07-project-type', 'step-08-scoping', 'step-09-functional', 'step-10-nonfunctional', 'step-11-polish', 'step-12-complete', 'step-e-01-discovery', 'step-e-02-review', 'step-e-03-edit']
 status: 'complete'
 completedAt: '2026-04-15'
+lastEdited: '2026-04-16'
+editHistory:
+  - date: '2026-04-16'
+    changes: 'Amended FR45 and related references to reflect architecture decision that immediate cross-replica auth-cache invalidation is not supported in MVP; renamed CLI command cache-flush → cache-status. Driven by implementation-readiness-report-2026-04-16.md §Major Issues #1.'
 inputDocuments:
   - _bmad-output/project-context.md
   - docs/api-architecture.md
@@ -830,7 +834,7 @@ client → Caddy (TLS, XFF injection)
 - The plaintext bearer token is never stored, never logged, never echoed in error envelopes.
 - Timing-safe comparison (`hmac.compare_digest`) on hash match; dummy comparison on miss to equalize timing.
 - The cache stores only the minimal authorization payload (`customer_id`, `status`, `rate_limit_rpm`, `paid_until`, `billing_mode`). Plaintext keys and personal data never enter the cache.
-- Cache invalidation: natural 60-second TTL. After an operator runs `suspend`, `reactivate`, `mark-paid`, or `revoke-key`, the effect propagates to all replicas within the TTL window. For operator-critical changes, the runbook documents a `comadre-keys cache-flush` command that forces an immediate cache clear (optional, for when a 60-second delay is unacceptable).
+- Cache invalidation: natural 60-second TTL. After an operator runs `suspend`, `reactivate`, `mark-paid`, or `revoke-key`, the effect propagates to all replicas within the TTL window. MVP does not support immediate cross-replica cache invalidation — the 60-second TTL is the worst-case propagation bound. The `comadre-keys cache-status` CLI command reports this bound to the operator (and, when practical, cache-health telemetry such as hit rate) without performing any cache mutation. Operators who need faster propagation can restart the affected replica(s), which empties the in-memory cache.
 
 **Backward-compatible migration mode:**
 
@@ -975,7 +979,7 @@ comadre-keys at-risk          --window <Nd>
 comadre-keys health                                          # cron status, DB integrity, cache stats
 
 comadre-keys rotate-encryption-key  --new-key <fernet-key>   # re-encrypt all rows atomically
-comadre-keys cache-flush                                     # force immediate cache invalidation
+comadre-keys cache-status                                    # report the 60s cache-TTL propagation bound (no mutation)
 
 comadre-keys --version
 comadre-keys --install-completion                            # Typer built-in
@@ -1178,7 +1182,7 @@ The MVP deliberately refuses the following, with the rationale documented so fut
 - **FR42:** System enforces strict file permissions on the SQLite database file and the encryption key material at deploy time, and the health command reports deviations.
 - **FR43:** System runs the daily suspension sweep at a fixed operator-timezone time and makes the last successful run timestamp queryable.
 - **FR44:** System can operate safely across multiple Comadre replicas reading and writing the same SQLite file without corruption under normal operational load.
-- **FR45:** Operator can force an immediate auth-cache invalidation across a replica, for cases where the natural cache-TTL propagation delay is unacceptable.
+- **FR45:** Operator can query auth-cache propagation behavior via a dedicated CLI command; immediate cross-replica cache invalidation is not supported in MVP. The 60-second auth-cache TTL (see NFR6) is the worst-case propagation bound for key-state changes (`suspend`, `reactivate`, `mark-paid`, `revoke-key`, `update-key`). The CLI command documents this bound to the operator and reports cache-health information; it performs no cache mutation.
 
 ### Security Regression Prevention
 
