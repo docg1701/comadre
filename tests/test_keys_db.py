@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import stat
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -17,18 +17,24 @@ from comadre.keys.db import (
     generate_key_id,
     get_connection,
     get_customer,
+    get_customer_detail,
+    get_key_detail,
+    get_key_detail_by_id,
     insert_api_key,
     insert_customer,
     is_first_run,
     is_first_run_for_keys,
     list_api_keys,
+    list_audit_events,
     list_customers,
+    resolve_show_target,
 )
 from comadre.keys.models import (
     ApiKeyRecord,
     BillingMode,
     CustomerRecord,
     CustomerStatus,
+    KeyDetailRow,
 )
 
 
@@ -943,6 +949,607 @@ class TestListCommandsDoNotWrite:
             is_first_run(conn)
             is_first_run_for_keys(conn)
             count_tombstones(conn)
+
+            after = {
+                "customer": _count_rows(conn, "customer"),
+                "api_key": _count_rows(conn, "api_key"),
+                "audit_log": _count_rows(conn, "audit_log"),
+            }
+            assert before == after
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Story 1.4 — detail + audit + resolver helpers
+# ---------------------------------------------------------------------------
+
+_FROZEN_TODAY = date(2026, 4, 16)
+
+
+def _insert_audit(
+    conn: sqlite3.Connection,
+    *,
+    occurred_at: str,
+    actor: str,
+    action: str,
+    target_id: str,
+    target_type: str = "api_key",
+    details_json: str | None = None,
+) -> int:
+    """Seed a single ``audit_log`` row directly. Returns the autoincrement id."""
+    cursor = conn.execute(
+        "INSERT INTO audit_log "
+        "(occurred_at, actor, action, target_type, target_id, details_json) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (occurred_at, actor, action, target_type, target_id, details_json),
+    )
+    conn.commit()
+    return int(cursor.lastrowid or 0)
+
+
+class TestGetCustomerDetail:
+    def test_returns_row_with_key_count(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(conn, customer_id=cid, key_hash="a" * 64)
+            _seed_api_key(
+                conn, customer_id=cid, key_hash="b" * 64, key_prefix="KEY2AAAA"
+            )
+            detail = get_customer_detail(conn, cid)
+            assert detail is not None
+            assert detail.id == cid
+            assert detail.name == "Helena Ribeiro"
+            assert detail.email == "helena@clinica.com"
+            assert detail.tax_id_kind == "cpf"
+            assert detail.key_count == 2
+            assert detail.registered_at == "2026-04-16T12:00:00Z"
+            assert detail.notes == ""
+        finally:
+            conn.close()
+
+    def test_returns_zero_key_count_via_left_join(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            detail = get_customer_detail(conn, cid)
+            assert detail is not None
+            assert detail.key_count == 0
+        finally:
+            conn.close()
+
+    def test_returns_none_on_missing(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert get_customer_detail(conn, "cust_missing") is None
+        finally:
+            conn.close()
+
+    def test_treats_tombstone_as_missing(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-20T00:00:00Z", cid),
+            )
+            conn.commit()
+            assert get_customer_detail(conn, cid) is None
+        finally:
+            conn.close()
+
+
+class TestGetKeyDetail:
+    def test_single_row_returns_dataclass(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="a" * 64,
+                key_prefix="EVb4xk8B",
+                created_at="2026-04-06T12:00:00Z",
+            )
+            result = get_key_detail(conn, "EVb4xk8B", today=_FROZEN_TODAY)
+            assert isinstance(result, KeyDetailRow)
+            assert result.key_prefix == "EVb4xk8B"
+            assert result.customer_id == cid
+            assert result.customer_name == "Helena Ribeiro"
+            assert result.status == "active"
+            assert result.billing_mode == "manual"
+            assert result.rate_limit_rpm == 60
+            assert result.price_monthly == 149.0
+            assert result.paid_until is None
+            assert result.created_at == "2026-04-06T12:00:00Z"
+            assert result.last_used_at is None
+            assert result.age_days == 10
+            assert result.notes == ""
+        finally:
+            conn.close()
+
+    def test_none_when_missing(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert get_key_detail(conn, "NOPE0000", today=_FROZEN_TODAY) is None
+        finally:
+            conn.close()
+
+    def test_ambiguous_returns_list(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="a" * 64,
+                key_prefix="COLLIDE1",
+            )
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="b" * 64,
+                key_prefix="COLLIDE1",
+            )
+            result = get_key_detail(conn, "COLLIDE1", today=_FROZEN_TODAY)
+            assert isinstance(result, list)
+            assert len(result) == 2
+            assert all(isinstance(r, KeyDetailRow) for r in result)
+        finally:
+            conn.close()
+
+    def test_age_zero_renders_today(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="a" * 64,
+                key_prefix="TODAY001",
+                created_at="2026-04-16T09:00:00Z",
+            )
+            result = get_key_detail(conn, "TODAY001", today=_FROZEN_TODAY)
+            assert isinstance(result, KeyDetailRow)
+            assert result.age_days == 0
+        finally:
+            conn.close()
+
+
+class TestGetKeyDetailById:
+    def test_happy_path(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            kid = _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="FULLKEY1"
+            )
+            result = get_key_detail_by_id(conn, kid, today=_FROZEN_TODAY)
+            assert result is not None
+            assert result.id == kid
+            assert result.customer_name == "Helena Ribeiro"
+        finally:
+            conn.close()
+
+    def test_none_when_missing(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert (
+                get_key_detail_by_id(conn, "key_missing", today=_FROZEN_TODAY) is None
+            )
+        finally:
+            conn.close()
+
+
+def _seed_customer_raw(conn: sqlite3.Connection) -> str:
+    """Seed a customer via raw INSERT (no audit row). Use for audit-scoped tests."""
+    return _seed_customer_with_time(
+        conn, name="Helena Ribeiro", registered_at="2026-04-16T12:00:00Z"
+    )
+
+
+class TestListAuditEvents:
+    def test_newest_first_within_limit(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_raw(conn)
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-10T10:00:00Z",
+                actor="cli:a",
+                action="one",
+                target_type="customer",
+                target_id=cid,
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-12T10:00:00Z",
+                actor="cli:a",
+                action="two",
+                target_type="customer",
+                target_id=cid,
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-14T10:00:00Z",
+                actor="cli:a",
+                action="three",
+                target_type="customer",
+                target_id=cid,
+            )
+            events = list_audit_events(conn, [cid], limit=10)
+            assert [e.action for e in events] == ["three", "two", "one"]
+        finally:
+            conn.close()
+
+    def test_limit_truncates(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_raw(conn)
+            for i in range(5):
+                _insert_audit(
+                    conn,
+                    occurred_at=f"2026-04-1{i}T10:00:00Z",
+                    actor="cli:a",
+                    action=f"act_{i}",
+                    target_type="customer",
+                    target_id=cid,
+                )
+            events = list_audit_events(conn, [cid], limit=3)
+            assert len(events) == 3
+            assert [e.action for e in events] == ["act_4", "act_3", "act_2"]
+        finally:
+            conn.close()
+
+    def test_filter_by_target_ids(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid_a = _seed_customer_raw(conn)
+            conn.execute(
+                "INSERT INTO customer ("
+                "id, name, email, tax_id_kind, tax_id_encrypted, notes, "
+                "registered_at, deleted_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "cust_01otherxxxxxxxxxxxxxxxxxx",
+                    "Other",
+                    "other@x.com",
+                    "cpf",
+                    b"x",
+                    "",
+                    "2026-04-11T10:00:00Z",
+                    None,
+                ),
+            )
+            conn.commit()
+            cid_b = "cust_01otherxxxxxxxxxxxxxxxxxx"
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-10T10:00:00Z",
+                actor="cli:a",
+                action="for_a",
+                target_type="customer",
+                target_id=cid_a,
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-11T10:00:00Z",
+                actor="cli:a",
+                action="for_b",
+                target_type="customer",
+                target_id=cid_b,
+            )
+            events = list_audit_events(conn, [cid_a], limit=10)
+            assert [e.action for e in events] == ["for_a"]
+        finally:
+            conn.close()
+
+    def test_customer_plus_keys_union(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_raw(conn)
+            kid = _seed_api_key(conn, customer_id=cid, key_hash="a" * 64)
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-10T10:00:00Z",
+                actor="cli:a",
+                action="create_customer",
+                target_type="customer",
+                target_id=cid,
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-11T10:00:00Z",
+                actor="cli:a",
+                action="issue_key",
+                target_type="api_key",
+                target_id=kid,
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-12T10:00:00Z",
+                actor="cli:a",
+                action="update_key",
+                target_type="api_key",
+                target_id=kid,
+            )
+            events = list_audit_events(conn, [cid, kid], limit=10)
+            assert [e.action for e in events] == [
+                "update_key",
+                "issue_key",
+                "create_customer",
+            ]
+        finally:
+            conn.close()
+
+    def test_tiebreak_by_id_desc_on_identical_timestamp(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_raw(conn)
+            ts = "2026-04-10T10:00:00Z"
+            id_a = _insert_audit(
+                conn,
+                occurred_at=ts,
+                actor="cli:a",
+                action="first",
+                target_type="customer",
+                target_id=cid,
+            )
+            id_b = _insert_audit(
+                conn,
+                occurred_at=ts,
+                actor="cli:a",
+                action="second",
+                target_type="customer",
+                target_id=cid,
+            )
+            events = list_audit_events(conn, [cid], limit=10)
+            assert [e.id for e in events] == [id_b, id_a]
+        finally:
+            conn.close()
+
+    def test_limit_validation_zero_raises(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            with pytest.raises(ValueError, match="1 and 1000"):
+                list_audit_events(conn, ["cust_x"], limit=0)
+        finally:
+            conn.close()
+
+    def test_limit_validation_too_large_raises(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            with pytest.raises(ValueError, match="1 and 1000"):
+                list_audit_events(conn, ["cust_x"], limit=1001)
+        finally:
+            conn.close()
+
+    def test_empty_target_ids_returns_empty(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert list_audit_events(conn, [], limit=10) == []
+        finally:
+            conn.close()
+
+    def test_details_json_roundtrip(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_raw(conn)
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-10T10:00:00Z",
+                actor="cli:a",
+                action="create_customer",
+                target_type="customer",
+                target_id=cid,
+                details_json='{"tax_id_kind": "cpf"}',
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-11T10:00:00Z",
+                actor="cli:a",
+                action="no_details",
+                target_type="customer",
+                target_id=cid,
+                details_json=None,
+            )
+            events = list_audit_events(conn, [cid], limit=10)
+            assert events[0].details_json is None
+            assert events[1].details_json == '{"tax_id_kind": "cpf"}'
+        finally:
+            conn.close()
+
+
+class TestResolveShowTarget:
+    def test_customer_happy_path(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            result = resolve_show_target(conn, cid, today=_FROZEN_TODAY)
+            assert result.kind == "customer"
+            assert result.value is not None
+            assert getattr(result.value, "id", None) == cid
+        finally:
+            conn.close()
+
+    def test_customer_not_found(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = resolve_show_target(
+                conn,
+                "cust_01missingxxxxxxxxxxxxxxxxx",
+                today=_FROZEN_TODAY,
+            )
+            assert result.kind == "not_found"
+            assert result.value is None
+        finally:
+            conn.close()
+
+    def test_customer_tombstone_is_not_found(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-20T00:00:00Z", cid),
+            )
+            conn.commit()
+            result = resolve_show_target(conn, cid, today=_FROZEN_TODAY)
+            assert result.kind == "not_found"
+        finally:
+            conn.close()
+
+    def test_key_prefix_happy_path(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="EVb4xk8B"
+            )
+            result = resolve_show_target(conn, "EVb4xk8B", today=_FROZEN_TODAY)
+            assert result.kind == "key_single"
+            assert isinstance(result.value, KeyDetailRow)
+            assert result.value.key_prefix == "EVb4xk8B"
+        finally:
+            conn.close()
+
+    def test_key_prefix_not_found(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = resolve_show_target(conn, "NOPE0000", today=_FROZEN_TODAY)
+            assert result.kind == "not_found"
+        finally:
+            conn.close()
+
+    def test_key_id_happy_path(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            kid = _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="BYIDKEY1"
+            )
+            result = resolve_show_target(conn, kid, today=_FROZEN_TODAY)
+            assert result.kind == "key_single"
+            assert isinstance(result.value, KeyDetailRow)
+            assert result.value.id == kid
+        finally:
+            conn.close()
+
+    def test_key_id_not_found(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = resolve_show_target(
+                conn,
+                "key_01missingxxxxxxxxxxxxxxxxx",
+                today=_FROZEN_TODAY,
+            )
+            assert result.kind == "not_found"
+        finally:
+            conn.close()
+
+    def test_cmdr_live_prefix_convenience(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="a" * 64,
+                key_prefix="EVb4xk8B",
+            )
+            # Simulated full plaintext: cmdr_live_<53 chars>
+            fake_plaintext = "cmdr_live_EVb4xk8Bzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+            result = resolve_show_target(conn, fake_plaintext, today=_FROZEN_TODAY)
+            assert result.kind == "key_single"
+            assert isinstance(result.value, KeyDetailRow)
+            assert result.value.key_prefix == "EVb4xk8B"
+        finally:
+            conn.close()
+
+    def test_ambiguous_prefix(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="COLLIDE1"
+            )
+            _seed_api_key(
+                conn, customer_id=cid, key_hash="b" * 64, key_prefix="COLLIDE1"
+            )
+            result = resolve_show_target(conn, "COLLIDE1", today=_FROZEN_TODAY)
+            assert result.kind == "key_ambiguous"
+            assert isinstance(result.value, list)
+            assert len(result.value) == 2
+        finally:
+            conn.close()
+
+
+class TestShowHelpersDoNotWrite:
+    """AC9 regression guard — show-path helpers never mutate the DB."""
+
+    def test_no_writes_across_show_helpers(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            kid = _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="WRT00000"
+            )
+            _insert_audit(
+                conn,
+                occurred_at="2026-04-10T10:00:00Z",
+                actor="cli:a",
+                action="issue_key",
+                target_type="api_key",
+                target_id=kid,
+            )
+            before = {
+                "customer": _count_rows(conn, "customer"),
+                "api_key": _count_rows(conn, "api_key"),
+                "audit_log": _count_rows(conn, "audit_log"),
+            }
+
+            get_customer_detail(conn, cid)
+            get_customer_detail(conn, "cust_missing")
+            get_key_detail(conn, "WRT00000", today=_FROZEN_TODAY)
+            get_key_detail(conn, "NOPE0000", today=_FROZEN_TODAY)
+            get_key_detail_by_id(conn, kid, today=_FROZEN_TODAY)
+            list_audit_events(conn, [cid, kid], limit=10)
+            resolve_show_target(conn, cid, today=_FROZEN_TODAY)
+            resolve_show_target(conn, "WRT00000", today=_FROZEN_TODAY)
+            resolve_show_target(conn, kid, today=_FROZEN_TODAY)
+            resolve_show_target(
+                conn, "cust_01nopexxxxxxxxxxxxxxxxxxxx", today=_FROZEN_TODAY
+            )
 
             after = {
                 "customer": _count_rows(conn, "customer"),

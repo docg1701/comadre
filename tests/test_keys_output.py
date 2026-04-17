@@ -14,21 +14,28 @@ import comadre.keys.cli.output as output_mod
 from comadre.keys.cli.output import (
     _reset_for_tests,
     _status_label,
+    render_audit_tail,
     render_confirmation,
+    render_customer_detail,
     render_customer_list,
     render_empty_state,
     render_error,
     render_json,
+    render_key_detail,
     render_key_list,
     render_key_panel,
+    render_show_json,
     stderr_console,
     stdout_console,
 )
 from comadre.keys.models import (
     ApiKeyListRow,
     ApiKeyRecord,
+    AuditEventRow,
+    CustomerDetailRow,
     CustomerListRow,
     IssuedKey,
+    KeyDetailRow,
 )
 
 ANSI_ESCAPE = re.compile(r"\x1b\[")
@@ -570,3 +577,337 @@ class TestRenderEmptyState:
         monkeypatch.setattr(output_mod, "_stdout_console", fake)
         render_empty_state(["No suspended keys found."])
         assert "No suspended keys found." in buf.getvalue()
+
+
+def _make_customer_detail(**overrides: object) -> CustomerDetailRow:
+    defaults: dict[str, object] = {
+        "id": "cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
+        "name": "Helena Ribeiro",
+        "email": "helena@clinica.com",
+        "tax_id_kind": "cpf",
+        "key_count": 2,
+        "registered_at": "2026-04-15T12:34:56Z",
+        "notes": "",
+    }
+    defaults.update(overrides)
+    return CustomerDetailRow(**defaults)  # type: ignore[arg-type]
+
+
+def _make_key_detail(**overrides: object) -> KeyDetailRow:
+    defaults: dict[str, object] = {
+        "id": "key_01abc",
+        "customer_id": "cust_01xyz",
+        "customer_name": "Helena Ribeiro",
+        "key_prefix": "EVb4xk8B",
+        "status": "active",
+        "billing_mode": "manual",
+        "rate_limit_rpm": 60,
+        "price_monthly": 149.0,
+        "paid_until": None,
+        "created_at": "2026-04-15T12:34:56Z",
+        "last_used_at": None,
+        "age_days": 2,
+        "notes": "",
+    }
+    defaults.update(overrides)
+    return KeyDetailRow(**defaults)  # type: ignore[arg-type]
+
+
+class TestRenderCustomerDetail:
+    def test_contains_all_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_customer_detail(_make_customer_detail())
+        out = buf.getvalue()
+        for label in (
+            "ID:",
+            "Name:",
+            "Email:",
+            "Tax ID Kind:",
+            "Keys:",
+            "Registered:",
+            "Notes:",
+        ):
+            assert label in out
+        # Tax ID kind is uppercased.
+        assert "CPF" in out
+        assert "2" in out  # key_count
+        assert "2026-04-15" in out
+        # Title contains the full customer id.
+        assert "Customer: cust_01j8xr3e4c5m7kn9p2qt8vwyz0" in out
+        # em-dash for empty notes.
+        assert "\u2014" in out
+
+    def test_cnpj_uppercase(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_customer_detail(_make_customer_detail(tax_id_kind="cnpj"))
+        assert "CNPJ" in buf.getvalue()
+
+    def test_renders_notes_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_customer_detail(_make_customer_detail(notes="5 bots, WA booking"))
+        assert "5 bots, WA booking" in buf.getvalue()
+
+    def test_does_not_leak_ciphertext(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Guard: a future refactor wiring ciphertext into the row must fail here.
+
+        We simulate a leak by placing a Fernet-like blob into notes — the
+        renderer has no special handling for notes, but this locks in the
+        property that the dataclass doesn't even carry the ciphertext column.
+        """
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        row = _make_customer_detail()
+        render_customer_detail(row)
+        # CustomerDetailRow has no tax_id_encrypted attribute at all.
+        assert not hasattr(row, "tax_id_encrypted")
+        assert "gAAAAA" not in buf.getvalue()
+
+
+class TestRenderKeyDetail:
+    def test_active_manual_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail())
+        out = buf.getvalue()
+        for label in (
+            "Prefix:",
+            "Customer:",
+            "Status:",
+            "RPM:",
+            "Price:",
+            "Billing:",
+            "Paid Until:",
+            "Created:",
+            "Last Used:",
+            "Age:",
+            "Notes:",
+        ):
+            assert label in out
+        assert "Key: EVb4xk8B" in out
+        assert "active" in out
+        assert "60/min" in out
+        assert "R$ 149,00/month" in out
+        assert "never" in out
+        assert "2 days" in out
+        assert "Helena Ribeiro (cust_01xyz)" in out
+
+    def test_complimentary_bundled_externally(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(
+            _make_key_detail(billing_mode="complimentary", price_monthly=0.0)
+        )
+        out = buf.getvalue()
+        assert "R$ 0,00 (bundled externally)" in out
+        assert "complimentary" in out
+
+    def test_suspended_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(status="suspended"))
+        assert "suspended" in buf.getvalue()
+
+    def test_revoked_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(status="revoked"))
+        assert "revoked" in buf.getvalue()
+
+    def test_age_today(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(age_days=0))
+        out = buf.getvalue()
+        assert "today" in out
+
+    def test_age_plural_always(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(age_days=1))
+        assert "1 days" in buf.getvalue()
+
+    def test_last_used_never(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(last_used_at=None))
+        assert "never" in buf.getvalue()
+
+    def test_last_used_timestamp_format(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(last_used_at="2026-05-12T14:23:45Z"))
+        assert "2026-05-12 14:23:45" in buf.getvalue()
+
+    def test_empty_notes_emdash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(notes=""))
+        assert "\u2014" in buf.getvalue()
+
+    def test_paid_until_iso(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_detail(_make_key_detail(paid_until="2026-05-15"))
+        assert "2026-05-15" in buf.getvalue()
+
+
+def _audit_event(**overrides: object) -> AuditEventRow:
+    defaults: dict[str, object] = {
+        "id": 1,
+        "occurred_at": "2026-04-15T10:30:00Z",
+        "actor": "cli:ricardo",
+        "action": "issue_key",
+        "target_type": "api_key",
+        "target_id": "key_01abc",
+        "details_json": '{"rate_limit_rpm": 60}',
+    }
+    defaults.update(overrides)
+    return AuditEventRow(**defaults)  # type: ignore[arg-type]
+
+
+class TestRenderAuditTail:
+    def test_populated_header_and_columns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        events = [
+            _audit_event(
+                id=3,
+                action="update_key",
+                occurred_at="2026-04-16T09:15:00Z",
+                details_json='{"notes": "bumped rpm"}',
+            ),
+            _audit_event(
+                id=2,
+                action="mark_paid",
+                occurred_at="2026-04-15T14:00:00Z",
+                details_json=None,
+            ),
+            _audit_event(
+                id=1,
+                action="issue_key",
+                occurred_at="2026-04-14T12:00:00Z",
+                details_json='{"rate_limit_rpm": 60}',
+            ),
+        ]
+        render_audit_tail(events)
+        out = buf.getvalue()
+        assert "Last 3 events:" in out
+        # Uppercase actions
+        assert "UPDATE_KEY" in out
+        assert "MARK_PAID" in out
+        assert "ISSUE_KEY" in out
+        # Two-leading-space indent on event lines
+        assert "\n  2026-04-16 09:15:00" in out
+        # Timestamp format
+        assert "2026-04-15 14:00:00" in out
+        # details column present
+        assert '{"notes": "bumped rpm"}' in out
+
+    def test_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_audit_tail([])
+        out = buf.getvalue()
+        assert "  No events recorded" in out
+        assert "Last 0 events:" not in out
+
+    def test_action_column_padded_to_longest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        events = [
+            _audit_event(action="update_key"),  # 10 chars
+            _audit_event(action="mark_paid"),  # 9 chars
+        ]
+        render_audit_tail(events)
+        out = buf.getvalue()
+        # update_key is 10; uppercase padded to 10 width. mark_paid should
+        # be followed by exactly one trailing space before the two-space
+        # gutter (so "MARK_PAID  " → 9 chars + 1 pad + 2 gutter + actor).
+        assert "UPDATE_KEY" in out
+        assert "MARK_PAID " in out
+
+    def test_details_null_omits_column(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_audit_tail([_audit_event(details_json=None, actor="cli:a")])
+        out = buf.getvalue()
+        # Line ends with actor, no trailing whitespace / null text.
+        # Strip the trailing newline(s) Rich adds and check the last data line.
+        lines = [line for line in out.splitlines() if line.strip()]
+        last = lines[-1]
+        assert last.endswith("cli:a")
+        assert "None" not in last
+
+
+class TestRenderShowJson:
+    def test_customer_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_show_json(
+            target_type="customer",
+            target={"id": "cust_01abc", "name": "Helena", "key_count": 2},
+            events=None,
+        )
+        parsed = json.loads(buf.getvalue())
+        assert parsed["target_type"] == "customer"
+        assert parsed["target"]["id"] == "cust_01abc"
+        assert "events" not in parsed
+
+    def test_key_shape_with_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_show_json(
+            target_type="api_key",
+            target={"id": "key_01abc", "key_prefix": "EVb4xk8B"},
+            events=[{"id": 1, "action": "issue_key", "details": None}],
+        )
+        parsed = json.loads(buf.getvalue())
+        assert parsed["target_type"] == "api_key"
+        assert parsed["events"][0]["action"] == "issue_key"
+
+    def test_empty_events_is_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_show_json(
+            target_type="api_key",
+            target={"id": "key_01abc"},
+            events=[],
+        )
+        parsed = json.loads(buf.getvalue())
+        assert parsed["events"] == []

@@ -11,9 +11,11 @@ Exit-code contract (UX-DR10):
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 from datetime import UTC, datetime
 from typing import cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import typer
 from pydantic import ValidationError
@@ -21,14 +23,19 @@ from pydantic import ValidationError
 from comadre.config import get_settings
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import get_cli_actor
+from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
     LIST_FORMAT_CHOICES,
+    render_audit_tail,
     render_confirmation,
+    render_customer_detail,
     render_customer_list,
     render_empty_state,
     render_error,
     render_json,
+    render_key_detail,
+    render_show_json,
 )
 from comadre.keys.crypto import (
     encrypt_tax_id,
@@ -43,9 +50,18 @@ from comadre.keys.db import (
     get_connection,
     insert_customer,
     is_first_run,
+    list_audit_events,
     list_customers,
+    resolve_show_target,
 )
-from comadre.keys.models import CustomerListRow, CustomerRecord, TaxIdKind
+from comadre.keys.models import (
+    AuditEventRow,
+    CustomerDetailRow,
+    CustomerListRow,
+    CustomerRecord,
+    KeyDetailRow,
+    TaxIdKind,
+)
 from comadre.logging import get_logger
 
 _logger = get_logger("keys.cli")
@@ -317,3 +333,254 @@ def list_customers_cmd(
         return
 
     render_empty_state(["No customers found."])
+
+
+# ---------------------------------------------------------------------------
+# `show` — single-target detail view with optional audit tail (Story 1.4).
+# ---------------------------------------------------------------------------
+
+_SHOW_NOT_FOUND_HINT = (
+    "Run 'comadre-keys list-customers' or 'comadre-keys list-keys' to see "
+    "registered records."
+)
+
+_SHOW_AMBIGUOUS_HINT = (
+    "Run 'comadre-keys list-keys' to see the full list, then use the key's "
+    "customer id (cust_...) instead."
+)
+
+
+def _customer_detail_to_json(row: CustomerDetailRow) -> dict[str, object]:
+    """Serialize a ``CustomerDetailRow`` to the AC8 JSON shape (fixed key order)."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "email": row.email,
+        "tax_id_kind": row.tax_id_kind,
+        "key_count": row.key_count,
+        "registered_at": row.registered_at,
+        "notes": row.notes,
+    }
+
+
+def _key_detail_to_json(row: KeyDetailRow) -> dict[str, object]:
+    """Serialize a ``KeyDetailRow`` to the AC8 JSON shape (fixed key order)."""
+    return {
+        "id": row.id,
+        "customer_id": row.customer_id,
+        "customer_name": row.customer_name,
+        "key_prefix": row.key_prefix,
+        "status": row.status,
+        "billing_mode": row.billing_mode,
+        "rate_limit_rpm": row.rate_limit_rpm,
+        "price_monthly": row.price_monthly,
+        "paid_until": row.paid_until,
+        "created_at": row.created_at,
+        "last_used_at": row.last_used_at,
+        "age_days": row.age_days,
+        "notes": row.notes,
+    }
+
+
+def _audit_event_to_json(event: AuditEventRow) -> dict[str, object]:
+    """Serialize an ``AuditEventRow`` to the AC8 event shape (fixed key order).
+
+    ``details_json`` is re-parsed into a dict/list for consumer ergonomics —
+    callers shouldn't have to double-decode the nested payload. Malformed
+    rows (shouldn't happen in practice — every writer in the codebase uses
+    ``json.dumps`` with ``sort_keys=True``) fall back to the raw string.
+    """
+    if event.details_json is None:
+        details: object | None = None
+    else:
+        try:
+            details = json.loads(event.details_json)
+        except json.JSONDecodeError:
+            details = event.details_json
+    return {
+        "id": event.id,
+        "occurred_at": event.occurred_at,
+        "actor": event.actor,
+        "action": event.action,
+        "target_type": event.target_type,
+        "target_id": event.target_id,
+        "details": details,
+    }
+
+
+@app.command("show")
+def show_cmd(
+    target: str = typer.Argument(
+        ...,
+        metavar="TARGET",
+        help=(
+            "Customer ID (cust_...) or 8-char key prefix. "
+            'Example: "EVb4xk8B" or "cust_01j8xr3e4c5m7kn9p2qt8vwy".'
+        ),
+    ),
+    audit_tail: int | None = typer.Option(
+        None,
+        "--audit-tail",
+        help=(
+            "Append the N most recent audit events. "
+            "Example: --audit-tail 20. Range: 1..1000."
+        ),
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        help=(
+            "Output format: table (default, human-readable) or json. "
+            "Example: --format json."
+        ),
+    ),
+) -> None:
+    """Show full context for a customer or API key (optionally with audit tail).
+
+    Example: comadre-keys show EVb4xk8B --audit-tail 20
+    """
+    # 1. Literal flag validation.
+    if format not in LIST_FORMAT_CHOICES:
+        render_error(
+            "Usage error: --format must be table or json",
+            "Valid values: table, json.",
+        )
+        raise typer.Exit(code=2)
+    if audit_tail is not None and not 1 <= audit_tail <= 1000:
+        render_error(
+            "Usage error: --audit-tail must be between 1 and 1000",
+            "Provide a positive integer in the range 1..1000.",
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Settings + encryption-key sanity (exit 6 — same mapping as siblings).
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _missing_key_hint,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _missing_key_hint,
+        )
+        raise typer.Exit(code=6)
+
+    try:
+        billing_tz = ZoneInfo(settings.billing_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        render_error(
+            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
+            (
+                "Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
+                f"Got: {settings.billing_timezone}"
+            ),
+        )
+        raise typer.Exit(code=6) from None
+
+    today = _resolve_today_in_tz(billing_tz)
+
+    # 3. Open DB + migrations + resolve target + fetch events.
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    result_kind: str = "not_found"
+    events: list[AuditEventRow] | None = None
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        resolved = resolve_show_target(conn, target, today=today)
+        result_kind = resolved.kind
+
+        if resolved.kind == "not_found":
+            render_error(
+                f"Not found: no customer or key matches '{target}'",
+                _SHOW_NOT_FOUND_HINT,
+            )
+            raise typer.Exit(code=3)
+        if resolved.kind == "key_ambiguous":
+            render_error(
+                f"Ambiguous prefix: multiple keys match '{target}'",
+                _SHOW_AMBIGUOUS_HINT,
+            )
+            raise typer.Exit(code=3)
+
+        if audit_tail is not None:
+            if resolved.kind == "customer":
+                customer_row = cast(CustomerDetailRow, resolved.value)
+                key_id_rows = conn.execute(
+                    "SELECT id FROM api_key WHERE customer_id = ?",
+                    (customer_row.id,),
+                ).fetchall()
+                target_ids = [customer_row.id, *[r["id"] for r in key_id_rows]]
+            else:
+                key_row = cast(KeyDetailRow, resolved.value)
+                target_ids = [key_row.id]
+            events = list_audit_events(conn, target_ids, limit=audit_tail)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    # Redact pasted-plaintext targets before logging — the resolver accepts
+    # `cmdr_live_<secret>` as a convenience for operators who paste the full
+    # key, but the secret must never reach the structured log. Truncating to
+    # the first 8 chars of the suffix mirrors the resolver's own lookup key.
+    if target.startswith("cmdr_live_"):
+        target_log = "cmdr_live_" + target.removeprefix("cmdr_live_")[:8] + "…"
+    else:
+        target_log = target
+    _logger.info(
+        "Showed detail | kind=%s | target=%s | audit_tail=%s",
+        result_kind,
+        target_log,
+        audit_tail,
+    )
+
+    # 4. Render branch.
+    events_payload: list[dict[str, object]] | None
+    if events is None:
+        events_payload = None
+    else:
+        events_payload = [_audit_event_to_json(e) for e in events]
+
+    if format == "json":
+        if resolved.kind == "customer":
+            render_show_json(
+                target_type="customer",
+                target=_customer_detail_to_json(
+                    cast(CustomerDetailRow, resolved.value)
+                ),
+                events=events_payload,
+            )
+        else:
+            render_show_json(
+                target_type="api_key",
+                target=_key_detail_to_json(cast(KeyDetailRow, resolved.value)),
+                events=events_payload,
+            )
+        return
+
+    if resolved.kind == "customer":
+        render_customer_detail(cast(CustomerDetailRow, resolved.value))
+    else:
+        render_key_detail(cast(KeyDetailRow, resolved.value))
+
+    if events is not None:
+        render_audit_tail(events)

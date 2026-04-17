@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from comadre.config import get_settings
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import ManualBillingProvider, days_until, first_charge_date
+from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
     LIST_FORMAT_CHOICES,
@@ -68,11 +69,6 @@ _MISSING_KEY_HINT = (
     "Fernet; print(Fernet.generate_key().decode())' and add it to "
     ".env. Restart the service if monetization is enabled there too."
 )
-
-
-def _resolve_today_in_tz(tz: ZoneInfo) -> date:
-    """Return today's date resolved in ``tz``. Thin seam for tests to freeze."""
-    return datetime.now(tz).date()
 
 
 @app.command("issue-key")

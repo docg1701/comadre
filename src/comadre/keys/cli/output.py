@@ -11,6 +11,8 @@ NO_COLOR compliance — rich respects the env var automatically. We do NOT set
 
 from __future__ import annotations
 
+from typing import Literal
+
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -19,10 +21,13 @@ from rich.text import Text
 
 from comadre.keys.models import (
     ApiKeyListRow,
+    AuditEventRow,
     BillingMode,
+    CustomerDetailRow,
     CustomerListRow,
     CustomerStatus,
     IssuedKey,
+    KeyDetailRow,
 )
 
 _stdout_console: Console | None = None
@@ -307,6 +312,149 @@ def render_empty_state(lines: list[str]) -> None:
     """
     for line in lines:
         render_confirmation(line)
+
+
+_CUSTOMER_DETAIL_LABELS: tuple[str, ...] = (
+    "ID:",
+    "Name:",
+    "Email:",
+    "Tax ID Kind:",
+    "Keys:",
+    "Registered:",
+    "Notes:",
+)
+
+_KEY_DETAIL_LABELS: tuple[str, ...] = (
+    "Prefix:",
+    "Customer:",
+    "Status:",
+    "RPM:",
+    "Price:",
+    "Billing:",
+    "Paid Until:",
+    "Created:",
+    "Last Used:",
+    "Age:",
+    "Notes:",
+)
+
+
+def _pad_label(label: str, width: int) -> str:
+    """Return ``label`` right-padded to ``width`` plus a trailing space."""
+    return f"{label.ljust(width)} "
+
+
+def _format_last_used(value: str | None) -> str:
+    """Render ``last_used_at`` as ``YYYY-MM-DD HH:MM:SS`` or ``never``."""
+    if value is None:
+        return "never"
+    # SQLite TEXT ISO 8601 UTC form: "2026-05-12T14:23:45Z" → "2026-05-12 14:23:45".
+    return value.replace("T", " ").removesuffix("Z")
+
+
+def _format_age(days: int) -> str:
+    """Render ``age_days`` — ``today`` for zero, ``{n} days`` otherwise."""
+    if days == 0:
+        return "today"
+    return f"{days} days"
+
+
+def render_customer_detail(row: CustomerDetailRow) -> None:
+    """UX-DR3 DetailPanel — single-line border, labeled rows, no tax-ID ciphertext."""
+    width = max(len(label) for label in _CUSTOMER_DETAIL_LABELS)
+    lines = [
+        f"{_pad_label('ID:', width)}{row.id}",
+        f"{_pad_label('Name:', width)}{row.name}",
+        f"{_pad_label('Email:', width)}{row.email}",
+        f"{_pad_label('Tax ID Kind:', width)}{row.tax_id_kind.upper()}",
+        f"{_pad_label('Keys:', width)}{row.key_count}",
+        f"{_pad_label('Registered:', width)}{_iso_date(row.registered_at)}",
+        f"{_pad_label('Notes:', width)}{row.notes or '\u2014'}",
+    ]
+    stdout_console().print(
+        Panel(
+            "\n".join(lines),
+            title=f"Customer: {row.id}",
+            box=box.ROUNDED,
+            expand=False,
+        )
+    )
+
+
+def render_key_detail(row: KeyDetailRow) -> None:
+    """UX-DR3 DetailPanel for keys — color-coded status, pt-BR price, age in days."""
+    width = max(len(label) for label in _KEY_DETAIL_LABELS)
+
+    label, color = _status_label(row.status, row.billing_mode)
+    status_cell = f"[{color}]{label}[/]" if color else label
+
+    if row.billing_mode == "complimentary":
+        price_cell = "R$ 0,00 (bundled externally)"
+    else:
+        price_cell = f"R$ {_format_brl(row.price_monthly)}/month"
+
+    lines = [
+        f"{_pad_label('Prefix:', width)}{row.key_prefix}",
+        f"{_pad_label('Customer:', width)}{row.customer_name} ({row.customer_id})",
+        f"{_pad_label('Status:', width)}{status_cell}",
+        f"{_pad_label('RPM:', width)}{row.rate_limit_rpm}/min",
+        f"{_pad_label('Price:', width)}{price_cell}",
+        f"{_pad_label('Billing:', width)}{row.billing_mode}",
+        f"{_pad_label('Paid Until:', width)}{_iso_date(row.paid_until)}",
+        f"{_pad_label('Created:', width)}{_iso_date(row.created_at)}",
+        f"{_pad_label('Last Used:', width)}{_format_last_used(row.last_used_at)}",
+        f"{_pad_label('Age:', width)}{_format_age(row.age_days)}",
+        f"{_pad_label('Notes:', width)}{row.notes or '\u2014'}",
+    ]
+    stdout_console().print(
+        Panel(
+            "\n".join(lines),
+            title=f"Key: {row.key_prefix}",
+            box=box.ROUNDED,
+            expand=False,
+        )
+    )
+
+
+def render_audit_tail(events: list[AuditEventRow]) -> None:
+    """UX-DR5 AuditTail — plain indented lines under the DetailPanel.
+
+    No panel border (this is the supplementary section); a single blank line
+    separates it from the DetailPanel above. Empty result renders as the
+    single literal ``  No events recorded`` per UX-DR5.
+    """
+    render_confirmation("")
+    if not events:
+        render_confirmation("  No events recorded")
+        return
+
+    render_confirmation(f"Last {len(events)} events:")
+    action_width = max(len(event.action) for event in events)
+    for event in events:
+        timestamp = event.occurred_at.replace("T", " ").removesuffix("Z")
+        action = event.action.upper().ljust(action_width)
+        tail = f"  {event.details_json}" if event.details_json is not None else ""
+        line = f"  {timestamp}  {action}  {event.actor}{tail}"
+        # Disable Rich markup interpretation so a details_json that happens to
+        # contain ``[foo]`` doesn't get eaten by Rich's console markup parser.
+        stdout_console().print(line, markup=False, highlight=False)
+
+
+def render_show_json(
+    *,
+    target_type: Literal["customer", "api_key"],
+    target: dict[str, object],
+    events: list[dict[str, object]] | None,
+) -> None:
+    """Emit the AC8 single-object JSON envelope via the shared stdout console.
+
+    ``events=None`` omits the ``events`` key entirely — distinct from an
+    empty-list emission triggered by ``--audit-tail N`` returning zero rows.
+    """
+    payload: dict[str, object] = {"target_type": target_type, "target": target}
+    if events is not None:
+        payload["events"] = events
+    stdout_console().print_json(data=payload)
 
 
 def _reset_for_tests() -> None:

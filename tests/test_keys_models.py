@@ -12,10 +12,13 @@ from comadre.keys.models import (
     ApiKeyCreate,
     ApiKeyListRow,
     ApiKeyRecord,
+    AuditEventRow,
     CustomerCreate,
+    CustomerDetailRow,
     CustomerListRow,
     CustomerRecord,
     IssuedKey,
+    KeyDetailRow,
 )
 
 
@@ -294,6 +297,123 @@ class TestApiKeyListRow:
     def test_has_slots(self) -> None:
         row = self._make()
         assert not hasattr(row, "__dict__")
+
+
+class TestCustomerDetailRow:
+    def _make(self) -> CustomerDetailRow:
+        return CustomerDetailRow(
+            id="cust_01abc",
+            name="Helena Ribeiro",
+            email="helena@clinica.com",
+            tax_id_kind="cpf",
+            key_count=2,
+            registered_at="2026-04-15T12:34:56Z",
+            notes="VIP",
+        )
+
+    def test_round_trip_fields(self) -> None:
+        row = self._make()
+        assert row.id == "cust_01abc"
+        assert row.name == "Helena Ribeiro"
+        assert row.email == "helena@clinica.com"
+        assert row.tax_id_kind == "cpf"
+        assert row.key_count == 2
+        assert row.registered_at == "2026-04-15T12:34:56Z"
+        assert row.notes == "VIP"
+
+    def test_is_frozen(self) -> None:
+        row = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            row.name = "Other"  # type: ignore[misc]
+
+    def test_has_slots(self) -> None:
+        assert not hasattr(self._make(), "__dict__")
+
+
+class TestKeyDetailRow:
+    def _make(self) -> KeyDetailRow:
+        return KeyDetailRow(
+            id="key_01abc",
+            customer_id="cust_01abc",
+            customer_name="Helena Ribeiro",
+            key_prefix="EVb4xk8B",
+            status="active",
+            billing_mode="manual",
+            rate_limit_rpm=60,
+            price_monthly=149.0,
+            paid_until=None,
+            created_at="2026-04-15T12:34:56Z",
+            last_used_at=None,
+            age_days=2,
+            notes="",
+        )
+
+    def test_round_trip_fields(self) -> None:
+        row = self._make()
+        assert row.id == "key_01abc"
+        assert row.customer_id == "cust_01abc"
+        assert row.customer_name == "Helena Ribeiro"
+        assert row.key_prefix == "EVb4xk8B"
+        assert row.status == "active"
+        assert row.billing_mode == "manual"
+        assert row.rate_limit_rpm == 60
+        assert row.price_monthly == 149.0
+        assert row.paid_until is None
+        assert row.created_at == "2026-04-15T12:34:56Z"
+        assert row.last_used_at is None
+        assert row.age_days == 2
+        assert row.notes == ""
+
+    def test_is_frozen(self) -> None:
+        row = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            row.customer_name = "Other"  # type: ignore[misc]
+
+    def test_has_slots(self) -> None:
+        assert not hasattr(self._make(), "__dict__")
+
+
+class TestAuditEventRow:
+    def _make(self) -> AuditEventRow:
+        return AuditEventRow(
+            id=42,
+            occurred_at="2026-04-15T10:30:00Z",
+            actor="cli:ricardo",
+            action="issue_key",
+            target_type="api_key",
+            target_id="key_01abc",
+            details_json='{"billing_mode": "manual", "rate_limit_rpm": 60}',
+        )
+
+    def test_round_trip_fields(self) -> None:
+        ev = self._make()
+        assert ev.id == 42
+        assert ev.occurred_at == "2026-04-15T10:30:00Z"
+        assert ev.actor == "cli:ricardo"
+        assert ev.action == "issue_key"
+        assert ev.target_type == "api_key"
+        assert ev.target_id == "key_01abc"
+        assert ev.details_json == '{"billing_mode": "manual", "rate_limit_rpm": 60}'
+
+    def test_allows_null_details(self) -> None:
+        ev = AuditEventRow(
+            id=1,
+            occurred_at="2026-04-15T10:30:00Z",
+            actor="cli:ricardo",
+            action="create_customer",
+            target_type="customer",
+            target_id="cust_01abc",
+            details_json=None,
+        )
+        assert ev.details_json is None
+
+    def test_is_frozen(self) -> None:
+        ev = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            ev.actor = "Other"  # type: ignore[misc]
+
+    def test_has_slots(self) -> None:
+        assert not hasattr(self._make(), "__dict__")
 
 
 class TestIssuedKey:

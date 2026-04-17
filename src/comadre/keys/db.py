@@ -16,21 +16,42 @@ import contextlib
 import importlib.resources
 import sqlite3
 import stat
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from ulid import ULID
 
 from comadre.keys.models import (
     ApiKeyListRow,
     ApiKeyRecord,
+    AuditEventRow,
     BillingMode,
+    CustomerDetailRow,
     CustomerListRow,
     CustomerRecord,
     CustomerStatus,
+    KeyDetailRow,
     TaxIdKind,
 )
+
+ShowTargetKind = Literal["customer", "key_single", "key_ambiguous", "not_found"]
+
+
+@dataclass(frozen=True, slots=True)
+class ShowTarget:
+    """Discriminated result of ``resolve_show_target``.
+
+    ``kind`` is the branch tag; ``value`` carries the matching payload. A
+    caller does ``if result.kind == "customer": ...`` instead of sniffing
+    string shapes or payload types.
+    """
+
+    kind: ShowTargetKind
+    value: CustomerDetailRow | KeyDetailRow | list[KeyDetailRow] | None
+
 
 _SCHEMA_VERSION = 1
 
@@ -344,6 +365,200 @@ def count_tombstones(conn: sqlite3.Connection) -> int:
         "SELECT COUNT(*) FROM customer WHERE deleted_at IS NOT NULL"
     ).fetchone()
     return int(row[0])
+
+
+def get_customer_detail(
+    conn: sqlite3.Connection,
+    customer_id: str,
+) -> CustomerDetailRow | None:
+    """Return the active customer detail row (with ``key_count``) or None.
+
+    Tombstoned customers (``deleted_at IS NOT NULL``) are treated as missing,
+    matching ``get_customer``. The ``key_count`` column is produced by a
+    single ``LEFT JOIN api_key`` — no N+1 follow-up count.
+    """
+    row = conn.execute(
+        "SELECT "
+        "c.id, c.name, c.email, c.tax_id_kind, c.notes, "
+        "c.registered_at, "
+        "COUNT(k.id) AS key_count "
+        "FROM customer AS c "
+        "LEFT JOIN api_key AS k ON k.customer_id = c.id "
+        "WHERE c.id = ? AND c.deleted_at IS NULL "
+        "GROUP BY c.id",
+        (customer_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return CustomerDetailRow(
+        id=row["id"],
+        name=row["name"],
+        email=row["email"],
+        tax_id_kind=cast(TaxIdKind, row["tax_id_kind"]),
+        key_count=int(row["key_count"]),
+        registered_at=row["registered_at"],
+        notes=row["notes"] or "",
+    )
+
+
+def _row_to_key_detail(row: sqlite3.Row, *, today: date) -> KeyDetailRow:
+    """Project a joined ``api_key + customer`` row to a ``KeyDetailRow``."""
+    created_head = row["created_at"][:10]
+    age_days = (today - date.fromisoformat(created_head)).days
+    return KeyDetailRow(
+        id=row["id"],
+        customer_id=row["customer_id"],
+        customer_name=row["customer_name"],
+        key_prefix=row["key_prefix"],
+        status=cast(CustomerStatus, row["status"]),
+        billing_mode=cast(BillingMode, row["billing_mode"]),
+        rate_limit_rpm=int(row["rate_limit_rpm"]),
+        price_monthly=float(row["price_monthly"]),
+        paid_until=row["paid_until"],
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+        age_days=age_days,
+        notes=row["notes"] or "",
+    )
+
+
+_KEY_DETAIL_SELECT = (
+    "SELECT k.id, k.customer_id, c.name AS customer_name, "
+    "k.key_prefix, k.status, k.billing_mode, k.rate_limit_rpm, "
+    "k.price_monthly, k.paid_until, k.created_at, k.last_used_at, k.notes "
+    "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
+)
+
+
+def get_key_detail(
+    conn: sqlite3.Connection,
+    key_prefix: str,
+    *,
+    today: date,
+) -> KeyDetailRow | list[KeyDetailRow] | None:
+    """Return a key's detail row by exact ``key_prefix`` match.
+
+    Returns ``None`` when no rows match, a single ``KeyDetailRow`` when
+    exactly one matches, and a ``list[KeyDetailRow]`` (length ≥ 2) on the
+    vanishingly-rare collision. The distinction is a domain signal the
+    caller branches on — not an internal detail to flatten away.
+    """
+    rows = conn.execute(
+        _KEY_DETAIL_SELECT + "WHERE k.key_prefix = ?",
+        (key_prefix,),
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return _row_to_key_detail(rows[0], today=today)
+    return [_row_to_key_detail(r, today=today) for r in rows]
+
+
+def get_key_detail_by_id(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    today: date,
+) -> KeyDetailRow | None:
+    """Return a key's detail row by exact ``api_key.id`` match (or None)."""
+    row = conn.execute(
+        _KEY_DETAIL_SELECT + "WHERE k.id = ?",
+        (key_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_key_detail(row, today=today)
+
+
+def list_audit_events(
+    conn: sqlite3.Connection,
+    target_ids: Sequence[str],
+    limit: int,
+) -> list[AuditEventRow]:
+    """Return the newest-first audit slice for ``target_ids`` capped at ``limit``.
+
+    ``target_ids`` contains the customer id alone (key path) or the customer
+    id plus its key ids (customer path) — see ``resolve_show_target`` and
+    ``show_cmd`` for the scoping policy. Placeholders for the ``IN`` clause
+    are produced programmatically from the sequence length; operator input
+    only lands in positional ``?`` bindings, never in the SQL text.
+
+    Raises ``ValueError`` when ``limit`` is outside ``[1, 1000]`` (defensive
+    — the Typer layer validates too, but a bare helper should not trust its
+    caller). Using ``raise`` rather than ``assert`` so ``-O`` mode keeps the
+    check.
+    """
+    if not 1 <= limit <= 1000:
+        raise ValueError(f"limit must be between 1 and 1000, got {limit}")
+    if not target_ids:
+        return []
+    placeholders = ",".join("?" * len(target_ids))
+    sql = (
+        "SELECT id, occurred_at, actor, action, target_type, target_id, "
+        "details_json FROM audit_log "
+        f"WHERE target_id IN ({placeholders}) "
+        "ORDER BY occurred_at DESC, id DESC LIMIT ?"
+    )
+    cursor = conn.execute(sql, (*target_ids, limit))
+    return [
+        AuditEventRow(
+            id=int(r["id"]),
+            occurred_at=r["occurred_at"],
+            actor=r["actor"],
+            action=r["action"],
+            target_type=r["target_type"],
+            target_id=r["target_id"],
+            details_json=r["details_json"],
+        )
+        for r in cursor
+    ]
+
+
+def resolve_show_target(
+    conn: sqlite3.Connection,
+    raw: str,
+    *,
+    today: date,
+) -> ShowTarget:
+    """Discriminate operator input into a ``ShowTarget``.
+
+    Branching is shape-first: the ``cust_`` / ``key_`` / ``cmdr_live_``
+    prefixes unambiguously tag the intent. The bare-prefix fallback accepts
+    any 1..8 character input; shorter inputs simply miss the exact-match
+    query (we do not ``LIKE`` — partial matches open an enumeration side
+    channel and the operator has ``list-keys`` for discovery).
+    """
+    if raw.startswith("cust_"):
+        detail = get_customer_detail(conn, raw)
+        if detail is None:
+            return ShowTarget(kind="not_found", value=None)
+        return ShowTarget(kind="customer", value=detail)
+
+    if raw.startswith("cmdr_live_"):
+        # Convenience for an operator who pasted the full plaintext: strip
+        # the advertised prefix and use the first 8 chars of the remainder
+        # as the key_prefix candidate, then resolve through the same
+        # bare-prefix lookup as the fallback branch below.
+        candidate = raw.removeprefix("cmdr_live_")[:8]
+        result = get_key_detail(conn, candidate, today=today)
+        if result is None:
+            return ShowTarget(kind="not_found", value=None)
+        if isinstance(result, list):
+            return ShowTarget(kind="key_ambiguous", value=result)
+        return ShowTarget(kind="key_single", value=result)
+
+    if raw.startswith("key_"):
+        by_id = get_key_detail_by_id(conn, raw, today=today)
+        if by_id is None:
+            return ShowTarget(kind="not_found", value=None)
+        return ShowTarget(kind="key_single", value=by_id)
+
+    result = get_key_detail(conn, raw, today=today)
+    if result is None:
+        return ShowTarget(kind="not_found", value=None)
+    if isinstance(result, list):
+        return ShowTarget(kind="key_ambiguous", value=result)
+    return ShowTarget(kind="key_single", value=result)
 
 
 def insert_api_key(

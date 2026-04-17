@@ -123,6 +123,61 @@ class ApiKeyListRow:
 
 
 @dataclass(frozen=True, slots=True)
+class CustomerDetailRow:
+    """One row of the ``show <cust_id>`` result — immutable display payload.
+
+    ``key_count`` is a LEFT JOIN aggregate. ``tax_id_encrypted`` is deliberately
+    NOT included — the detail view only surfaces ``tax_id_kind``.
+    """
+
+    id: str
+    name: str
+    email: str
+    tax_id_kind: TaxIdKind
+    key_count: int
+    registered_at: str
+    notes: str
+
+
+@dataclass(frozen=True, slots=True)
+class KeyDetailRow:
+    """One row of the ``show <key-prefix>`` result — immutable display payload.
+
+    ``age_days`` is computed by the caller (uses ``_resolve_today_in_tz`` seam
+    so tests can freeze the clock). ``customer_name`` is joined in so the
+    renderer doesn't need a second query. ``key_hash`` is deliberately NOT
+    included.
+    """
+
+    id: str
+    customer_id: str
+    customer_name: str
+    key_prefix: str
+    status: CustomerStatus
+    billing_mode: BillingMode
+    rate_limit_rpm: int
+    price_monthly: float
+    paid_until: str | None
+    created_at: str
+    last_used_at: str | None
+    age_days: int
+    notes: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEventRow:
+    """One row of the ``audit_log`` slice served by ``--audit-tail``."""
+
+    id: int
+    occurred_at: str
+    actor: str
+    action: str
+    target_type: str | None
+    target_id: str | None
+    details_json: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class IssuedKey:
     """One-shot display payload for ``issue-key`` / ``rotate-key``.
 
