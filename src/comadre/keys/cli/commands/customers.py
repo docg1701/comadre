@@ -10,6 +10,7 @@ Exit-code contract (UX-DR10):
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from datetime import UTC, datetime
 from typing import cast
@@ -21,7 +22,14 @@ from comadre.config import get_settings
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
-from comadre.keys.cli.output import render_confirmation, render_error
+from comadre.keys.cli.output import (
+    LIST_FORMAT_CHOICES,
+    render_confirmation,
+    render_customer_list,
+    render_empty_state,
+    render_error,
+    render_json,
+)
 from comadre.keys.crypto import (
     encrypt_tax_id,
     strip_tax_id,
@@ -30,16 +38,25 @@ from comadre.keys.crypto import (
 )
 from comadre.keys.db import (
     _apply_migrations,
+    count_tombstones,
     generate_customer_id,
     get_connection,
     insert_customer,
+    is_first_run,
+    list_customers,
 )
-from comadre.keys.models import CustomerRecord, TaxIdKind
+from comadre.keys.models import CustomerListRow, CustomerRecord, TaxIdKind
 from comadre.logging import get_logger
 
 _logger = get_logger("keys.cli")
 
 app = typer.Typer(help="Customer registry commands.", no_args_is_help=True)
+
+_missing_key_hint = (
+    "Generate one with: python -c 'from cryptography.fernet import "
+    "Fernet; print(Fernet.generate_key().decode())' and add it to "
+    ".env. Restart the service if monetization is enabled there too."
+)
 
 
 @app.command("create-customer")
@@ -89,11 +106,6 @@ def create_customer(
         raise typer.Exit(code=2)
 
     # 2. Load settings (trap missing/malformed encryption key or unreadable .env).
-    _missing_key_hint = (
-        "Generate one with: python -c 'from cryptography.fernet import "
-        "Fernet; print(Fernet.generate_key().decode())' and add it to "
-        ".env. Restart the service if monetization is enabled there too."
-    )
     try:
         settings = get_settings()
     except ValidationError as exc:
@@ -181,3 +193,127 @@ def create_customer(
         "Customer created | id=%s | tax_id_kind=%s", record.id, record.tax_id_kind
     )
     render_confirmation(f"Customer created: {record.id} ({record.name})")
+
+
+_FIRST_RUN_CUSTOMER_HINT = (
+    'To get started: comadre-keys create-customer --name "Name" '
+    '--email "email@example.com" --cpf "000.000.000-00"'
+)
+
+
+def _customer_row_to_json(row: CustomerListRow) -> dict[str, object]:
+    """Serialize a ``CustomerListRow`` to the AC4 JSON shape (fixed key order)."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "email": row.email,
+        "tax_id_kind": row.tax_id_kind,
+        "key_count": row.key_count,
+        "registered_at": row.registered_at,
+        "deleted_at": row.deleted_at,
+        "notes": row.notes,
+    }
+
+
+@app.command("list-customers")
+def list_customers_cmd(
+    deleted: bool = typer.Option(
+        False,
+        "--deleted",
+        help="Include purged customers (tombstoned by LGPD hard-delete).",
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        help=(
+            "Output format: table (default, human-readable) or json. "
+            "Example: --format json."
+        ),
+    ),
+) -> None:
+    """List registered customers with key counts and registration dates.
+
+    Example: comadre-keys list-customers --deleted --format json
+    """
+    # 1. Validate --format upfront. Accepting unknown formats would silently
+    # fall through to the table path; explicit rejection is UX-DR10.
+    if format not in LIST_FORMAT_CHOICES:
+        render_error(
+            "Usage error: --format must be table or json",
+            "Valid values: table, json.",
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Load settings — same exit-6 mapping as create-customer / issue-key.
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _missing_key_hint,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _missing_key_hint,
+        )
+        raise typer.Exit(code=6)
+
+    # 3. Open DB + apply migrations + read rows. Close in finally + suppress
+    # (listings are pure reads — close errors here have nothing to protect).
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        rows = list_customers(conn, include_deleted=deleted)
+        first_run = is_first_run(conn) if not rows else False
+        tombstone_total = count_tombstones(conn) if not deleted and not rows else 0
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    _logger.info("Listed customers | count=%d | include_deleted=%s", len(rows), deleted)
+
+    # 4. Branch on --format. JSON path never emits hint text (AC4).
+    if format == "json":
+        render_json([_customer_row_to_json(r) for r in rows])
+        return
+
+    title = "Customers (including purged)" if deleted else "Customers"
+
+    if rows:
+        render_customer_list(title, rows)
+        return
+
+    # Empty branches, ordered by UX-DR13 priority.
+    if first_run:
+        render_empty_state(["No customers registered yet.", _FIRST_RUN_CUSTOMER_HINT])
+        return
+
+    if not deleted and tombstone_total > 0:
+        render_empty_state(
+            [
+                "No active customers. Run 'comadre-keys list-customers "
+                "--deleted' to see purged records."
+            ]
+        )
+        return
+
+    render_empty_state(["No customers found."])

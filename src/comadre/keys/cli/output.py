@@ -14,14 +14,26 @@ from __future__ import annotations
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
-from comadre.keys.models import IssuedKey
+from comadre.keys.models import (
+    ApiKeyListRow,
+    BillingMode,
+    CustomerListRow,
+    CustomerStatus,
+    IssuedKey,
+)
 
 _stdout_console: Console | None = None
 _stderr_console: Console | None = None
 
 # Label column width = length of longest label ("billing mode:" / "first charge:" = 13).
 _LABEL_WIDTH = 13
+
+# Shared --format choices for list-customers / list-keys (UX-DR10 usage-error
+# message). Hosted here so both command modules agree on the tuple identity.
+LIST_FORMAT_CHOICES: tuple[str, ...] = ("table", "json")
 
 
 def stdout_console() -> Console:
@@ -161,6 +173,140 @@ def render_key_panel(issued: IssuedKey) -> None:
             expand=False,
         )
     )
+
+
+def _status_label(status: CustomerStatus, billing_mode: BillingMode) -> tuple[str, str]:
+    """Return ``(text, rich_color)`` for the status cell.
+
+    UX-DR8 is text-first with color as accelerator: the label word carries
+    the meaning. ``complimentary`` blue supersedes ``active`` green because
+    the blue badge is the operator-meaningful signal — it tells the reader
+    "this key is bundled, not a billing target" without them having to
+    cross-reference the billing_mode column.
+    """
+    if billing_mode == "complimentary":
+        return ("complimentary", "blue")
+    if status == "active":
+        return ("active", "green")
+    if status == "suspended":
+        return ("suspended", "yellow")
+    if status == "revoked":
+        return ("revoked", "red")
+    # Fail loudly when CustomerStatus/BillingMode grows a new literal and
+    # this branch table falls out of date — a silent "" style would hide
+    # the drift until a reviewer noticed missing color.
+    raise ValueError(
+        f"Unhandled status/billing_mode combination: {status=}, {billing_mode=}"
+    )
+
+
+def _iso_date(value: str | None) -> str:
+    """Truncate an ISO 8601 UTC timestamp to its ``YYYY-MM-DD`` date prefix.
+
+    Returns the em-dash ``—`` (U+2014) for NULL or malformed values. The
+    slice is safe against both date-only and datetime strings because
+    SQLite stores both formats with ``YYYY-MM-DD`` as the first 10
+    characters; anything shorter or not shaped like an ISO date is
+    rendered as the em-dash so the operator sees "no data" rather than
+    a corrupted partial string.
+    """
+    if value is None or len(value) < 10:
+        return "\u2014"
+    head = value[:10]
+    if (
+        head[4] != "-"
+        or head[7] != "-"
+        or not (head[0:4].isdigit() and head[5:7].isdigit() and head[8:10].isdigit())
+    ):
+        return "\u2014"
+    return head
+
+
+def render_customer_list(title: str, rows: list[CustomerListRow]) -> None:
+    """Render the ``list-customers`` StatusTable variant (no status column).
+
+    Callers must handle the empty case via ``render_empty_state`` — this
+    renderer assumes ``rows`` is non-empty so the caller's policy for
+    first-run / all-purged / subsequent-empty states stays visible at
+    the call site (UX-DR13).
+    """
+    console = stdout_console()
+    table = Table(title=title, expand=False)
+    table.add_column("Customer ID", justify="left", no_wrap=True)
+    table.add_column("Name", justify="left")
+    table.add_column("Email", justify="left")
+    table.add_column("Keys", justify="right")
+    table.add_column("Registered", justify="left", no_wrap=True)
+    for row in rows:
+        table.add_row(
+            row.id,
+            row.name,
+            row.email,
+            str(row.key_count),
+            _iso_date(row.registered_at),
+        )
+    console.print(table)
+    render_confirmation(f"{len(rows)} customers found.")
+
+
+def render_key_list(title: str, rows: list[ApiKeyListRow]) -> None:
+    """Render the ``list-keys`` StatusTable variant with color-coded status.
+
+    Callers must handle the empty case via ``render_empty_state``.
+    """
+    console = stdout_console()
+    table = Table(title=title, expand=False)
+    table.add_column("Prefix", justify="left", no_wrap=True)
+    table.add_column("Customer", justify="left")
+    table.add_column("Status", justify="left")
+    table.add_column("RPM", justify="right")
+    table.add_column("Price", justify="right", no_wrap=True)
+    table.add_column("Paid Until", justify="left", no_wrap=True)
+    for row in rows:
+        label, color = _status_label(row.status, row.billing_mode)
+        status_cell = Text(label, style=color)
+        rpm_cell = f"{row.rate_limit_rpm}/min"
+        if row.billing_mode == "complimentary":
+            price_cell = f"R$ {_format_brl(0.0)}"
+        else:
+            price_cell = f"R$ {_format_brl(row.price_monthly)}/month"
+        paid_cell = (
+            _iso_date(row.paid_until)
+            if row.billing_mode != "complimentary"
+            else "\u2014"
+        )
+        table.add_row(
+            row.key_prefix,
+            row.customer_name,
+            status_cell,
+            rpm_cell,
+            price_cell,
+            paid_cell,
+        )
+    console.print(table)
+    render_confirmation(f"{len(rows)} keys found.")
+
+
+def render_json(payload: list[dict[str, object]]) -> None:
+    """Emit ``payload`` as pretty-printed JSON via the stdout console.
+
+    Uses ``Console.print_json(data=...)`` so ``NO_COLOR`` / ``force_terminal``
+    still apply consistently with the other render_* helpers. Empty lists
+    serialize as ``[]``.
+    """
+    stdout_console().print_json(data=payload)
+
+
+def render_empty_state(lines: list[str]) -> None:
+    """Emit one or more plain informational lines via ``render_confirmation``.
+
+    Used for the UX-DR12 / UX-DR13 "empty results are not errors" path —
+    callers pass the exact lines (first-run hint, all-purged hint, or a
+    single-line informational sentence) and this helper keeps the output
+    policy centralized.
+    """
+    for line in lines:
+        render_confirmation(line)
 
 
 def _reset_for_tests() -> None:

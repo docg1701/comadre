@@ -25,15 +25,31 @@ from comadre.config import get_settings
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import ManualBillingProvider, days_until, first_charge_date
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
-from comadre.keys.cli.output import render_error, render_key_panel
+from comadre.keys.cli.output import (
+    LIST_FORMAT_CHOICES,
+    render_empty_state,
+    render_error,
+    render_json,
+    render_key_list,
+    render_key_panel,
+)
 from comadre.keys.db import (
     _apply_migrations,
     generate_key_id,
     get_connection,
     get_customer,
     insert_api_key,
+    is_first_run_for_keys,
+    list_api_keys,
 )
-from comadre.keys.models import ApiKeyCreate, ApiKeyRecord, BillingMode, IssuedKey
+from comadre.keys.models import (
+    ApiKeyCreate,
+    ApiKeyListRow,
+    ApiKeyRecord,
+    BillingMode,
+    CustomerStatus,
+    IssuedKey,
+)
 from comadre.keys.tokens import (
     generate_api_key_plaintext,
     hash_api_key,
@@ -328,3 +344,272 @@ def issue_key(
         first_charge_days_free=fc_days_free,
     )
     render_key_panel(issued)
+
+
+_VALID_STATUSES: tuple[str, ...] = ("active", "suspended", "revoked")
+
+_FIRST_RUN_KEY_HINT = (
+    "To issue one: comadre-keys issue-key --customer <customer-id> --rpm 60 --price 149"
+)
+
+
+def _key_row_to_json(row: ApiKeyListRow) -> dict[str, object]:
+    """Serialize an ``ApiKeyListRow`` to the AC8 JSON shape (fixed key order)."""
+    return {
+        "id": row.id,
+        "customer_id": row.customer_id,
+        "customer_name": row.customer_name,
+        "key_prefix": row.key_prefix,
+        "status": row.status,
+        "billing_mode": row.billing_mode,
+        "rate_limit_rpm": row.rate_limit_rpm,
+        "price_monthly": row.price_monthly,
+        "paid_until": row.paid_until,
+        "created_at": row.created_at,
+        "last_used_at": row.last_used_at,
+    }
+
+
+def _resolve_title(
+    *,
+    customer_name: str | None,
+    billing_mode: str | None,
+    status: str | None,
+    paid_until_lte: str | None,
+) -> str:
+    """Return the single most-specific table title for the active filter set.
+
+    Precedence (AC6): --customer > --billing-mode > --status > --paid-until-lte
+    > default "Keys". Stacking adjectives would blow past the 80-col budget
+    and the table data already reflects the composed WHERE clause — the
+    title just advertises the operator's intent at a glance.
+    """
+    if customer_name is not None:
+        return f"Keys for {customer_name}"
+    if billing_mode is not None:
+        return "Manual Keys" if billing_mode == "manual" else "Complimentary Keys"
+    if status is not None:
+        return f"{status.capitalize()} Keys"
+    if paid_until_lte is not None:
+        return f"Keys (paid until \u2264 {paid_until_lte})"
+    return "Keys"
+
+
+@app.command("list-keys")
+def list_keys_cmd(
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help=(
+            "Filter by status: active, suspended, or revoked. "
+            "Example: --status suspended."
+        ),
+    ),
+    billing_mode: str | None = typer.Option(
+        None,
+        "--billing-mode",
+        help=(
+            "Filter by billing mode: manual or complimentary. "
+            "Example: --billing-mode complimentary."
+        ),
+    ),
+    customer: str | None = typer.Option(
+        None,
+        "--customer",
+        help=(
+            "Filter by customer ID. "
+            'Example: --customer "cust_01j8xr3e4c5m7kn9p2qt8vwy".'
+        ),
+    ),
+    paid_until_lte: str | None = typer.Option(
+        None,
+        "--paid-until-lte",
+        help=(
+            "Filter by paid-until date (YYYY-MM-DD) or 'today'. "
+            "Example: --paid-until-lte today."
+        ),
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        help=(
+            "Output format: table (default, human-readable) or json. "
+            "Example: --format json."
+        ),
+    ),
+) -> None:
+    """List API keys with filters and color-coded status.
+
+    Example: comadre-keys list-keys --status active --billing-mode manual
+    --paid-until-lte today
+    """
+    # 1. Literal filter validation (UX-DR10 exit 2).
+    if status is not None and status not in _VALID_STATUSES:
+        render_error(
+            "Usage error: --status must be active, suspended, or revoked",
+            "Valid values: active, suspended, revoked.",
+        )
+        raise typer.Exit(code=2)
+    if billing_mode is not None and billing_mode not in ("manual", "complimentary"):
+        render_error(
+            "Usage error: --billing-mode must be manual or complimentary",
+            "Valid values: manual, complimentary.",
+        )
+        raise typer.Exit(code=2)
+    if format not in LIST_FORMAT_CHOICES:
+        render_error(
+            "Usage error: --format must be table or json",
+            "Valid values: table, json.",
+        )
+        raise typer.Exit(code=2)
+
+    # Empty-string --customer bypasses the None guard (Typer preserves the
+    # literal ""). Reject upfront so the title and SQL lookup stay sane.
+    if customer is not None and not customer.strip():
+        render_error(
+            "Usage error: --customer must not be empty",
+            'Provide a customer ID, e.g. --customer "cust_01j8xr3e4c5m7kn9p2qt8vwy".',
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Settings + billing tz (same mapping as issue-key for exit 6).
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _MISSING_KEY_HINT,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _MISSING_KEY_HINT,
+        )
+        raise typer.Exit(code=6)
+
+    try:
+        billing_tz = ZoneInfo(settings.billing_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        render_error(
+            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
+            f"Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
+            f"Got: {settings.billing_timezone}",
+        )
+        raise typer.Exit(code=6) from None
+
+    # 3. --paid-until-lte resolution ("today" or ISO date). Stripping whitespace
+    # first so copy-pasted values don't reject; re-emitting the parsed date
+    # via isoformat() normalizes alternate ISO forms (e.g. "20260415") that
+    # date.fromisoformat accepts but would compare lexicographically wrong
+    # against the YYYY-MM-DD rows in storage.
+    resolved_paid: str | None
+    if paid_until_lte is None:
+        resolved_paid = None
+    else:
+        trimmed = paid_until_lte.strip()
+        if trimmed == "today":
+            resolved_paid = _resolve_today_in_tz(billing_tz).isoformat()
+        else:
+            try:
+                parsed = date.fromisoformat(trimmed)
+            except ValueError:
+                render_error(
+                    "Usage error: --paid-until-lte must be an ISO date "
+                    "(YYYY-MM-DD) or 'today'",
+                    "Example: --paid-until-lte 2026-04-15 or --paid-until-lte today.",
+                )
+                raise typer.Exit(code=2) from None
+            resolved_paid = parsed.isoformat()
+
+    # 4. Open DB + apply migrations + read rows.
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        rows = list_api_keys(
+            conn,
+            status=cast(CustomerStatus | None, status),
+            billing_mode=cast(BillingMode | None, billing_mode),
+            customer_id=customer,
+            paid_until_lte=resolved_paid,
+        )
+
+        # Customer title resolution — look up the name when --customer is set
+        # so the title reads "Keys for Helena Ribeiro" instead of the raw id.
+        customer_name_for_title: str | None = None
+        if customer is not None:
+            if rows:
+                customer_name_for_title = rows[0].customer_name
+            else:
+                record_lookup = get_customer(conn, customer)
+                customer_name_for_title = (
+                    record_lookup.name if record_lookup is not None else customer
+                )
+
+        first_run = is_first_run_for_keys(conn) if not rows else False
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    _logger.info(
+        "Listed keys | count=%d | status=%s | billing_mode=%s | "
+        "customer=%s | paid_until_lte=%s",
+        len(rows),
+        status,
+        billing_mode,
+        customer,
+        resolved_paid,
+    )
+
+    # 5. Branch on --format. JSON path NEVER emits hint text (AC8).
+    if format == "json":
+        render_json([_key_row_to_json(r) for r in rows])
+        return
+
+    title = _resolve_title(
+        customer_name=customer_name_for_title,
+        billing_mode=billing_mode,
+        status=status,
+        paid_until_lte=resolved_paid,
+    )
+
+    if rows:
+        render_key_list(title, rows)
+        return
+
+    # Empty branches — AC7.
+    if customer is not None:
+        render_empty_state([f"No keys found for customer {customer}."])
+        return
+
+    if first_run:
+        render_empty_state(["No keys issued yet.", _FIRST_RUN_KEY_HINT])
+        return
+
+    if status is not None:
+        render_empty_state([f"No {status} keys found."])
+        return
+
+    if billing_mode is not None:
+        label = "manual" if billing_mode == "manual" else "complimentary"
+        render_empty_state([f"No {label} keys found."])
+        return
+
+    render_empty_state(["No keys found."])

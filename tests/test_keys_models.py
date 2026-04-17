@@ -10,8 +10,10 @@ from pydantic import ValidationError
 from comadre.keys.db import generate_customer_id
 from comadre.keys.models import (
     ApiKeyCreate,
+    ApiKeyListRow,
     ApiKeyRecord,
     CustomerCreate,
+    CustomerListRow,
     CustomerRecord,
     IssuedKey,
 )
@@ -218,6 +220,80 @@ class TestApiKeyRecord:
 
     def test_has_slots(self) -> None:
         assert not hasattr(self._make(), "__dict__")
+
+
+class TestCustomerListRow:
+    def _make(self) -> CustomerListRow:
+        return CustomerListRow(
+            id="cust_01abc",
+            name="Helena Ribeiro",
+            email="helena@clinica.com",
+            tax_id_kind="cpf",
+            key_count=2,
+            registered_at="2026-04-15T12:34:56Z",
+            deleted_at=None,
+            notes="",
+        )
+
+    def test_round_trip_fields(self) -> None:
+        row = self._make()
+        assert row.id == "cust_01abc"
+        assert row.name == "Helena Ribeiro"
+        assert row.email == "helena@clinica.com"
+        assert row.tax_id_kind == "cpf"
+        assert row.key_count == 2
+        assert row.registered_at == "2026-04-15T12:34:56Z"
+        assert row.deleted_at is None
+        assert row.notes == ""
+
+    def test_is_frozen(self) -> None:
+        row = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            row.name = "Other"  # type: ignore[misc]
+
+    def test_has_slots(self) -> None:
+        row = self._make()
+        assert not hasattr(row, "__dict__")
+
+
+class TestApiKeyListRow:
+    def _make(self) -> ApiKeyListRow:
+        return ApiKeyListRow(
+            id="key_01abc",
+            customer_id="cust_01abc",
+            customer_name="Helena Ribeiro",
+            key_prefix="EVb4xk8B",
+            status="active",
+            billing_mode="manual",
+            rate_limit_rpm=60,
+            price_monthly=149.0,
+            paid_until=None,
+            created_at="2026-04-15T12:34:56Z",
+            last_used_at=None,
+        )
+
+    def test_round_trip_fields(self) -> None:
+        row = self._make()
+        assert row.id == "key_01abc"
+        assert row.customer_id == "cust_01abc"
+        assert row.customer_name == "Helena Ribeiro"
+        assert row.key_prefix == "EVb4xk8B"
+        assert row.status == "active"
+        assert row.billing_mode == "manual"
+        assert row.rate_limit_rpm == 60
+        assert row.price_monthly == 149.0
+        assert row.paid_until is None
+        assert row.created_at == "2026-04-15T12:34:56Z"
+        assert row.last_used_at is None
+
+    def test_is_frozen(self) -> None:
+        row = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            row.customer_name = "Other"  # type: ignore[misc]
+
+    def test_has_slots(self) -> None:
+        row = self._make()
+        assert not hasattr(row, "__dict__")
 
 
 class TestIssuedKey:

@@ -12,14 +12,24 @@ import pytest
 from comadre.keys.db import (
     _SCHEMA_VERSION,
     _apply_migrations,
+    count_tombstones,
     generate_customer_id,
     generate_key_id,
     get_connection,
     get_customer,
     insert_api_key,
     insert_customer,
+    is_first_run,
+    is_first_run_for_keys,
+    list_api_keys,
+    list_customers,
 )
-from comadre.keys.models import ApiKeyRecord, CustomerRecord
+from comadre.keys.models import (
+    ApiKeyRecord,
+    BillingMode,
+    CustomerRecord,
+    CustomerStatus,
+)
 
 
 def _make_record(cid: str = "cust_01abcdef") -> CustomerRecord:
@@ -475,5 +485,470 @@ class TestInsertApiKey:
             assert audit["details_json"] == (
                 '{"billing_mode": "complimentary", "rate_limit_rpm": 120}'
             )
+        finally:
+            conn.close()
+
+
+def _seed_customer_with_time(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    registered_at: str,
+    email: str | None = None,
+    tax_id_kind: str = "cpf",
+) -> str:
+    """Seed a customer with a caller-controlled ``registered_at`` timestamp."""
+    cid = generate_customer_id()
+    conn.execute(
+        "INSERT INTO customer ("
+        "id, name, email, tax_id_kind, tax_id_encrypted, notes, "
+        "registered_at, deleted_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            cid,
+            name,
+            email or f"{name.replace(' ', '.').lower()}@example.com",
+            tax_id_kind,
+            b"ciphertext",
+            "",
+            registered_at,
+            None,
+        ),
+    )
+    conn.commit()
+    return cid
+
+
+def _seed_api_key(
+    conn: sqlite3.Connection,
+    *,
+    customer_id: str,
+    key_hash: str,
+    key_prefix: str = "ABCDEFGH",
+    status: str = "active",
+    billing_mode: str = "manual",
+    rate_limit_rpm: int = 60,
+    price_monthly: float = 149.0,
+    paid_until: str | None = None,
+    created_at: str = "2026-04-16T12:00:00Z",
+) -> str:
+    key_id = generate_key_id()
+    conn.execute(
+        "INSERT INTO api_key ("
+        "id, customer_id, key_hash, key_prefix, rate_limit_rpm, status, "
+        "billing_mode, price_monthly, paid_until, created_at, last_used_at, "
+        "notes"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            key_id,
+            customer_id,
+            key_hash,
+            key_prefix,
+            rate_limit_rpm,
+            status,
+            billing_mode,
+            price_monthly,
+            paid_until,
+            created_at,
+            None,
+            "",
+        ),
+    )
+    conn.commit()
+    return key_id
+
+
+def _count_rows(conn: sqlite3.Connection, table: str) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+class TestListCustomers:
+    def test_returns_rows_sorted_by_registered_at(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            c1 = _seed_customer_with_time(
+                conn, name="Alpha", registered_at="2026-04-10T10:00:00Z"
+            )
+            c2 = _seed_customer_with_time(
+                conn, name="Bravo", registered_at="2026-04-11T10:00:00Z"
+            )
+            c3 = _seed_customer_with_time(
+                conn, name="Charlie", registered_at="2026-04-12T10:00:00Z"
+            )
+            rows = list_customers(conn, include_deleted=False)
+            assert [r.id for r in rows] == [c1, c2, c3]
+        finally:
+            conn.close()
+
+    def test_counts_keys_per_customer(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            c1 = _seed_customer_with_time(
+                conn, name="WithKeys", registered_at="2026-04-10T10:00:00Z"
+            )
+            c2 = _seed_customer_with_time(
+                conn, name="OneKey", registered_at="2026-04-11T10:00:00Z"
+            )
+            c3 = _seed_customer_with_time(
+                conn, name="NoKeys", registered_at="2026-04-12T10:00:00Z"
+            )
+            _seed_api_key(
+                conn, customer_id=c1, key_hash="a" * 64, key_prefix="KEY1AAAA"
+            )
+            _seed_api_key(
+                conn,
+                customer_id=c1,
+                key_hash="b" * 64,
+                key_prefix="KEY2AAAA",
+                billing_mode="complimentary",
+                price_monthly=0.0,
+            )
+            _seed_api_key(
+                conn, customer_id=c2, key_hash="c" * 64, key_prefix="KEY3AAAA"
+            )
+
+            rows = list_customers(conn, include_deleted=False)
+            by_id = {r.id: r for r in rows}
+            assert by_id[c1].key_count == 2
+            assert by_id[c2].key_count == 1
+            assert by_id[c3].key_count == 0
+        finally:
+            conn.close()
+
+    def test_excludes_tombstones_by_default(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            alive = _seed_customer_with_time(
+                conn, name="Alive", registered_at="2026-04-10T10:00:00Z"
+            )
+            dead = _seed_customer_with_time(
+                conn, name="Dead", registered_at="2026-04-11T10:00:00Z"
+            )
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-15T00:00:00Z", dead),
+            )
+            conn.commit()
+
+            rows = list_customers(conn, include_deleted=False)
+            assert [r.id for r in rows] == [alive]
+
+            rows_all = list_customers(conn, include_deleted=True)
+            assert {r.id for r in rows_all} == {alive, dead}
+            dead_row = next(r for r in rows_all if r.id == dead)
+            assert dead_row.deleted_at == "2026-04-15T00:00:00Z"
+        finally:
+            conn.close()
+
+    def test_empty_returns_empty_list(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert list_customers(conn, include_deleted=False) == []
+            assert list_customers(conn, include_deleted=True) == []
+        finally:
+            conn.close()
+
+
+class TestListApiKeys:
+    def _seed_customers_and_keys(self, conn: sqlite3.Connection) -> dict[str, str]:
+        """Populate two customers, assorted keys. Returns id map."""
+        c_helena = _seed_customer_with_time(
+            conn, name="Helena", registered_at="2026-04-10T10:00:00Z"
+        )
+        c_bruno = _seed_customer_with_time(
+            conn, name="Bruno", registered_at="2026-04-11T10:00:00Z"
+        )
+        ids: dict[str, str] = {"helena": c_helena, "bruno": c_bruno}
+        ids["k_active_manual"] = _seed_api_key(
+            conn,
+            customer_id=c_helena,
+            key_hash="a" * 64,
+            key_prefix="ACTMAN01",
+            status="active",
+            billing_mode="manual",
+            paid_until=None,
+            created_at="2026-04-12T10:00:00Z",
+        )
+        ids["k_suspended"] = _seed_api_key(
+            conn,
+            customer_id=c_helena,
+            key_hash="b" * 64,
+            key_prefix="SUSMAN02",
+            status="suspended",
+            billing_mode="manual",
+            paid_until="2026-04-01",
+            created_at="2026-04-13T10:00:00Z",
+        )
+        ids["k_revoked"] = _seed_api_key(
+            conn,
+            customer_id=c_bruno,
+            key_hash="c" * 64,
+            key_prefix="REVMAN03",
+            status="revoked",
+            billing_mode="manual",
+            paid_until="2026-05-01",
+            created_at="2026-04-14T10:00:00Z",
+        )
+        ids["k_complimentary"] = _seed_api_key(
+            conn,
+            customer_id=c_bruno,
+            key_hash="d" * 64,
+            key_prefix="COMPKY04",
+            status="active",
+            billing_mode="complimentary",
+            price_monthly=0.0,
+            paid_until=None,
+            created_at="2026-04-15T10:00:00Z",
+        )
+        return ids
+
+    def test_no_filters_returns_all_sorted(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn)
+            assert [r.id for r in rows] == [
+                ids["k_active_manual"],
+                ids["k_suspended"],
+                ids["k_revoked"],
+                ids["k_complimentary"],
+            ]
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize(
+        "status,expected_key",
+        [
+            ("active", {"k_active_manual", "k_complimentary"}),
+            ("suspended", {"k_suspended"}),
+            ("revoked", {"k_revoked"}),
+        ],
+    )
+    def test_filter_by_status(
+        self, tmp_path: Path, status: CustomerStatus, expected_key: set[str]
+    ) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn, status=status)
+            assert {r.id for r in rows} == {ids[k] for k in expected_key}
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize(
+        "billing_mode,expected_count",
+        [
+            ("manual", 3),
+            ("complimentary", 1),
+        ],
+    )
+    def test_filter_by_billing_mode(
+        self, tmp_path: Path, billing_mode: BillingMode, expected_count: int
+    ) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn, billing_mode=billing_mode)
+            assert len(rows) == expected_count
+        finally:
+            conn.close()
+
+    def test_filter_by_customer(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn, customer_id=ids["helena"])
+            assert {r.id for r in rows} == {
+                ids["k_active_manual"],
+                ids["k_suspended"],
+            }
+        finally:
+            conn.close()
+
+    def test_filter_by_paid_until_lte_includes_nulls(self, tmp_path: Path) -> None:
+        """AC6 semantics — NULL paid_until is treated as eligible (unpaid)."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn, paid_until_lte="2026-04-15")
+            # k_active_manual has paid_until=None (included), k_suspended
+            # paid_until=2026-04-01 (included), k_complimentary paid_until=None
+            # (included); k_revoked paid_until=2026-05-01 is excluded.
+            returned = {r.id for r in rows}
+            assert ids["k_revoked"] not in returned
+            assert ids["k_active_manual"] in returned
+            assert ids["k_suspended"] in returned
+            assert ids["k_complimentary"] in returned
+        finally:
+            conn.close()
+
+    def test_filter_composition(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(
+                conn,
+                status="active",
+                billing_mode="manual",
+                paid_until_lte="2026-04-15",
+            )
+            # Only k_active_manual matches active+manual+paid_until_lte.
+            assert {r.id for r in rows} == {ids["k_active_manual"]}
+        finally:
+            conn.close()
+
+    def test_joined_customer_name_is_correct(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn)
+            by_id = {r.id: r.customer_name for r in rows}
+            assert by_id[ids["k_active_manual"]] == "Helena"
+            assert by_id[ids["k_complimentary"]] == "Bruno"
+        finally:
+            conn.close()
+
+
+class TestIsFirstRun:
+    def test_true_on_empty_db(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert is_first_run(conn) is True
+        finally:
+            conn.close()
+
+    def test_false_when_customer_exists(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_customer(conn)
+            assert is_first_run(conn) is False
+        finally:
+            conn.close()
+
+    def test_false_when_only_tombstones(self, tmp_path: Path) -> None:
+        """Even after hard-delete, the DB has been used — hint is suppressed."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-15T00:00:00Z", cid),
+            )
+            conn.commit()
+            assert is_first_run(conn) is False
+        finally:
+            conn.close()
+
+
+class TestIsFirstRunForKeys:
+    """AC7: list-keys fires its hint whenever api_key is empty, even if
+    customers already exist. Distinct from is_first_run which also
+    requires an empty customer table."""
+
+    def test_true_on_empty_db(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert is_first_run_for_keys(conn) is True
+        finally:
+            conn.close()
+
+    def test_true_when_customers_exist_but_no_keys(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_customer(conn)
+            assert is_first_run_for_keys(conn) is True
+        finally:
+            conn.close()
+
+    def test_false_when_api_key_rows_exist(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(conn, customer_id=cid, key_hash="a" * 64)
+            assert is_first_run_for_keys(conn) is False
+        finally:
+            conn.close()
+
+
+class TestCountTombstones:
+    def test_returns_zero_on_fresh_db(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert count_tombstones(conn) == 0
+        finally:
+            conn.close()
+
+    def test_counts_only_tombstoned_rows(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            alive = _seed_customer_with_time(
+                conn, name="Alive", registered_at="2026-04-10T10:00:00Z"
+            )
+            dead = _seed_customer_with_time(
+                conn, name="Dead", registered_at="2026-04-11T10:00:00Z"
+            )
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-15T00:00:00Z", dead),
+            )
+            conn.commit()
+            assert count_tombstones(conn) == 1
+            _ = alive  # silence unused var
+        finally:
+            conn.close()
+
+
+class TestListCommandsDoNotWrite:
+    """AC9 regression guard — listings never mutate the DB."""
+
+    def test_no_writes_across_all_helpers(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(conn, customer_id=cid, key_hash="f" * 64)
+
+            before = {
+                "customer": _count_rows(conn, "customer"),
+                "api_key": _count_rows(conn, "api_key"),
+                "audit_log": _count_rows(conn, "audit_log"),
+            }
+
+            list_customers(conn, include_deleted=False)
+            list_customers(conn, include_deleted=True)
+            list_api_keys(conn)
+            list_api_keys(conn, status="active")
+            list_api_keys(conn, billing_mode="manual")
+            list_api_keys(conn, customer_id=cid)
+            list_api_keys(conn, paid_until_lte="2026-04-15")
+            is_first_run(conn)
+            is_first_run_for_keys(conn)
+            count_tombstones(conn)
+
+            after = {
+                "customer": _count_rows(conn, "customer"),
+                "api_key": _count_rows(conn, "api_key"),
+                "audit_log": _count_rows(conn, "audit_log"),
+            }
+            assert before == after
         finally:
             conn.close()

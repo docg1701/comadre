@@ -13,13 +13,23 @@ from rich.console import Console
 import comadre.keys.cli.output as output_mod
 from comadre.keys.cli.output import (
     _reset_for_tests,
+    _status_label,
     render_confirmation,
+    render_customer_list,
+    render_empty_state,
     render_error,
+    render_json,
+    render_key_list,
     render_key_panel,
     stderr_console,
     stdout_console,
 )
-from comadre.keys.models import ApiKeyRecord, IssuedKey
+from comadre.keys.models import (
+    ApiKeyListRow,
+    ApiKeyRecord,
+    CustomerListRow,
+    IssuedKey,
+)
 
 ANSI_ESCAPE = re.compile(r"\x1b\[")
 
@@ -331,3 +341,232 @@ class TestRenderKeyPanelComplimentary:
         [line] = [line for line in lines if issued.plaintext in line]
         assert line.strip() == issued.plaintext
         assert line[0] not in (" ", "\t", "\u00a0")
+
+
+class TestStatusLabel:
+    """UX-DR8 — four-color palette with text-first labeling."""
+
+    def test_active_manual(self) -> None:
+        assert _status_label("active", "manual") == ("active", "green")
+
+    def test_active_complimentary_shows_complimentary(self) -> None:
+        # The blue complimentary badge supersedes active/green because it
+        # carries the operator-meaningful "bundled, not billed" signal.
+        assert _status_label("active", "complimentary") == ("complimentary", "blue")
+
+    def test_suspended(self) -> None:
+        assert _status_label("suspended", "manual") == ("suspended", "yellow")
+
+    def test_revoked(self) -> None:
+        assert _status_label("revoked", "manual") == ("revoked", "red")
+
+    def test_suspended_complimentary_still_renders_as_complimentary(self) -> None:
+        # Edge case: if a complimentary key is later suspended (Story 3.1
+        # territory), the complimentary label still wins because the
+        # billing-mode signal is the operator's scan target.
+        assert _status_label("suspended", "complimentary") == (
+            "complimentary",
+            "blue",
+        )
+
+
+def _customer_rows() -> list[CustomerListRow]:
+    return [
+        CustomerListRow(
+            id="cust_01helena000000000000000000",
+            name="Helena Ribeiro",
+            email="helena@clinica.com",
+            tax_id_kind="cpf",
+            key_count=2,
+            registered_at="2026-04-10T10:00:00Z",
+            deleted_at=None,
+            notes="",
+        ),
+        CustomerListRow(
+            id="cust_01bruno0000000000000000000",
+            name="Bruno Aragao",
+            email="bruno@boteco.com",
+            tax_id_kind="cnpj",
+            key_count=0,
+            registered_at="2026-04-11T10:00:00Z",
+            deleted_at=None,
+            notes="",
+        ),
+    ]
+
+
+class TestRenderCustomerList:
+    def test_populated_table_contents(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_customer_list("Customers", _customer_rows())
+        out = buf.getvalue()
+        # Title, column headers, row contents.
+        assert "Customers" in out
+        for header in ("Customer ID", "Name", "Email", "Keys", "Registered"):
+            assert header in out
+        assert "Helena Ribeiro" in out
+        assert "helena@clinica.com" in out
+        assert "cust_01helena000000000000000000" in out
+        assert "cust_01bruno0000000000000000000" in out
+        # ISO date truncation — not the full timestamp.
+        assert "2026-04-10" in out
+        assert "12:00:00" not in out
+        # Trailer with count.
+        assert "2 customers found." in out
+
+
+class TestRenderKeyList:
+    def _rows(self) -> list[ApiKeyListRow]:
+        return [
+            ApiKeyListRow(
+                id="key_01active00000000000000000",
+                customer_id="cust_01helena000000000000000000",
+                customer_name="Helena Ribeiro",
+                key_prefix="EVb4xk8B",
+                status="active",
+                billing_mode="manual",
+                rate_limit_rpm=60,
+                price_monthly=149.0,
+                paid_until=None,
+                created_at="2026-04-10T10:00:00Z",
+                last_used_at=None,
+            ),
+            ApiKeyListRow(
+                id="key_01suspend000000000000000",
+                customer_id="cust_01helena000000000000000000",
+                customer_name="Helena Ribeiro",
+                key_prefix="SUSpENdd",
+                status="suspended",
+                billing_mode="manual",
+                rate_limit_rpm=60,
+                price_monthly=1234.56,
+                paid_until="2026-04-01",
+                created_at="2026-04-11T10:00:00Z",
+                last_used_at=None,
+            ),
+            ApiKeyListRow(
+                id="key_01revoked00000000000000",
+                customer_id="cust_01bruno0000000000000000000",
+                customer_name="Bruno Aragao",
+                key_prefix="REvOKEdd",
+                status="revoked",
+                billing_mode="manual",
+                rate_limit_rpm=60,
+                price_monthly=99.0,
+                paid_until="2026-05-01",
+                created_at="2026-04-12T10:00:00Z",
+                last_used_at=None,
+            ),
+            ApiKeyListRow(
+                id="key_01comp000000000000000000",
+                customer_id="cust_01bruno0000000000000000000",
+                customer_name="Bruno Aragao",
+                key_prefix="COMPlmnt",
+                status="active",
+                billing_mode="complimentary",
+                rate_limit_rpm=120,
+                price_monthly=0.0,
+                paid_until=None,
+                created_at="2026-04-13T10:00:00Z",
+                last_used_at=None,
+            ),
+        ]
+
+    def test_populated_has_all_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_list("Keys", self._rows())
+        out = buf.getvalue()
+        for header in ("Prefix", "Customer", "Status", "RPM", "Price", "Paid Until"):
+            assert header in out
+        # Each status label renders as plain text (NO_COLOR strips the style).
+        for label in ("active", "suspended", "revoked", "complimentary"):
+            assert label in out
+        assert "4 keys found." in out
+
+    def test_price_formatting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_list("Keys", self._rows())
+        out = buf.getvalue()
+        # pt-BR format for manual keys.
+        assert "R$ 149,00/month" in out
+        assert "R$ 1.234,56/month" in out
+        # Complimentary keys show R$ 0,00 with no /month suffix.
+        assert "R$ 0,00" in out
+        # And no complimentary row ends in /month.
+        comp_lines = [line for line in out.split("\n") if "COMPlmnt" in line]
+        assert comp_lines, "complimentary row missing"
+        for line in comp_lines:
+            assert "/month" not in line
+
+    def test_paid_until_emdash_for_null_and_complimentary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_key_list("Keys", self._rows())
+        out = buf.getvalue()
+        # U+2014 em-dash (not hyphen-minus).
+        assert "\u2014" in out
+        # ISO-date slice for the dated rows.
+        assert "2026-04-01" in out
+        assert "2026-05-01" in out
+
+
+class TestRenderJson:
+    def test_matches_payload_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload: list[dict[str, object]] = [
+            {"id": "cust_01abc", "name": "Helena", "key_count": 2},
+            {"id": "cust_01xyz", "name": "Bruno", "key_count": 0},
+        ]
+        render_json(payload)
+        out = buf.getvalue()
+        parsed = json.loads(out)
+        assert parsed == payload
+
+    def test_empty_is_empty_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_json([])
+        assert json.loads(buf.getvalue()) == []
+
+
+class TestRenderEmptyState:
+    def test_two_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_empty_state(
+            [
+                "No customers registered yet.",
+                'To get started: comadre-keys create-customer --name "Name" '
+                '--email "email@example.com" --cpf "000.000.000-00"',
+            ]
+        )
+        out = buf.getvalue()
+        assert "No customers registered yet." in out
+        assert "To get started: comadre-keys create-customer" in out
+        # No Rich panel characters (plain confirmation lines only).
+        assert "╭" not in out
+        assert "╰" not in out
+
+    def test_single_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        render_empty_state(["No suspended keys found."])
+        assert "No suspended keys found." in buf.getvalue()

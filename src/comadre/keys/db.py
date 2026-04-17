@@ -18,10 +18,19 @@ import sqlite3
 import stat
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from ulid import ULID
 
-from comadre.keys.models import ApiKeyRecord, CustomerRecord
+from comadre.keys.models import (
+    ApiKeyListRow,
+    ApiKeyRecord,
+    BillingMode,
+    CustomerListRow,
+    CustomerRecord,
+    CustomerStatus,
+    TaxIdKind,
+)
 
 _SCHEMA_VERSION = 1
 
@@ -199,6 +208,142 @@ def get_customer(
         ),
         deleted_at=None,
     )
+
+
+def list_customers(
+    conn: sqlite3.Connection,
+    *,
+    include_deleted: bool,
+) -> list[CustomerListRow]:
+    """Return customer rows sorted by ``registered_at ASC``.
+
+    Tombstoned customers (``deleted_at IS NOT NULL``) are filtered out
+    unless ``include_deleted`` is True. The ``key_count`` column is
+    computed via a single ``LEFT JOIN api_key`` — no N+1 per-row counts.
+    """
+    cursor = conn.execute(
+        "SELECT "
+        "c.id, c.name, c.email, c.tax_id_kind, c.notes, "
+        "c.registered_at, c.deleted_at, "
+        "COUNT(k.id) AS key_count "
+        "FROM customer AS c "
+        "LEFT JOIN api_key AS k ON k.customer_id = c.id "
+        "WHERE (? OR c.deleted_at IS NULL) "
+        "GROUP BY c.id "
+        "ORDER BY c.registered_at ASC",
+        (1 if include_deleted else 0,),
+    )
+    rows: list[CustomerListRow] = []
+    for row in cursor:
+        rows.append(
+            CustomerListRow(
+                id=row["id"],
+                name=row["name"],
+                email=row["email"],
+                tax_id_kind=cast(TaxIdKind, row["tax_id_kind"]),
+                key_count=int(row["key_count"]),
+                registered_at=row["registered_at"],
+                deleted_at=row["deleted_at"],
+                notes=row["notes"] or "",
+            )
+        )
+    return rows
+
+
+def list_api_keys(
+    conn: sqlite3.Connection,
+    *,
+    status: CustomerStatus | None = None,
+    billing_mode: BillingMode | None = None,
+    customer_id: str | None = None,
+    paid_until_lte: str | None = None,
+) -> list[ApiKeyListRow]:
+    """Return api_key rows with optional filters, sorted by ``created_at ASC``.
+
+    Each non-None filter contributes one ``?`` placeholder to the WHERE
+    clause; the predicate literals themselves are hard-coded so operator
+    input never lands in SQL text. The ``paid_until`` filter matches both
+    NULL and ``paid_until <= ?`` rows (NULL treated as "not yet billed"
+    so the operator's "who owes me?" query catches trial-window keys).
+    """
+    predicates: list[str] = []
+    params: list[object] = []
+    if status is not None:
+        predicates.append("k.status = ?")
+        params.append(status)
+    if billing_mode is not None:
+        predicates.append("k.billing_mode = ?")
+        params.append(billing_mode)
+    if customer_id is not None:
+        predicates.append("k.customer_id = ?")
+        params.append(customer_id)
+    if paid_until_lte is not None:
+        predicates.append("(k.paid_until IS NULL OR k.paid_until <= ?)")
+        params.append(paid_until_lte)
+    where_clause = ("WHERE " + " AND ".join(predicates)) if predicates else ""
+    sql = (
+        "SELECT k.id, k.customer_id, c.name AS customer_name, "
+        "k.key_prefix, k.status, k.billing_mode, k.rate_limit_rpm, "
+        "k.price_monthly, k.paid_until, k.created_at, k.last_used_at "
+        "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
+        f"{where_clause} "
+        "ORDER BY k.created_at ASC"
+    )
+    cursor = conn.execute(sql, params)
+    rows: list[ApiKeyListRow] = []
+    for row in cursor:
+        rows.append(
+            ApiKeyListRow(
+                id=row["id"],
+                customer_id=row["customer_id"],
+                customer_name=row["customer_name"],
+                key_prefix=row["key_prefix"],
+                status=cast(CustomerStatus, row["status"]),
+                billing_mode=cast(BillingMode, row["billing_mode"]),
+                rate_limit_rpm=int(row["rate_limit_rpm"]),
+                price_monthly=float(row["price_monthly"]),
+                paid_until=row["paid_until"],
+                created_at=row["created_at"],
+                last_used_at=row["last_used_at"],
+            )
+        )
+    return rows
+
+
+def is_first_run(conn: sqlite3.Connection) -> bool:
+    """Return True when both ``customer`` and ``api_key`` are empty.
+
+    Drives the UX-DR13 first-run-hint policy for ``list-customers``: the
+    create-customer bootstrap hint only shows when the operator has
+    never used the system at all. A tombstoned customer row counts as
+    prior use, so purged-only DBs return False.
+    """
+    customers = conn.execute("SELECT COUNT(*) FROM customer").fetchone()[0]
+    if customers:
+        return False
+    keys = conn.execute("SELECT COUNT(*) FROM api_key").fetchone()[0]
+    return not keys
+
+
+def is_first_run_for_keys(conn: sqlite3.Connection) -> bool:
+    """Return True when the ``api_key`` table is empty.
+
+    Drives the ``list-keys`` first-run-hint policy: the issue-key
+    bootstrap hint fires whenever no keys have been issued yet,
+    regardless of whether customers exist — AC7 treats both the
+    "customers exist, zero keys" and "completely empty DB" cases
+    as first-run for the keys workflow.
+    """
+    keys = conn.execute("SELECT COUNT(*) FROM api_key").fetchone()[0]
+    return not keys
+
+
+def count_tombstones(conn: sqlite3.Connection) -> int:
+    """Return the count of tombstoned customers (``deleted_at IS NOT NULL``)."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM customer WHERE deleted_at IS NOT NULL"
+    ).fetchone()
+    return int(row[0])
 
 
 def insert_api_key(

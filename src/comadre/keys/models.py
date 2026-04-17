@@ -81,6 +81,48 @@ class ApiKeyRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class CustomerListRow:
+    """One row of the ``list-customers`` result set — immutable display payload.
+
+    Timestamps stay as raw SQLite TEXT (ISO 8601 UTC) rather than round-tripping
+    through ``datetime``; the renderer slices the first 10 characters to display
+    ``YYYY-MM-DD``. Avoiding the conversion removes a class of tz / fractional
+    second bugs on the hot path of listings.
+    """
+
+    id: str
+    name: str
+    email: str
+    tax_id_kind: TaxIdKind
+    key_count: int
+    registered_at: str
+    deleted_at: str | None
+    notes: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApiKeyListRow:
+    """One row of the ``list-keys`` result set — immutable display payload.
+
+    ``customer_name`` is joined in so the renderer doesn't issue a second
+    query per row. ``key_hash`` is deliberately NOT carried — list output
+    never exposes the hash (FR37 anti-enumeration).
+    """
+
+    id: str
+    customer_id: str
+    customer_name: str
+    key_prefix: str
+    status: CustomerStatus
+    billing_mode: BillingMode
+    rate_limit_rpm: int
+    price_monthly: float
+    paid_until: str | None
+    created_at: str
+    last_used_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class IssuedKey:
     """One-shot display payload for ``issue-key`` / ``rotate-key``.
 
