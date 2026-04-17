@@ -631,11 +631,18 @@ class TestHelpSurface:
         monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
         result = runner.invoke(app, ["issue-key", "--help"])
         assert result.exit_code == 0
-        assert "cust_01j" in result.stdout
-        assert "Example: 60" in result.stdout
-        assert "--price 149" in result.stdout
+        # Normalize: strip ANSI escape sequences and collapse whitespace runs
+        # to a single space. Typer renders the help inside a rich Panel whose
+        # line-wrapping depends on terminal width (80 on CI, wider locally),
+        # and line-wraps can split an example like "--price 149" across two
+        # lines. Normalizing both dimensions makes the assertion portable.
+        ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+        help_text = re.sub(r"\s+", " ", ansi.sub("", result.stdout))
+        assert "cust_01j" in help_text
+        assert "Example: 60" in help_text
+        assert "--price 149" in help_text
         # English example (project language policy: code/help text in English).
-        assert "bundled into infra package" in result.stdout
+        assert "bundled into infra package" in help_text
         # DB file never created.
         assert not (tmp_path / "registry.db").exists()
 
