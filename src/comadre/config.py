@@ -3,9 +3,29 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
+from typing import Self
 
-from pydantic import Field, HttpUrl, SecretStr, field_validator
+from cryptography.fernet import Fernet
+from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _project_env_file() -> Path:
+    """Resolve `.env` relative to the project root, not CWD.
+
+    Walks upward from this module until it finds the directory containing
+    `pyproject.toml` (same heuristic used by `uv`, `poetry`, `pipenv`). When
+    `comadre-keys` runs from an arbitrary operator CWD, anchoring to the
+    project root prevents a stray `.env` from silently overriding the at-rest
+    encryption key. When installed as a wheel the pyproject.toml lookup fails
+    and no `.env` is loaded — deployments must set env vars explicitly (which
+    they already do via compose / systemd).
+    """
+    for ancestor in Path(__file__).resolve().parents:
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor / ".env"
+    return Path(".env")
 
 
 class Settings(BaseSettings):
@@ -13,6 +33,9 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         case_sensitive=False,
+        env_file=_project_env_file(),
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     api_key: SecretStr = Field(min_length=1)
@@ -97,6 +120,42 @@ class Settings(BaseSettings):
         description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
     )
 
+    monetization_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable monetization features (dynamic per-key rate limiting, "
+            "billing sweeps, suspension)."
+        ),
+    )
+    key_registry_db_path: str = Field(
+        default="./data/keys/registry.db",
+        min_length=1,
+        description=("SQLite key registry path. Created with mode 0600 on first use."),
+    )
+    key_registry_encryption_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Fernet key for encrypting tax IDs at rest. Required when "
+            "monetization_enabled=True. Generate with "
+            "Fernet.generate_key().decode()."
+        ),
+    )
+    operator_contact_hint: str = Field(
+        default="Contact your Comadre operator for billing.",
+        description="Operator contact string shown in CLI error hints.",
+    )
+    billing_day: int = Field(
+        default=5,
+        ge=1,
+        le=28,
+        description="Day-of-month for billing sweeps (1-28 to avoid month-end).",
+    )
+    billing_timezone: str = Field(
+        default="America/Sao_Paulo",
+        min_length=1,
+        description="IANA timezone for billing calculations.",
+    )
+
     @field_validator(
         "kokoro_model_url",
         "kokoro_voices_url",
@@ -113,6 +172,36 @@ class Settings(BaseSettings):
             return v
         HttpUrl(v)
         return v
+
+    @field_validator("key_registry_encryption_key")
+    @classmethod
+    def _validate_fernet_key_shape(cls, v: SecretStr | None) -> SecretStr | None:
+        """Reject malformed Fernet keys without echoing the raw value.
+
+        Runs on the already-coerced `SecretStr`, so pydantic's error rendering
+        masks the input as `**********` — AC5/NFR16 anti-enumeration guarantee
+        for the key value itself. Mandatory-when-enabled check runs in the
+        model validator below.
+        """
+        if v is None:
+            return v
+        try:
+            Fernet(v.get_secret_value().encode())
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "KEY_REGISTRY_ENCRYPTION_KEY must be a valid Fernet key"
+            ) from exc
+        return v
+
+    @model_validator(mode="after")
+    def _validate_encryption_key_when_monetization_enabled(self) -> Self:
+        """Require the encryption key when monetization is on."""
+        if self.monetization_enabled and self.key_registry_encryption_key is None:
+            raise ValueError(
+                "KEY_REGISTRY_ENCRYPTION_KEY is required when "
+                "MONETIZATION_ENABLED=true and must be a valid Fernet key"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

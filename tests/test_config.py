@@ -1,6 +1,7 @@
 """Tests for the configuration module."""
 
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from comadre.config import Settings, get_settings
@@ -261,6 +262,126 @@ class TestSettings:
         monkeypatch.setenv("QWEN3_MODEL_URL", "")
         settings = Settings()
         assert settings.qwen3_model_url == ""
+
+
+class TestMonetizationSettings:
+    """Tests for the monetization/key-registry fields and validator."""
+
+    def test_monetization_enabled_default_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.delenv("MONETIZATION_ENABLED", raising=False)
+        settings = Settings()
+        assert settings.monetization_enabled is False
+
+    def test_key_registry_db_path_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.key_registry_db_path == "./data/keys/registry.db"
+
+    def test_key_registry_db_path_from_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", "/srv/keys/r.db")
+        settings = Settings()
+        assert settings.key_registry_db_path == "/srv/keys/r.db"
+
+    def test_key_registry_encryption_key_default_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
+        settings = Settings()
+        assert settings.key_registry_encryption_key is None
+
+    def test_operator_contact_hint_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert "operator" in settings.operator_contact_hint.lower()
+
+    def test_billing_day_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.billing_day == 5
+
+    def test_billing_day_rejects_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("BILLING_DAY", "0")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_billing_day_rejects_above_28(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("BILLING_DAY", "29")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_billing_timezone_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        settings = Settings()
+        assert settings.billing_timezone == "America/Sao_Paulo"
+
+    def test_monetization_enabled_requires_encryption_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
+        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
+        with pytest.raises(ValidationError) as exc_info:
+            Settings()
+        assert "KEY_REGISTRY_ENCRYPTION_KEY" in str(exc_info.value)
+
+    def test_monetization_enabled_rejects_malformed_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", "not-a-fernet-key")
+        with pytest.raises(ValidationError) as exc_info:
+            Settings()
+        errors = exc_info.value.errors()
+        # Authored message identifies the field and does NOT echo the value.
+        assert any(
+            "KEY_REGISTRY_ENCRYPTION_KEY" in err.get("msg", "") for err in errors
+        )
+        for err in errors:
+            assert "not-a-fernet-key" not in err.get("msg", "")
+        # Pydantic-core always embeds the raw `input_value` in its error
+        # repr, even for SecretStr-typed fields, and there is no first-party
+        # way to suppress it. The AC5/NFR16 "never echoed" invariant is
+        # therefore enforced at the CLI boundary: `get_settings()` callers
+        # render `render_error(title, hint)` with static strings and never
+        # forward `str(exc)` to the user — covered by
+        # `test_malformed_key_not_echoed` in `test_keys_cli.py`.
+
+    def test_monetization_enabled_accepts_valid_fernet_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
+        monkeypatch.setenv(
+            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
+        )
+        settings = Settings()
+        assert settings.monetization_enabled is True
+        assert settings.key_registry_encryption_key is not None
+
+    def test_monetization_disabled_ignores_missing_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("MONETIZATION_ENABLED", "false")
+        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
+        settings = Settings()
+        assert settings.monetization_enabled is False
 
 
 class TestGetSettings:

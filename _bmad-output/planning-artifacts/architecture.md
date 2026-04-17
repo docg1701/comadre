@@ -104,6 +104,7 @@ The existing stack covers every concern a starter template would provide (build 
 |---|---|---|---|
 | `typer` | >=0.12 | CLI framework for `comadre-keys` | Standard Python CLI framework; brings `rich` as transitive dep for terminal rendering |
 | `cryptography` | >=43.0 | Fernet encryption for CPF/CNPJ at rest | Industry-standard authenticated encryption; required by LGPD compliance (NFR10) |
+| `validate-docbr` | >=2.0 | CPF/CNPJ checksum validation | De-facto Python lib for Brazilian documents; 2.0+ supports the alphanumeric CNPJ defined in RFB IN 2.229/2024 (effective July 2026) — delegating to a maintained dependency beats carrying our own implementation through the format change |
 | `sqlite3` | stdlib | Key registry, audit log, billing state | Zero-dependency; already available in Python 3.12 runtime |
 
 **Architectural Decisions Pre-Established by Existing Stack:**
@@ -263,7 +264,7 @@ Not applicable — Comadre 2.0.0 has no frontend. The operator interface is CLI-
 ### Decision Impact Analysis
 
 **Implementation Sequence:**
-1. `keys/models.py` + `keys/crypto.py` — data models and encryption (no external dependencies)
+1. `keys/models.py` + `keys/crypto.py` — data models, CPF/CNPJ validation (via `validate-docbr`), and Fernet encryption
 2. `keys/db.py` + `keys/audit.py` + migrations — storage layer (depends on models + crypto)
 3. `keys/cache.py` — TTLCache wrapper (depends on models)
 4. `keys/billing.py` — ManualBillingProvider + suspension sweep (depends on db + audit)
@@ -396,12 +397,13 @@ decrypted = fernet.decrypt(encrypted_bytes).decode()  # returns str
 - The Fernet key is read from `settings.key_registry_encryption_key` (SecretStr)
 
 **CPF/CNPJ Validation Pattern:**
-- Accept input with or without formatting (dots, dashes, slashes)
-- Strip all non-digit characters before validation
-- Validate checksum using the standard 2-verification-digit algorithm (no external library)
-- Store digits-only form (11 digits for CPF, 14 for CNPJ), encrypted
-- Display in formatted form in CLI output (e.g., `123.456.789-00`, `12.345.678/0001-90`)
-- Never echo invalid input in error messages (enumeration/log-injection prevention)
+- Accept input with or without formatting (dots, dashes, slashes, whitespace)
+- Validate via `validate-docbr` (`CPF` with default `repeated_digits=False`; `CNPJ` accepting numeric AND alphanumeric forms per RFB IN 2.229/2024, effective July 2026)
+- Enforce canonical length upfront (11 for CPF, 14 for CNPJ) — validate-docbr zero-pads shorter inputs, which is too permissive for our storage contract
+- `strip_tax_id` removes mask punctuation and uppercases the remainder so alphanumeric CNPJ normalizes deterministically
+- Store the stripped+uppercased form in `tax_id_encrypted` (encrypted with Fernet)
+- Display formatted form in CLI output (`123.456.789-00`, `12.345.678/0001-90`; alphanumeric CNPJ rendered as-is with the `XX.XXX.XXX/XXXX-NN` separator layout)
+- Never echo invalid input in error messages (enumeration / log-injection prevention, FR37/NFR16)
 
 **CLI Output Patterns:**
 - Success data → stdout. Errors → stderr.

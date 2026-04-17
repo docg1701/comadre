@@ -1,6 +1,6 @@
 [project]
 name = "comadre"
-version = "1.6.2"
+version = "2.0.0.dev0"
 description = "Comadre Manda Audio Direto, Rapido e Eficiente — Dual-engine TTS API: Kokoro fp32 + Qwen3-TTS C++"
 readme = "README.md"
 license = "MIT"
@@ -12,10 +12,18 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.7",
+    "pydantic[email]>=2.9",
     "kokoro-onnx>=0.5.0",
     "num2words>=0.5",
     "slowapi>=0.1.9",
+    "typer>=0.12",
+    "cryptography>=43.0",
+    "python-ulid>=2.2",
+    "validate-docbr>=2.0",
 ]
+
+[project.scripts]
+comadre-keys = "comadre.keys.cli.app:main"
 
 [build-system]
 requires = ["uv_build>=0.8.3,<0.9.0"]

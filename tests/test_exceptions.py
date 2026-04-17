@@ -9,6 +9,8 @@ from comadre.exceptions import (
     ComadreError,
     GenerationError,
     InvalidRequestError,
+    InvalidTaxIdError,
+    KeyRegistryError,
     ServiceUnavailableError,
     VoiceNotFoundError,
     comadre_error_handler,
@@ -182,6 +184,81 @@ class TestServiceUnavailableError:
 
     def test_is_comadre_error(self) -> None:
         err = ServiceUnavailableError()
+        assert isinstance(err, ComadreError)
+
+
+class TestInvalidTaxIdError:
+    def test_cpf_status_code(self) -> None:
+        err = InvalidTaxIdError("cpf")
+        assert err.status_code == 400
+
+    def test_cpf_error_type(self) -> None:
+        err = InvalidTaxIdError("cpf")
+        assert err.error_type == "invalid_request_error"
+
+    def test_cpf_message_is_static(self) -> None:
+        err = InvalidTaxIdError("cpf")
+        assert err.message == "Invalid CPF: checksum verification failed"
+
+    def test_cnpj_message_is_static(self) -> None:
+        err = InvalidTaxIdError("cnpj")
+        assert err.message == "Invalid CNPJ: checksum verification failed"
+
+    def test_cpf_hint_is_static(self) -> None:
+        err = InvalidTaxIdError("cpf")
+        assert err.hint == "Verify the CPF digits and try again."
+
+    def test_cnpj_hint_is_static(self) -> None:
+        err = InvalidTaxIdError("cnpj")
+        assert err.hint == "Verify the CNPJ digits and try again."
+
+    def test_kind_attribute(self) -> None:
+        err = InvalidTaxIdError("cpf")
+        assert err.kind == "cpf"
+
+    def test_is_comadre_error(self) -> None:
+        err = InvalidTaxIdError("cnpj")
+        assert isinstance(err, ComadreError)
+
+    def test_has_no_value_attribute(self) -> None:
+        """FR37/NFR16 anti-enumeration: no attribute stores the raw input."""
+        err = InvalidTaxIdError("cpf")
+        for forbidden_attr in ("value", "raw", "input", "digits", "tax_id"):
+            assert not hasattr(err, forbidden_attr)
+
+    def test_constructor_takes_no_value(self) -> None:
+        """Compile-time guard: cannot pass raw CPF/CNPJ to the exception."""
+        import inspect
+
+        sig = inspect.signature(InvalidTaxIdError.__init__)
+        params = set(sig.parameters.keys()) - {"self"}
+        assert params == {"kind"}
+
+
+class TestKeyRegistryError:
+    def test_status_code(self) -> None:
+        err = KeyRegistryError()
+        assert err.status_code == 500
+
+    def test_error_type(self) -> None:
+        err = KeyRegistryError()
+        assert err.error_type == "server_error"
+
+    def test_default_message(self) -> None:
+        err = KeyRegistryError()
+        assert err.message == "Key registry database unreachable or corrupt"
+
+    def test_custom_message(self) -> None:
+        err = KeyRegistryError("disk full")
+        assert err.message == "disk full"
+
+    def test_hint_mentions_path_and_mode(self) -> None:
+        err = KeyRegistryError()
+        assert "KEY_REGISTRY_DB_PATH" in err.hint
+        assert "0600" in err.hint
+
+    def test_is_comadre_error(self) -> None:
+        err = KeyRegistryError()
         assert isinstance(err, ComadreError)
 
 

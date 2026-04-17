@@ -1,0 +1,39 @@
+"""Top-level `comadre-keys` Typer application.
+
+Command groups are merged at the top level via `registered_commands.extend`
+so operators invoke `comadre-keys create-customer` (flat) rather than
+`comadre-keys customers create-customer` (nested).
+"""
+
+from __future__ import annotations
+
+import typer
+
+from comadre.keys.cli.commands.customers import app as customers_app
+
+app = typer.Typer(
+    name="comadre-keys",
+    help="Comadre key registry — customer and API-key management CLI.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.registered_commands.extend(customers_app.registered_commands)
+
+
+@app.callback()
+def _root() -> None:
+    """Force Typer into multi-command mode even when only one command exists.
+
+    Without a callback, Typer collapses a single-command app into that
+    command's signature at the top level, which would break the spec's
+    `comadre-keys create-customer` invocation pattern.
+    """
+
+
+def main() -> None:
+    """Entry point registered in pyproject.toml [project.scripts]."""
+    app()
+
+
+if __name__ == "__main__":
+    main()

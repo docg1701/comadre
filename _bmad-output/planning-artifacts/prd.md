@@ -183,7 +183,7 @@ Brazilian builders today face a binary choice for pt-BR chatbot TTS: cloud subsc
 Lifts the non-regression contract and the LGPD obligations into first-class stories. Every item here maps to a concrete story with explicit acceptance criteria and verification, independent of feature progress.
 
 - **Non-regression guard**: CI job that runs the full hardening regression suite on every PR — security headers, banner stripping, disabled docs endpoints, `request_body max_size`, `redirect_slashes=False`, `/health` minimal-for-unauth, UFW rules, timing-safe comparison, `SlowAPIMiddleware` registered, error envelope uniformity
-- **CPF/CNPJ validation and encryption**: checksum-validated input (no external library), `cryptography.fernet` encryption at rest with `KEY_REGISTRY_ENCRYPTION_KEY` (`SecretStr`), rotation command (`rotate-encryption-key`) that re-encrypts all rows before swapping the key
+- **CPF/CNPJ validation and encryption**: checksum-validated input via `validate-docbr` (>=2.0; handles both numeric and the July 2026 alphanumeric CNPJ per RFB IN 2.229/2024), `cryptography.fernet` encryption at rest with `KEY_REGISTRY_ENCRYPTION_KEY` (`SecretStr`), rotation command (`rotate-encryption-key`) that re-encrypts all rows before swapping the key
 - **API-key cryptographic handling**: SHA-256 hash + 8-char visible prefix, plaintext displayed **once** at creation and never persisted, timing-safe comparison in the lookup path with a dummy comparison on miss to equalize timing
 - **Logging and error discipline**: middleware scrubs CPF/CNPJ from log messages; access log continues to log only `client_ip | method | path | status | duration`; error hints sanitized (no env var names, no internal paths, no echoes of invalid tax-ID input); new `ComadreError` subclasses (`ApiKeySuspendedError`, `ApiKeyNotFoundError`, `InvalidTaxIdError`, `KeyRegistryError`) with proper `status_code`, `error_type`, `hint`
 - **SQL-injection prevention story**: parameterized queries exclusively, `bandit` or equivalent static-analysis check in pre-commit, code-review checklist item
@@ -279,7 +279,7 @@ Ricardo runs `comadre-keys list-customers`. One row. Helena. Status: trial. Next
 
 **Revealed Requirements:**
 - `create-customer` with required fields (name, email, and either `--cpf` or `--cnpj`) and optional notes, returning an opaque `customer-id`
-- Brazilian tax-ID validation: CPF and CNPJ checksum enforced via the standard verification-digit algorithm (no external library dependency)
+- Brazilian tax-ID validation: CPF and CNPJ checksum enforced via `validate-docbr` (delegating to an actively-maintained library that tracks Receita Federal rule changes, including the July 2026 alphanumeric CNPJ transition)
 - Mutually exclusive `--cpf` and `--cnpj` flags on `create-customer`
 - `issue-key --customer <id> --rpm N --price X` emitting a one-time plaintext key with prefix visible and immediate summary
 - Automatic calculation of "first charge date" = next day 05 after creation

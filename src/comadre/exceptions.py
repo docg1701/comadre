@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -104,6 +104,38 @@ class RateLimitError(ComadreError):
             hint=f"Too many requests. Try again in {retry_after} seconds.",
         )
         self.retry_after = retry_after
+
+
+class InvalidTaxIdError(ComadreError):
+    """Raised when a CPF/CNPJ fails checksum verification.
+
+    Deliberately does not accept the raw input value — anti-enumeration
+    (FR37, NFR16). Error text is static per tax_id_kind.
+    """
+
+    def __init__(self, kind: Literal["cpf", "cnpj"]) -> None:
+        label = kind.upper()
+        super().__init__(
+            message=f"Invalid {label}: checksum verification failed",
+            status_code=400,
+            error_type="invalid_request_error",
+            hint=f"Verify the {label} digits and try again.",
+        )
+        self.kind = kind
+
+
+class KeyRegistryError(ComadreError):
+    """Raised when the key registry SQLite database is unreachable or corrupt."""
+
+    def __init__(
+        self, message: str = "Key registry database unreachable or corrupt"
+    ) -> None:
+        super().__init__(
+            message=message,
+            status_code=500,
+            error_type="server_error",
+            hint="Check KEY_REGISTRY_DB_PATH exists, is readable, and has mode 0600.",
+        )
 
 
 class ServiceUnavailableError(ComadreError):
