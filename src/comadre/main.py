@@ -21,6 +21,8 @@ from comadre.config import get_settings
 from comadre.download import ensure_kokoro_models, ensure_qwen3_models
 from comadre.exceptions import RateLimitError, register_exception_handlers
 from comadre.health import build_health_response, build_minimal_health_response
+from comadre.keys.cache import AuthCache
+from comadre.keys.db import _apply_migrations, get_connection
 from comadre.logging import get_logger, setup_logging
 from comadre.rate_limit import get_client_ip, limiter
 from comadre.service import EngineRouter, KokoroEngine, QwenEngine
@@ -47,6 +49,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Phase 2: Configure structured logging
     setup_logging()
     logger.info("Structured logging configured")
+
+    # Phase 2a: Key-registry bootstrap (monetization-gated)
+    if settings.monetization_enabled:
+        logger.info("Opening key registry at %s", settings.key_registry_db_path)
+        app.state.registry_db = get_connection(settings.key_registry_db_path)
+        _apply_migrations(app.state.registry_db)
+        app.state.auth_cache = AuthCache()
+        logger.info(
+            "Key registry ready; auth cache initialised (maxsize=%d, ttl=%ds)",
+            app.state.auth_cache.maxsize,
+            app.state.auth_cache.ttl,
+        )
+    else:
+        logger.info("Monetization disabled; skipping key registry bootstrap")
 
     # Phase 2.5: Ensure models are downloaded (non-blocking)
     logger.info("Checking model files...")
@@ -163,10 +179,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("Service ready on http://0.0.0.0:%d", settings.port)
 
-    yield
-
-    # Shutdown
-    logger.info("Shutting down...")
+    try:
+        yield
+    finally:
+        logger.info("Shutting down...")
+        if settings.monetization_enabled:
+            db = getattr(app.state, "registry_db", None)
+            if db is not None:
+                db.close()
 
 
 async def validation_error_handler(

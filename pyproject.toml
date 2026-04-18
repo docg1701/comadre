@@ -20,6 +20,7 @@ dependencies = [
     "cryptography>=43.0",
     "python-ulid>=2.2",
     "validate-docbr>=2.0",
+    "cachetools>=5.3,<6",
 ]
 
 [project.scripts]
@@ -55,6 +56,7 @@ plugins = ["pydantic.mypy"]
 module = [
     "kokoro_onnx.*",
     "num2words.*",
+    "cachetools.*",
 ]
 ignore_missing_imports = true
 

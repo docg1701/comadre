@@ -5,6 +5,9 @@ import json
 from starlette.requests import Request
 
 from comadre.exceptions import (
+    ApiKeyNotFoundError,
+    ApiKeyRevokedError,
+    ApiKeySuspendedError,
     AuthenticationError,
     ComadreError,
     GenerationError,
@@ -233,6 +236,118 @@ class TestInvalidTaxIdError:
         sig = inspect.signature(InvalidTaxIdError.__init__)
         params = set(sig.parameters.keys()) - {"self"}
         assert params == {"kind"}
+
+
+class TestApiKeyNotFoundError:
+    def test_status_code(self) -> None:
+        assert ApiKeyNotFoundError().status_code == 401
+
+    def test_error_type(self) -> None:
+        assert ApiKeyNotFoundError().error_type == "authentication_error"
+
+    def test_envelope_matches_authentication_error(self) -> None:
+        """FR26 enumeration-resistance: envelope must be byte-identical to
+        ``AuthenticationError``'s default envelope so a DB-miss cannot be
+        distinguished from a malformed header at the HTTP layer."""
+        not_found = ApiKeyNotFoundError()
+        legacy = AuthenticationError()
+        assert not_found.message == legacy.message
+        assert not_found.error_type == legacy.error_type
+        assert not_found.hint == legacy.hint
+        assert not_found.status_code == legacy.status_code
+
+    def test_takes_no_args(self) -> None:
+        import inspect
+
+        sig = inspect.signature(ApiKeyNotFoundError.__init__)
+        params = set(sig.parameters.keys()) - {"self"}
+        assert params == set()
+
+    async def test_handler_renders_standard_envelope(self) -> None:
+        resp = await comadre_error_handler(_mock_request(), ApiKeyNotFoundError())
+        assert resp.status_code == 401
+        body = _response_json(resp)
+        assert isinstance(body["error"], dict)
+        error = body["error"]
+        assert error["message"] == "Invalid or missing API key"
+        assert error["type"] == "authentication_error"
+        assert "Bearer" in str(error["hint"])
+
+
+class TestApiKeySuspendedError:
+    def test_status_code(self) -> None:
+        err = ApiKeySuspendedError(operator_contact_hint="Ping Ana")
+        assert err.status_code == 401
+
+    def test_error_type(self) -> None:
+        err = ApiKeySuspendedError(operator_contact_hint="Ping Ana")
+        assert err.error_type == "authentication_error"
+
+    def test_message_is_static(self) -> None:
+        err = ApiKeySuspendedError(operator_contact_hint="Ping Ana")
+        assert err.message == "Your API key has been suspended"
+
+    def test_hint_interpolates_operator_contact_once(self) -> None:
+        err = ApiKeySuspendedError(operator_contact_hint="WhatsApp: +55 11 90000-0000")
+        assert err.hint == (
+            "Your API key has been suspended. WhatsApp: +55 11 90000-0000"
+        )
+        assert "{operator_contact_hint}" not in err.hint
+
+    def test_hint_passes_through_literal_braces_from_operator(self) -> None:
+        """Format-string safety: braces in OPERATOR_CONTACT_HINT remain literal."""
+        err = ApiKeySuspendedError(operator_contact_hint="Contact {admin}!")
+        assert err.hint.endswith("Contact {admin}!")
+        assert "{admin}" in err.hint
+
+    def test_is_comadre_error(self) -> None:
+        assert isinstance(ApiKeySuspendedError(operator_contact_hint="x"), ComadreError)
+
+    async def test_handler_renders_standard_envelope(self) -> None:
+        resp = await comadre_error_handler(
+            _mock_request(), ApiKeySuspendedError(operator_contact_hint="Ping Ana")
+        )
+        assert resp.status_code == 401
+        error = _response_json(resp)["error"]
+        assert isinstance(error, dict)
+        assert error["message"] == "Your API key has been suspended"
+        assert error["type"] == "authentication_error"
+        assert "Ping Ana" in str(error["hint"])
+
+
+class TestApiKeyRevokedError:
+    def test_status_code(self) -> None:
+        err = ApiKeyRevokedError(operator_contact_hint="Ping Ana")
+        assert err.status_code == 401
+
+    def test_error_type(self) -> None:
+        err = ApiKeyRevokedError(operator_contact_hint="Ping Ana")
+        assert err.error_type == "authentication_error"
+
+    def test_message_is_static(self) -> None:
+        err = ApiKeyRevokedError(operator_contact_hint="Ping Ana")
+        assert err.message == "Your API key has been revoked"
+
+    def test_hint_interpolates_operator_contact_once(self) -> None:
+        err = ApiKeyRevokedError(operator_contact_hint="WhatsApp: +55 11 90000-0000")
+        assert err.hint == (
+            "Your API key has been revoked. WhatsApp: +55 11 90000-0000"
+        )
+        assert "{operator_contact_hint}" not in err.hint
+
+    def test_is_comadre_error(self) -> None:
+        assert isinstance(ApiKeyRevokedError(operator_contact_hint="x"), ComadreError)
+
+    async def test_handler_renders_standard_envelope(self) -> None:
+        resp = await comadre_error_handler(
+            _mock_request(), ApiKeyRevokedError(operator_contact_hint="Ping Ana")
+        )
+        assert resp.status_code == 401
+        error = _response_json(resp)["error"]
+        assert isinstance(error, dict)
+        assert error["message"] == "Your API key has been revoked"
+        assert error["type"] == "authentication_error"
+        assert "Ping Ana" in str(error["hint"])
 
 
 class TestKeyRegistryError:

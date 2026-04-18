@@ -93,6 +93,55 @@ class AuthenticationError(ComadreError):
         )
 
 
+class ApiKeyNotFoundError(ComadreError):
+    """Raised when the bearer token's SHA-256 hash does not match any row.
+
+    Envelope is deliberately identical to ``AuthenticationError`` for
+    enumeration-resistance (FR26 / PRD L662). The distinction exists only so
+    server-side logging / future telemetry can discriminate.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            message="Invalid or missing API key",
+            status_code=401,
+            error_type="authentication_error",
+            hint=(
+                "Ensure your Authorization header uses the format"
+                " 'Bearer <your-api-key>'."
+            ),
+        )
+
+
+class ApiKeySuspendedError(ComadreError):
+    """Raised when the key was found but its status is 'suspended' or its
+    manual-mode ``paid_until`` is in the past.
+
+    ``operator_contact_hint`` is interpolated ONCE at construction time so the
+    handler never re-formats attacker-controlled strings.
+    """
+
+    def __init__(self, operator_contact_hint: str) -> None:
+        super().__init__(
+            message="Your API key has been suspended",
+            status_code=401,
+            error_type="authentication_error",
+            hint=f"Your API key has been suspended. {operator_contact_hint}",
+        )
+
+
+class ApiKeyRevokedError(ComadreError):
+    """Raised when the key was found but its status is 'revoked'."""
+
+    def __init__(self, operator_contact_hint: str) -> None:
+        super().__init__(
+            message="Your API key has been revoked",
+            status_code=401,
+            error_type="authentication_error",
+            hint=f"Your API key has been revoked. {operator_contact_hint}",
+        )
+
+
 class RateLimitError(ComadreError):
     """Raised when a client exceeds the rate limit."""
 

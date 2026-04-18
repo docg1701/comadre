@@ -13,6 +13,7 @@ from comadre.keys.models import (
     ApiKeyListRow,
     ApiKeyRecord,
     AuditEventRow,
+    AuthPayload,
     CustomerCreate,
     CustomerDetailRow,
     CustomerListRow,
@@ -453,3 +454,43 @@ class TestIssuedKey:
             first_charge_days_free=None,
         )
         assert not hasattr(issued, "__dict__")
+
+
+class TestAuthPayload:
+    def _make(self) -> AuthPayload:
+        return AuthPayload(
+            customer_id="cust_01abc",
+            key_id="key_01abc",
+            status="active",
+            billing_mode="manual",
+            rate_limit_rpm=60,
+            paid_until="2099-12-31",
+        )
+
+    def test_is_frozen_and_hashable(self) -> None:
+        payload_a = self._make()
+        payload_b = self._make()
+        assert payload_a == payload_b
+        assert hash(payload_a) == hash(payload_b)
+        with pytest.raises((AttributeError, TypeError)):
+            payload_a.status = "suspended"  # type: ignore[misc]
+
+    def test_rejects_extra_attributes(self) -> None:
+        payload = self._make()
+        assert not hasattr(payload, "__dict__")
+        for forbidden in ("name", "email", "tax_id_encrypted", "key_hash", "plaintext"):
+            assert not hasattr(payload, forbidden)
+        with pytest.raises((AttributeError, TypeError)):
+            payload.name = "leak"  # type: ignore[attr-defined]
+
+    def test_paid_until_none_accepted_for_complimentary(self) -> None:
+        payload = AuthPayload(
+            customer_id="cust_01abc",
+            key_id="key_01abc",
+            status="active",
+            billing_mode="complimentary",
+            rate_limit_rpm=120,
+            paid_until=None,
+        )
+        assert payload.paid_until is None
+        assert payload.billing_mode == "complimentary"

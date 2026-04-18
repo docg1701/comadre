@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
 from comadre.config import Settings, get_settings
+from comadre.keys.cache import AuthCache
+from comadre.keys.db import _apply_migrations, get_connection
 from comadre.main import create_app
 
 TEST_API_KEY = "test-key-12345"
@@ -95,3 +100,68 @@ async def client(app: Any) -> AsyncIterator[AsyncClient]:
 def auth_headers() -> dict[str, str]:
     """Return authorization headers matching mock_settings."""
     return {"Authorization": f"Bearer {TEST_API_KEY}"}
+
+
+@pytest.fixture()
+def monetized_registry_db_path(tmp_path: Path) -> Path:
+    """Return the tmp-path location the monetized app writes its registry to."""
+    return tmp_path / "registry.db"
+
+
+@pytest.fixture()
+def app_monetized(
+    mock_router: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    monetized_registry_db_path: Path,
+) -> Any:
+    """Same shape as ``app``, but with monetization enabled + a seeded registry.
+
+    Mirrors the lifespan's Phase 2a: opens the registry DB, applies
+    migrations, and attaches an ``AuthCache`` to ``app.state``. Integration
+    tests seed customer/api_key rows via ``app.state.registry_db`` directly.
+    """
+    monkeypatch.setenv("API_KEY", TEST_API_KEY)
+    monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
+    monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
+    monkeypatch.setenv("MONETIZATION_ENABLED", "true")
+    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(monetized_registry_db_path))
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv(
+        "OPERATOR_CONTACT_HINT", "Contact Ana on WhatsApp: +55 11 90000-0000"
+    )
+    get_settings.cache_clear()
+
+    application = create_app()
+    application.state.settings = get_settings()
+    application.state.router = mock_router
+    application.state.ready = True
+    application.state.queue_lock = asyncio.Lock()
+    application.state.queue_depth = 0
+    application.state.start_time = time.monotonic()
+
+    conn = get_connection(monetized_registry_db_path)
+    _apply_migrations(conn)
+    application.state.registry_db = conn
+    application.state.auth_cache = AuthCache()
+
+    try:
+        yield application
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
+async def client_monetized(app_monetized: Any) -> AsyncIterator[AsyncClient]:
+    """httpx AsyncClient wired to the monetization-enabled app."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_monetized),
+        base_url="http://test",
+    ) as c:
+        yield c
+
+
+@pytest.fixture()
+def registry_db(app_monetized: Any) -> sqlite3.Connection:
+    """Shortcut to the monetized app's SQLite connection."""
+    conn: sqlite3.Connection = app_monetized.state.registry_db
+    return conn

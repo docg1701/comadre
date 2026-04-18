@@ -196,3 +196,23 @@ class IssuedKey:
     customer_name: str
     first_charge_date: str | None
     first_charge_days_free: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class AuthPayload:
+    """Minimal authorization payload cached per bearer-token hash.
+
+    Populated by the auth path, read by the rate-limit resolver and any
+    downstream middleware that needs the per-key context. No personal
+    data — no name / email / tax_id / plaintext / hash. The ``key_id``
+    field carries the stable ``key_*`` ULID so counters and logging can
+    reference the key across rotations (the 8-char ``key_prefix`` changes
+    on rotate; ``key_id`` does not).
+    """
+
+    customer_id: str
+    key_id: str
+    status: CustomerStatus
+    billing_mode: BillingMode
+    rate_limit_rpm: int
+    paid_until: str | None

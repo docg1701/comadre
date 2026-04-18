@@ -28,6 +28,7 @@ from comadre.keys.models import (
     ApiKeyListRow,
     ApiKeyRecord,
     AuditEventRow,
+    AuthPayload,
     BillingMode,
     CustomerDetailRow,
     CustomerListRow,
@@ -642,6 +643,33 @@ def get_key_detail_by_id(
     if row is None:
         return None
     return _row_to_key_detail(row, today=today)
+
+
+def lookup_key_auth(
+    conn: sqlite3.Connection,
+    key_hash: str,
+) -> AuthPayload | None:
+    """Return the minimal auth payload for ``key_hash``, or None on miss.
+
+    Used by ``verify_api_key_registry``. Never writes (auth path is
+    read-only). Uses the existing ``idx_api_key_hash`` UNIQUE index — the
+    SELECT is O(1).
+    """
+    row = conn.execute(
+        "SELECT id, customer_id, status, billing_mode, rate_limit_rpm, "
+        "paid_until FROM api_key WHERE key_hash = ? LIMIT 1",
+        (key_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    return AuthPayload(
+        customer_id=row["customer_id"],
+        key_id=row["id"],
+        status=cast(CustomerStatus, row["status"]),
+        billing_mode=cast(BillingMode, row["billing_mode"]),
+        rate_limit_rpm=int(row["rate_limit_rpm"]),
+        paid_until=row["paid_until"],
+    )
 
 
 def list_audit_events(

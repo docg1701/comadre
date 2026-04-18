@@ -28,6 +28,7 @@ from comadre.keys.db import (
     list_api_keys,
     list_audit_events,
     list_customers,
+    lookup_key_auth,
     resolve_show_target,
     revoke_api_key,
     rotate_api_key,
@@ -2874,5 +2875,131 @@ class TestRevokeApiKey:
                 "WHERE action = 'revoke_key' ORDER BY id DESC LIMIT 1"
             ).fetchone()
             assert json.loads(audit["details_json"]) == {"reason": reason}
+        finally:
+            conn.close()
+
+
+class TestLookupKeyAuth:
+    @staticmethod
+    def _seed(
+        conn: sqlite3.Connection,
+        *,
+        status: str = "active",
+        billing_mode: str = "manual",
+        rate_limit_rpm: int = 60,
+        paid_until: str | None = "2099-12-31",
+    ) -> tuple[str, str, str]:
+        """Seed a customer + key, returning (key_id, key_hash, customer_id)."""
+        cid = _seed_customer_raw(conn)
+        key_hash = "a" * 64
+        # Randomise the hash per call so multiple seeds can coexist.
+        import secrets as _secrets
+
+        key_hash = _secrets.token_hex(32)
+        kid = _seed_api_key(
+            conn,
+            customer_id=cid,
+            key_hash=key_hash,
+            status=status,
+            billing_mode=billing_mode,
+            rate_limit_rpm=rate_limit_rpm,
+            paid_until=paid_until,
+        )
+        return kid, key_hash, cid
+
+    def test_returns_authpayload_for_active_manual_key(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            kid, key_hash, cid = self._seed(conn)
+            payload = lookup_key_auth(conn, key_hash)
+            assert payload is not None
+            assert payload.customer_id == cid
+            assert payload.key_id == kid
+            assert payload.status == "active"
+            assert payload.billing_mode == "manual"
+            assert payload.rate_limit_rpm == 60
+            assert payload.paid_until == "2099-12-31"
+        finally:
+            conn.close()
+
+    def test_returns_authpayload_for_suspended_key(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _kid, key_hash, _cid = self._seed(conn, status="suspended")
+            payload = lookup_key_auth(conn, key_hash)
+            assert payload is not None
+            assert payload.status == "suspended"
+        finally:
+            conn.close()
+
+    def test_returns_authpayload_for_revoked_key(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _kid, key_hash, _cid = self._seed(conn, status="revoked")
+            payload = lookup_key_auth(conn, key_hash)
+            assert payload is not None
+            assert payload.status == "revoked"
+        finally:
+            conn.close()
+
+    def test_returns_authpayload_for_complimentary_null_paid_until(
+        self, tmp_path: Path
+    ) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _kid, key_hash, _cid = self._seed(
+                conn, billing_mode="complimentary", paid_until=None
+            )
+            payload = lookup_key_auth(conn, key_hash)
+            assert payload is not None
+            assert payload.billing_mode == "complimentary"
+            assert payload.paid_until is None
+        finally:
+            conn.close()
+
+    def test_returns_none_for_unknown_hash(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            # Seed three distinct keys to prove "none" is a genuine miss,
+            # not an empty-table fallback.
+            for _ in range(3):
+                self._seed(conn)
+            assert lookup_key_auth(conn, "f" * 64) is None
+        finally:
+            conn.close()
+
+    def test_exactly_one_sql_statement_executed(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _kid, key_hash, _cid = self._seed(conn)
+            statements: list[str] = []
+            conn.set_trace_callback(statements.append)
+            try:
+                lookup_key_auth(conn, key_hash)
+            finally:
+                conn.set_trace_callback(None)
+            assert len(statements) == 1
+            assert statements[0].lstrip().upper().startswith("SELECT")
+        finally:
+            conn.close()
+
+    def test_uses_hash_index(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _kid, key_hash, _cid = self._seed(conn)
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT id, customer_id, status, billing_mode, "
+                "rate_limit_rpm, paid_until FROM api_key WHERE key_hash = ? LIMIT 1",
+                (key_hash,),
+            ).fetchall()
+            plan_text = " ".join(str(row["detail"]) for row in plan)
+            assert "idx_api_key_hash" in plan_text
         finally:
             conn.close()
