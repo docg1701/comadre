@@ -911,3 +911,125 @@ class TestRenderShowJson:
         )
         parsed = json.loads(buf.getvalue())
         assert parsed["events"] == []
+
+
+# ---------------------------------------------------------------------------
+# Story 1.6 — ``_context_block`` paid-until branch for rotate-key.
+# ---------------------------------------------------------------------------
+
+
+def _manual_record_with_paid_until(
+    paid_until: str | None,
+    price_monthly: float = 149.0,
+) -> ApiKeyRecord:
+    return ApiKeyRecord(
+        id="key_01rotateabcdefghijklmnopqr",
+        customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
+        key_hash="a" * 64,
+        key_prefix="Pq_abc12",
+        rate_limit_rpm=60,
+        status="active",
+        billing_mode="manual",
+        price_monthly=price_monthly,
+        paid_until=paid_until,
+        created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
+        last_used_at=None,
+        notes="",
+    )
+
+
+class TestContextBlockPaidUntilBranch:
+    """Story 1.6 Task 8.1 — ``_context_block`` paid-until branch coverage."""
+
+    def test_manual_first_charge_none_with_paid_until_shows_paid_until_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        issued = IssuedKey(
+            plaintext="cmdr_live_" + "A" * 43,
+            record=_manual_record_with_paid_until("2026-05-05"),
+            customer_name="Helena Ribeiro",
+            first_charge_date=None,
+            first_charge_days_free=None,
+        )
+        render_key_panel(issued)
+        # ``_format_label`` right-pads the label to _LABEL_WIDTH (13) + a
+        # trailing space — assert via regex so exact padding isn't load-bearing.
+        out = buf.getvalue()
+        assert re.search(r"paid until:\s+2026-05-05", out)
+        assert "first charge:" not in out
+
+    def test_manual_first_charge_none_with_null_paid_until_shows_em_dash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        issued = IssuedKey(
+            plaintext="cmdr_live_" + "B" * 43,
+            record=_manual_record_with_paid_until(None),
+            customer_name="Helena Ribeiro",
+            first_charge_date=None,
+            first_charge_days_free=None,
+        )
+        render_key_panel(issued)
+        out = buf.getvalue()
+        assert re.search(r"paid until:\s+\u2014", out)
+        # Must NOT render the complimentary-branch suffix "(not applicable)".
+        assert "(not applicable)" not in out
+        assert "first charge:" not in out
+
+    def test_manual_with_first_charge_date_still_shows_first_charge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression — existing issue-key contract unchanged by Story 1.6."""
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        issued = IssuedKey(
+            plaintext="cmdr_live_" + "C" * 43,
+            record=_manual_record_with_paid_until("2026-05-05"),
+            customer_name="Helena Ribeiro",
+            first_charge_date="2026-05-05",
+            first_charge_days_free=21,
+        )
+        render_key_panel(issued)
+        out = buf.getvalue()
+        assert re.search(r"first charge:\s+2026-05-05 \(21 days free until then\)", out)
+        # paid-until row only shows when first_charge_date is None.
+        assert not re.search(r"paid until:\s+2026-05-05", out)
+
+    def test_complimentary_always_shows_not_applicable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Complimentary branch ignores ``first_charge_date`` entirely."""
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        rec = ApiKeyRecord(
+            id="key_01complimentaryabcdefghij",
+            customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
+            key_hash="b" * 64,
+            key_prefix="COMP1234",
+            rate_limit_rpm=120,
+            status="active",
+            billing_mode="complimentary",
+            price_monthly=0.0,
+            paid_until="2026-05-05",  # even a set value is overridden
+            created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
+            last_used_at=None,
+            notes="",
+        )
+        issued = IssuedKey(
+            plaintext="cmdr_live_" + "D" * 43,
+            record=rec,
+            customer_name="Infra Bundle Co",
+            first_charge_date="2026-05-05",  # ignored on complimentary branch
+            first_charge_days_free=22,
+        )
+        render_key_panel(issued)
+        out = buf.getvalue()
+        assert re.search(r"paid until:\s+\u2014 \(not applicable\)", out)
+        assert "R$ 0,00 (bundled externally)" in out

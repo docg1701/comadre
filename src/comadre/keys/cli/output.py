@@ -115,6 +115,16 @@ def _context_block(issued: IssuedKey) -> str:
                         "first charge:", f"{fc_iso} ({n} days free until then)"
                     )
                 )
+        else:
+            # Story 1.6 — rotate-key path. ``issue-key`` always carries a
+            # non-None ``first_charge_date`` on manual-mode keys (the
+            # trial-window date). ``rotate-key`` passes ``first_charge_date=None``
+            # because rotation preserves billing state; the operator's mental
+            # model is "only the plaintext and last_used_at changed". Render
+            # the existing ``paid_until`` value so the post-rotation panel
+            # answers the same "when does this key next bill?" question as
+            # the DetailPanel.
+            lines.append(_format_label("paid until:", _iso_date(rec.paid_until)))
 
     return "\n".join(lines)
 

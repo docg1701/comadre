@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime
 from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import click
 import typer
 from pydantic import ValidationError
 
@@ -28,13 +29,18 @@ from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
     LIST_FORMAT_CHOICES,
+    _format_brl,
+    render_confirmation,
     render_empty_state,
     render_error,
     render_json,
     render_key_list,
     render_key_panel,
+    stderr_console,
 )
 from comadre.keys.db import (
+    RotateKeyResult,
+    UpdateKeyResult,
     _apply_migrations,
     generate_key_id,
     get_connection,
@@ -42,6 +48,10 @@ from comadre.keys.db import (
     insert_api_key,
     is_first_run_for_keys,
     list_api_keys,
+    resolve_show_target,
+    revoke_api_key,
+    rotate_api_key,
+    update_api_key,
 )
 from comadre.keys.models import (
     ApiKeyCreate,
@@ -50,6 +60,7 @@ from comadre.keys.models import (
     BillingMode,
     CustomerStatus,
     IssuedKey,
+    KeyDetailRow,
 )
 from comadre.keys.tokens import (
     generate_api_key_plaintext,
@@ -69,6 +80,83 @@ _MISSING_KEY_HINT = (
     "Fernet; print(Fernet.generate_key().decode())' and add it to "
     ".env. Restart the service if monetization is enabled there too."
 )
+
+# ---------------------------------------------------------------------------
+# Story 1.6 — shared hint constants for update-key / rotate-key / revoke-key.
+# ---------------------------------------------------------------------------
+
+_KEY_RPM_MAX = 10_000
+_KEY_NOTES_MAX = 1024
+_KEY_IDENT_ECHO_MAX = 80  # AC7 — truncate operator input in error titles
+
+_UPDATE_KEY_NEITHER_HINT = (
+    'Provide --rpm N, --price R$, or --notes "text" (any combination).'
+)
+_UPDATE_KEY_NOTES_NUL_HINT = "Notes text must not contain NUL bytes."
+_UPDATE_KEY_NOTES_NEWLINE_HINT = (
+    "Notes text must be a single line. Use update-customer --add-note "
+    "for multi-line narrative."
+)
+_UPDATE_KEY_NOTES_OVERSIZE_HINT = (
+    "Operator notes are capped at 1024 characters per update. Summarize "
+    "or split across multiple update-key calls."
+)
+_UPDATE_KEY_RPM_RANGE_HINT = (
+    "Provide --rpm in the range 1..10000. Story 2.2 will tighten this cap per VPS tier."
+)
+_UPDATE_KEY_COMPLIMENTARY_HINT = (
+    "Complimentary keys are bundled externally; omit --price or rotate "
+    "via revoke-key + issue-key."
+)
+_UPDATE_KEY_REVOKED_HINT = (
+    "Revoked keys are immutable. Issue a new key via issue-key if the customer returns."
+)
+
+_KEY_NOT_FOUND_HINT = "Run 'comadre-keys list-keys' to see issued keys."
+_KEY_AMBIGUOUS_HINT = (
+    "Use the full key_<ulid> identifier or rotate one of the colliding keys."
+)
+_KEY_CUSTOMER_ID_HINT = (
+    "Pass an 8-char key prefix, a key_<ulid>, or the pasted plaintext "
+    "(cmdr_live_...). Not a customer ID."
+)
+
+_ROTATE_KEY_REVOKED_HINT = (
+    "Revoked keys cannot be rotated. Issue a new key via issue-key if the "
+    "customer returns."
+)
+_ROTATE_KEY_HASH_COLLISION_HINT = (
+    "Retry the command — this is vanishingly rare. If it repeats, check disk integrity."
+)
+
+_REVOKE_KEY_ALREADY_HINT = (
+    "Revocation is terminal. Issue a new key via issue-key if the customer returns."
+)
+_REVOKE_KEY_REASON_EMPTY_HINT = (
+    "Provide reason text with content. Whitespace-only reasons are rejected."
+)
+_REVOKE_KEY_REASON_NUL_HINT = "Reason text must not contain NUL bytes."
+_REVOKE_KEY_REASON_NEWLINE_HINT = (
+    "Reason text must be a single line. Newlines would forge dated entries "
+    "in the stored audit row."
+)
+_REVOKE_KEY_REASON_OVERSIZE_HINT = (
+    "Revocation reasons are capped at 1024 characters. Summarize or store "
+    "the detail in customer notes."
+)
+
+
+def _truncate_ident(raw: str) -> str:
+    """Return ``raw`` or its first-80-char-plus-ellipsis truncation.
+
+    Closes the Story 1.2 deferred-work item "Raw ``--customer`` string
+    interpolated into error title with no length cap" for every command
+    that echoes the operator's positional argument. A multi-KB paste
+    would otherwise blow up the red ErrorDisplay panel title.
+    """
+    if len(raw) <= _KEY_IDENT_ECHO_MAX:
+        return raw
+    return raw[:_KEY_IDENT_ECHO_MAX] + "\u2026"
 
 
 @app.command("issue-key")
@@ -609,3 +697,569 @@ def list_keys_cmd(
         return
 
     render_empty_state(["No keys found."])
+
+
+# ---------------------------------------------------------------------------
+# Story 1.6 — update-key / rotate-key / revoke-key.
+# ---------------------------------------------------------------------------
+
+
+def _key_update_clauses(result: UpdateKeyResult) -> list[str]:
+    """Assemble the ConfirmationLine clause list for ``update-key``.
+
+    Fixed order ``rpm -> price -> notes`` matches the table-like mental
+    order operators use when reading ``show <prefix>`` output. The arrow
+    glyph is U+2192 (RIGHTWARDS ARROW); the em-dash between key-prefix and
+    suffix is U+2014 (set by the caller). ``changes`` carries pre-/post-
+    mutation numeric values so no second DB read is needed.
+    """
+    clauses: list[str] = []
+    if "rpm" in result.updated_fields:
+        clauses.append(f"rpm: {result.changes.rpm_old}\u2192{result.changes.rpm_new}")
+    if "price" in result.updated_fields:
+        # Runtime checks rather than ``assert`` — the latter is stripped
+        # under ``python -O`` / ``PYTHONOPTIMIZE=1`` per the ``keys/audit.py``
+        # docstring convention, which would let ``None`` slip through to
+        # ``_format_brl`` and raise an unhelpful ``TypeError``.
+        if result.changes.price_old is None or result.changes.price_new is None:
+            raise RuntimeError(
+                "_key_update_clauses: 'price' in updated_fields but deltas missing"
+            )
+        clauses.append(
+            f"price: R$ {_format_brl(result.changes.price_old)}"
+            f"\u2192R$ {_format_brl(result.changes.price_new)}"
+        )
+    if "notes" in result.updated_fields:
+        clauses.append("notes updated")
+    return clauses
+
+
+def _load_settings_and_tz() -> tuple[object, ZoneInfo] | None:
+    """Return ``(settings, billing_tz)`` or ``None`` after rendering an error.
+
+    Shared configuration-surface for the three Story 1.6 commands so the
+    encryption-key / billing-TZ exit-6 mapping stays DRY without touching
+    the existing ``issue-key`` / ``list-keys`` / ``show`` paths.
+
+    Returns ``None`` when the caller should ``raise typer.Exit(code=6)``;
+    the error panel has already been rendered.
+    """
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _MISSING_KEY_HINT,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        return None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        return None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _MISSING_KEY_HINT,
+        )
+        return None
+
+    try:
+        billing_tz = ZoneInfo(settings.billing_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        render_error(
+            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
+            f"Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
+            f"Got: {settings.billing_timezone}",
+        )
+        return None
+
+    return settings, billing_tz
+
+
+def _resolve_key_target(
+    conn: sqlite3.Connection,
+    raw_target: str,
+    today: date,
+) -> KeyDetailRow:
+    """Resolve ``raw_target`` to a ``KeyDetailRow`` or raise ``typer.Exit``.
+
+    Rejects the ``customer`` / ``not_found`` / ``key_ambiguous`` branches
+    of ``resolve_show_target`` with the right error panels and exit codes
+    for the Story 1.6 key-verb commands. All three commands share the
+    same four-branch map, so the dispatch lives here to keep each command
+    body focused on its own validation ladder.
+    """
+    resolved = resolve_show_target(conn, raw_target, today=today)
+    echoed = _truncate_ident(raw_target)
+    if resolved.kind == "not_found":
+        render_error(f"Key not found: {echoed}", _KEY_NOT_FOUND_HINT)
+        raise typer.Exit(code=3)
+    if resolved.kind == "key_ambiguous":
+        render_error(
+            f"Ambiguous prefix: multiple keys match '{echoed}'",
+            _KEY_AMBIGUOUS_HINT,
+        )
+        raise typer.Exit(code=3)
+    if resolved.kind == "customer":
+        render_error(
+            "Usage error: key identifier required (got customer ID)",
+            _KEY_CUSTOMER_ID_HINT,
+        )
+        raise typer.Exit(code=2)
+    # kind == "key_single".
+    return cast(KeyDetailRow, resolved.value)
+
+
+@app.command("update-key")
+def update_key_cmd(
+    key_prefix: str = typer.Argument(
+        ...,
+        metavar="KEY_PREFIX",
+        help=(
+            "8-char key prefix, key_<ulid>, or pasted cmdr_live_<plaintext>. "
+            'Example: "Pq_abc12".'
+        ),
+    ),
+    rpm: int | None = typer.Option(
+        None,
+        "--rpm",
+        help="Per-key requests-per-minute limit (1..10000). Example: --rpm 120.",
+    ),
+    price: float | None = typer.Option(
+        None,
+        "--price",
+        help="Monthly price in BRL for manual billing. Example: --price 199.",
+    ),
+    notes: str | None = typer.Option(
+        None,
+        "--notes",
+        help=(
+            "Replace stored operator notes (<=1024 chars, single line). "
+            'Example: --notes "upgraded 2026-05-12 from 60\u2192120rpm".'
+        ),
+    ),
+) -> None:
+    """Update a key's RPM, monthly price, and/or operator notes.
+
+    Example: comadre-keys update-key Pq_abc12 --rpm 120 --price 199
+    """
+    # 1. Neither-flag check — cheapest usage mistake, no DB work.
+    if rpm is None and price is None and notes is None:
+        render_error(
+            "Usage error: at least one of --rpm, --price, or --notes is required",
+            _UPDATE_KEY_NEITHER_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 2. --rpm bounds (1..10000 inclusive). Typer converts to int; we only
+    # police the value range.
+    if rpm is not None and not 1 <= rpm <= _KEY_RPM_MAX:
+        render_error(
+            f"Usage error: --rpm must be between 1 and {_KEY_RPM_MAX}",
+            _UPDATE_KEY_RPM_RANGE_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 3. --price shape checks (mirrors issue-key AC2).
+    if price is not None:
+        if not math.isfinite(price):
+            render_error(
+                "Usage error: --price must be a finite number",
+                "Provide a positive --price in BRL, e.g. --price 199.",
+            )
+            raise typer.Exit(code=2)
+        if price <= 0:
+            render_error(
+                "Usage error: --price must be positive for manual billing mode",
+                (
+                    "Use --billing-mode complimentary at issue-key time for "
+                    "bundled customers, or provide a positive --price in BRL."
+                ),
+            )
+            raise typer.Exit(code=2)
+
+    # 4. --notes shape + length checks (mirrors Story 1.5 --add-note ladder).
+    # Strip outer whitespace before length / storage to match the
+    # ``revoke-key --reason`` and ``update-customer --add-note`` convention.
+    if notes is not None:
+        if "\x00" in notes:
+            render_error(
+                "Usage error: --notes contains illegal characters",
+                _UPDATE_KEY_NOTES_NUL_HINT,
+            )
+            raise typer.Exit(code=2)
+        if "\n" in notes or "\r" in notes:
+            render_error(
+                "Usage error: --notes must be a single line",
+                _UPDATE_KEY_NOTES_NEWLINE_HINT,
+            )
+            raise typer.Exit(code=2)
+        notes = notes.strip()
+        if len(notes) > _KEY_NOTES_MAX:
+            render_error(
+                f"Usage error: --notes exceeds {_KEY_NOTES_MAX} characters",
+                _UPDATE_KEY_NOTES_OVERSIZE_HINT,
+            )
+            raise typer.Exit(code=2)
+
+    # 5. Settings + TZ (exit 6).
+    loaded = _load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings, billing_tz = loaded
+    today = _resolve_today_in_tz(billing_tz)
+
+    # 6. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 7. Resolve prefix → KeyDetailRow (exit 3 / 2 on non-key branches).
+        key_row = _resolve_key_target(conn, key_prefix, today=today)
+
+        # 8. Complimentary + --price mutex (exit 2). Placed AFTER resolve so
+        # missing-key → exit 3 takes precedence over usage-error echoing a
+        # non-existent key.
+        if key_row.billing_mode == "complimentary" and price is not None:
+            render_error(
+                "Usage error: --price is not applicable to complimentary keys",
+                _UPDATE_KEY_COMPLIMENTARY_HINT,
+            )
+            raise typer.Exit(code=2)
+
+        # 9. Helper call — exit 3 on revoked, exit 5 on sqlite / RuntimeError.
+        try:
+            result = update_api_key(
+                conn,
+                key_row.id,
+                new_rpm=rpm,
+                new_price=price,
+                new_notes=notes,
+                actor=get_cli_actor(),
+                today=today,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if msg == "cannot update a revoked key":
+                render_error(
+                    f"Key is revoked: {_truncate_ident(key_prefix)}",
+                    _UPDATE_KEY_REVOKED_HINT,
+                )
+                raise typer.Exit(code=3) from None
+            if msg == "cannot set --price on a complimentary key":
+                # Defense-in-depth — step 8 catches this first in practice.
+                render_error(
+                    "Usage error: --price is not applicable to complimentary keys",
+                    _UPDATE_KEY_COMPLIMENTARY_HINT,
+                )
+                raise typer.Exit(code=2) from None
+            # Unknown ValueError shape — re-raise so the operator sees a
+            # traceback rather than a silently-misrouted error panel.
+            raise
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+        except RuntimeError as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    # ``result`` is not None — ``resolve_show_target`` already confirmed the row.
+    assert result is not None
+
+    # 10. Structured INFO log (stderr). Suppress handler faults so a
+    # successful mutation never looks failed. AC18 payload shape.
+    with contextlib.suppress(Exception):
+        _logger.info(
+            "Updated key | id=%s | fields=%s",
+            result.key.id,
+            ",".join(result.updated_fields),
+        )
+
+    # 11. ConfirmationLine with the fixed arrow-form grammar.
+    clauses = _key_update_clauses(result)
+    suffix = ", ".join(clauses)
+    render_confirmation(
+        f"Updated: {result.key.key_prefix} ({result.key.customer_name}) \u2014 {suffix}"
+    )
+
+
+@app.command("rotate-key")
+def rotate_key_cmd(
+    key_prefix: str = typer.Argument(
+        ...,
+        metavar="KEY_PREFIX",
+        help=(
+            "8-char key prefix, key_<ulid>, or pasted cmdr_live_<plaintext>. "
+            'Example: "Pq_abc12".'
+        ),
+    ),
+) -> None:
+    """Rotate an API key — same key_<id>, fresh plaintext, old hash dies.
+
+    Example: comadre-keys rotate-key Pq_abc12
+    """
+    # 1. Settings + TZ (exit 6).
+    loaded = _load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings, billing_tz = loaded
+    today = _resolve_today_in_tz(billing_tz)
+
+    # 2. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    result: RotateKeyResult | None = None
+    new_plaintext: str | None = None
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 3. Resolve prefix → KeyDetailRow.
+        key_row = _resolve_key_target(conn, key_prefix, today=today)
+
+        # 4. Reject revoked rotation BEFORE generating entropy (story scope
+        # guard §"Do NOT generate the new plaintext before the revocation
+        # check"). The helper's in-transaction status check remains load-
+        # bearing as TOCTOU defense-in-depth, but the CLI's pre-check spares
+        # the ``secrets.token_urlsafe(32)`` call on the reject branch.
+        if key_row.status == "revoked":
+            render_error(
+                f"Key is revoked: {_truncate_ident(key_prefix)}",
+                _ROTATE_KEY_REVOKED_HINT,
+            )
+            raise typer.Exit(code=3)
+
+        # 5. Generate the new plaintext.
+        new_plaintext = generate_api_key_plaintext()
+
+        # 5. Helper call with the hash-collision / revoked / runtime ladder.
+        try:
+            result = rotate_api_key(
+                conn,
+                key_row.id,
+                new_plaintext=new_plaintext,
+                actor=get_cli_actor(),
+            )
+        except ValueError as exc:
+            if str(exc) == "cannot rotate a revoked key":
+                render_error(
+                    f"Key is revoked: {_truncate_ident(key_prefix)}",
+                    _ROTATE_KEY_REVOKED_HINT,
+                )
+                raise typer.Exit(code=3) from None
+            raise  # defensive — no other ValueError shape today.
+        except sqlite3.IntegrityError as exc:
+            errorcode = getattr(exc, "sqlite_errorcode", None)
+            args_msg = str(exc.args[0]) if exc.args else ""
+            is_unique = errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE or (
+                "UNIQUE" in args_msg.upper()
+            )
+            if is_unique and "key_hash" in args_msg:
+                render_error(
+                    "Database error: key hash collision",
+                    _ROTATE_KEY_HASH_COLLISION_HINT,
+                )
+            else:
+                render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+        except RuntimeError as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    assert result is not None
+    assert new_plaintext is not None
+
+    # 6. Structured INFO log — prefix deltas only, never the plaintext / hash.
+    with contextlib.suppress(Exception):
+        _logger.info(
+            "Key rotated | id=%s | key_prefix_old=%s | key_prefix_new=%s",
+            result.record.id,
+            result.old_prefix,
+            result.record.key_prefix,
+        )
+
+    # 7. Render the one-shot KeyPanel. ``first_charge_date=None`` triggers
+    # the Story 1.6 ``_context_block`` branch that shows ``paid until:``
+    # instead of ``first charge:`` — rotation preserves billing state.
+    issued = IssuedKey(
+        plaintext=new_plaintext,
+        record=result.record,
+        customer_name=result.customer_name,
+        first_charge_date=None,
+        first_charge_days_free=None,
+    )
+    render_key_panel(issued)
+
+
+@app.command("revoke-key")
+def revoke_key_cmd(
+    key_prefix: str = typer.Argument(
+        ...,
+        metavar="KEY_PREFIX",
+        help=(
+            "8-char key prefix, key_<ulid>, or pasted cmdr_live_<plaintext>. "
+            'Example: "Pq_abc12".'
+        ),
+    ),
+    reason: str = typer.Option(
+        ...,
+        "--reason",
+        help=(
+            "Free-form reason (<=1024 chars, single line). Stored in the audit "
+            'log. Example: --reason "bundle contract ended 2026-09-30".'
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Skip the interactive confirmation prompt (for scripting).",
+    ),
+) -> None:
+    """Permanently revoke an API key (destructive; --yes or interactive confirm).
+
+    Example: comadre-keys revoke-key Pq_abc12
+             --reason "bundle contract ended 2026-09-30"
+    """
+    # 1. --reason shape validation. NUL / newline checks fire on the raw
+    # string, length and empty checks on the stripped form — operators who
+    # paste whitespace-padded text still get the canonical audit row.
+    if "\x00" in reason:
+        render_error(
+            "Usage error: --reason contains illegal characters",
+            _REVOKE_KEY_REASON_NUL_HINT,
+        )
+        raise typer.Exit(code=2)
+    if "\n" in reason or "\r" in reason:
+        render_error(
+            "Usage error: --reason must be a single line",
+            _REVOKE_KEY_REASON_NEWLINE_HINT,
+        )
+        raise typer.Exit(code=2)
+    stripped_reason = reason.strip()
+    if not stripped_reason:
+        render_error(
+            "Usage error: --reason must be non-empty",
+            _REVOKE_KEY_REASON_EMPTY_HINT,
+        )
+        raise typer.Exit(code=2)
+    if len(stripped_reason) > _KEY_NOTES_MAX:
+        render_error(
+            f"Usage error: --reason exceeds {_KEY_NOTES_MAX} characters",
+            _REVOKE_KEY_REASON_OVERSIZE_HINT,
+        )
+        raise typer.Exit(code=2)
+    reason = stripped_reason
+
+    # 2. Settings + TZ (exit 6).
+    loaded = _load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings, billing_tz = loaded
+    today = _resolve_today_in_tz(billing_tz)
+
+    # 3. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 4. Resolve prefix → KeyDetailRow.
+        key_row = _resolve_key_target(conn, key_prefix, today=today)
+
+        # 5. Confirmation gate (UX-DR11 Destroy-tier pattern).
+        if not yes:
+            try:
+                typer.confirm(
+                    f"This will permanently revoke key {key_row.key_prefix}. Continue?",
+                    default=False,
+                    abort=True,
+                    err=True,
+                )
+            except click.exceptions.Abort:
+                # Click writes nothing when we catch before escape — emit our
+                # own terminal message and remap exit 1 (Click default) to
+                # exit 2 (usage tier per UX-DR10).
+                stderr_console().print("Aborted.")
+                raise typer.Exit(code=2) from None
+
+        # 6. Helper call.
+        try:
+            result = revoke_api_key(
+                conn,
+                key_row.id,
+                reason=reason,
+                actor=get_cli_actor(),
+                today=today,
+            )
+        except ValueError as exc:
+            if str(exc) == "already revoked":
+                render_error(
+                    f"Key already revoked: {_truncate_ident(key_prefix)}",
+                    _REVOKE_KEY_ALREADY_HINT,
+                )
+                raise typer.Exit(code=3) from None
+            raise
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+        except RuntimeError as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    assert result is not None
+
+    # 7. Structured INFO log — NEVER the reason text (may carry
+    # customer-specific narrative; FR37/NFR15).
+    with contextlib.suppress(Exception):
+        _logger.info(
+            "Key revoked | id=%s | key_prefix=%s",
+            result.key.id,
+            result.key.key_prefix,
+        )
+
+    # 8. ConfirmationLine. The reason is echoed HERE (operator's own
+    # terminal) but NOT in the log — FR37 covers log/audit leakage, not
+    # terminal display of a string the operator just typed.
+    render_confirmation(
+        f"Revoked: {result.key.key_prefix} "
+        f"({result.customer_name}) \u2014 reason: {reason}"
+    )

@@ -39,6 +39,7 @@ from comadre.keys.models import (
 
 ShowTargetKind = Literal["customer", "key_single", "key_ambiguous", "not_found"]
 UpdatedField = Literal["email", "notes"]
+UpdateKeyField = Literal["notes", "price", "rpm"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,69 @@ class UpdateCustomerResult:
 
     customer: CustomerDetailRow
     updated_fields: tuple[UpdatedField, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KeyFieldDeltas:
+    """Old/new snapshot of the numeric fields ``update_api_key`` touched.
+
+    ``None`` on either side means the field was not in the update set; the
+    CLI omits the clause from the ConfirmationLine. Carrying both old and
+    new lets the renderer assemble the ``60→120`` arrow form without a
+    second DB read.
+    """
+
+    rpm_old: int | None
+    rpm_new: int | None
+    price_old: float | None
+    price_new: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateKeyResult:
+    """Return payload from ``update_api_key``.
+
+    ``changes`` captures the pre-/post-mutation numeric values so the
+    ConfirmationLine can render the arrow form (``rpm: 60→120``). ``notes``
+    replacement does not populate ``changes`` — the renderer emits the
+    fixed ``notes updated`` clause instead.
+    """
+
+    key: KeyDetailRow
+    updated_fields: tuple[UpdateKeyField, ...]
+    changes: KeyFieldDeltas
+
+
+@dataclass(frozen=True, slots=True)
+class RotateKeyResult:
+    """Return payload from ``rotate_api_key`` — carries the fresh record.
+
+    The ``record`` field carries the in-memory ``ApiKeyRecord`` assembled
+    from the pre-UPDATE SELECT + the freshly-computed hash / prefix — the
+    helper skips a second DB read because every field of the refreshed
+    row is already known inside the transaction. ``old_prefix`` feeds the
+    audit-tail delta and the structured log line.
+    """
+
+    record: ApiKeyRecord
+    customer_name: str
+    old_prefix: str
+
+
+@dataclass(frozen=True, slots=True)
+class RevokeKeyResult:
+    """Return payload from ``revoke_api_key``.
+
+    The refreshed ``KeyDetailRow`` carries the new ``status='revoked'``
+    state so the CLI can render the ConfirmationLine + any follow-up
+    ``show``-style surface without a second round-trip. ``reason`` is
+    echoed back on the operator's console (``FR37`` covers logs/audit,
+    not terminal display).
+    """
+
+    key: KeyDetailRow
+    customer_name: str
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,14 +384,14 @@ def update_customer(
         )
         conn.execute(sql, params)
 
-        fields_sorted = sorted(set(updated))
+        fields_sorted: tuple[UpdatedField, ...] = tuple(sorted(set(updated)))
         log_event(
             conn,
             actor=actor,
             action="update_customer",
             target_type="customer",
             target_id=customer_id,
-            details={"fields": fields_sorted},
+            details={"fields": list(fields_sorted)},
         )
 
     refreshed = get_customer_detail(conn, customer_id)
@@ -338,10 +402,7 @@ def update_customer(
         raise RuntimeError(
             f"update_customer: row vanished after commit for {customer_id!r}"
         )
-    return UpdateCustomerResult(
-        customer=refreshed,
-        updated_fields=tuple(sorted(set(updated))),
-    )
+    return UpdateCustomerResult(customer=refreshed, updated_fields=fields_sorted)
 
 
 def list_customers(
@@ -730,3 +791,277 @@ def insert_api_key(
                 "rate_limit_rpm": record.rate_limit_rpm,
             },
         )
+
+
+def update_api_key(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    new_rpm: int | None,
+    new_price: float | None,
+    new_notes: str | None,
+    actor: str,
+    today: date,
+) -> UpdateKeyResult | None:
+    """Apply the rpm/price/notes mutation inside a single transaction.
+
+    Returns ``None`` when the row is missing. Raises ``ValueError`` when
+    the row is revoked or when ``new_price`` is set on a complimentary
+    key (the CLI maps the second case to an exit-2 usage error — the
+    helper's ``ValueError`` is a defensive safety net behind the CLI's
+    upstream mutex check).
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE and audit write either both commit or both
+    roll back. Same contract as ``insert_customer`` / ``insert_api_key`` /
+    ``update_customer``.
+
+    ``today`` is the operator-TZ date forwarded to ``get_key_detail_by_id``
+    so the post-commit re-read is clock-seamed (tests freeze today via
+    monkeypatch instead of the helper touching ``date.today()``).
+    """
+    from comadre.keys.audit import log_event
+
+    updated: list[UpdateKeyField] = []
+    old_rpm: int | None = None
+    old_price: float | None = None
+    with conn:
+        row = conn.execute(
+            "SELECT status, billing_mode, rate_limit_rpm, price_monthly "
+            "FROM api_key WHERE id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "revoked":
+            raise ValueError("cannot update a revoked key")
+        if row["billing_mode"] == "complimentary" and new_price is not None:
+            raise ValueError("cannot set --price on a complimentary key")
+
+        old_rpm = int(row["rate_limit_rpm"])
+        old_price = float(row["price_monthly"])
+
+        # Build the SET clause dynamically so only the touched columns are
+        # rewritten. The predicate fragments are literal column-name strings
+        # (``"rate_limit_rpm = ?"``) — operator input only lands in the
+        # positional ``?`` bindings, never in SQL text.
+        set_parts: list[str] = []
+        params: list[object] = []
+        if new_rpm is not None:
+            set_parts.append("rate_limit_rpm = ?")
+            params.append(new_rpm)
+            updated.append("rpm")
+        if new_price is not None:
+            set_parts.append("price_monthly = ?")
+            params.append(float(new_price))
+            updated.append("price")
+        if new_notes is not None:
+            set_parts.append("notes = ?")
+            params.append(new_notes)
+            updated.append("notes")
+
+        if not set_parts:
+            # Programmer error: the CLI layer rejects neither-flag upfront.
+            # Raise ``RuntimeError`` (maps to exit 5 at the CLI) so the
+            # return value stays unambiguous — ``None`` means "row missing",
+            # never "caller forgot to pass any field".
+            raise RuntimeError(f"update_api_key: no fields to update for {key_id!r}")
+
+        params.append(key_id)
+        # Defense-in-depth: the SELECT filtered revoked rows, but re-applying
+        # the predicate to the UPDATE prevents a mutation slipping through
+        # if a future caller restructures the SELECT-then-UPDATE pair.
+        sql = (
+            f"UPDATE api_key SET {', '.join(set_parts)} "
+            "WHERE id = ? AND status != 'revoked'"
+        )
+        conn.execute(sql, params)
+
+        fields_sorted: tuple[UpdateKeyField, ...] = tuple(sorted(set(updated)))
+        log_event(
+            conn,
+            actor=actor,
+            action="update_key",
+            target_type="api_key",
+            target_id=key_id,
+            details={"fields": list(fields_sorted)},
+        )
+
+    refreshed = get_key_detail_by_id(conn, key_id, today=today)
+    if refreshed is None:
+        raise RuntimeError(f"update_api_key: row vanished after commit for {key_id!r}")
+
+    deltas = KeyFieldDeltas(
+        rpm_old=old_rpm if new_rpm is not None else None,
+        rpm_new=new_rpm if new_rpm is not None else None,
+        price_old=old_price if new_price is not None else None,
+        price_new=float(new_price) if new_price is not None else None,
+    )
+    return UpdateKeyResult(key=refreshed, updated_fields=fields_sorted, changes=deltas)
+
+
+def rotate_api_key(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    new_plaintext: str,
+    actor: str,
+) -> RotateKeyResult | None:
+    """Rotate an API key's plaintext — new hash, new prefix, same ``id``.
+
+    Returns ``None`` when the row is missing. Raises ``ValueError`` when
+    the row is revoked (rotation is rejected; the CLI maps to exit 3).
+    Propagates ``sqlite3.IntegrityError`` when the freshly-computed hash
+    collides with an existing row's ``key_hash`` (AC12 — exit 5 with a
+    retry hint at the CLI layer).
+
+    Callers MUST NOT wrap this in ``with conn:``. The UPDATE and audit
+    write either both commit or both roll back — if the audit write
+    fails the old ``key_hash`` stays authoritative and no plaintext has
+    been disclosed yet.
+
+    No ``today`` parameter: the helper assembles the refreshed
+    ``ApiKeyRecord`` from the pre-UPDATE SELECT row plus the new hash /
+    prefix in-memory, skipping a second DB round-trip. The ``ApiKeyRecord``
+    type has no date-derived fields (``age_days`` lives on ``KeyDetailRow``,
+    which the rotate flow does not need — it renders a ``KeyPanel``).
+    """
+    from comadre.keys.audit import log_event
+    from comadre.keys.tokens import hash_api_key, key_prefix_from_plaintext
+
+    new_hash = hash_api_key(new_plaintext)
+    new_prefix = key_prefix_from_plaintext(new_plaintext)
+
+    with conn:
+        row = conn.execute(
+            "SELECT k.id, k.customer_id, k.key_prefix, k.rate_limit_rpm, "
+            "k.status, k.billing_mode, k.price_monthly, k.paid_until, "
+            "k.created_at, k.notes, c.name AS customer_name "
+            "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
+            "WHERE k.id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "revoked":
+            raise ValueError("cannot rotate a revoked key")
+
+        old_prefix = row["key_prefix"]
+
+        conn.execute(
+            "UPDATE api_key SET key_hash = ?, key_prefix = ?, "
+            "last_used_at = NULL WHERE id = ?",
+            (new_hash, new_prefix, key_id),
+        )
+        log_event(
+            conn,
+            actor=actor,
+            action="rotate_key",
+            target_type="api_key",
+            target_id=key_id,
+            details={"key_prefix_old": old_prefix, "key_prefix_new": new_prefix},
+        )
+
+    created_at_dt = datetime.fromisoformat(row["created_at"])
+    refreshed = ApiKeyRecord(
+        id=row["id"],
+        customer_id=row["customer_id"],
+        key_hash=new_hash,
+        key_prefix=new_prefix,
+        rate_limit_rpm=int(row["rate_limit_rpm"]),
+        status=cast("CustomerStatus", row["status"]),
+        billing_mode=cast("BillingMode", row["billing_mode"]),
+        price_monthly=float(row["price_monthly"]),
+        paid_until=row["paid_until"],
+        created_at=created_at_dt,
+        last_used_at=None,
+        notes=row["notes"] or "",
+    )
+    return RotateKeyResult(
+        record=refreshed, customer_name=row["customer_name"], old_prefix=old_prefix
+    )
+
+
+def revoke_api_key(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    reason: str,
+    actor: str,
+    today: date,
+) -> RevokeKeyResult | None:
+    """Mark the ``api_key`` row revoked inside a single transaction.
+
+    Returns ``None`` when the row is missing. Raises ``ValueError`` when
+    the row is already revoked (revocation is terminal; the CLI maps to
+    exit 3).
+
+    Callers MUST NOT wrap this in ``with conn:``. The UPDATE and audit
+    write either both commit or both roll back.
+
+    ``today`` is forwarded to ``get_key_detail_by_id`` so the post-commit
+    re-read that populates the returned ``KeyDetailRow`` is clock-seamed.
+    The signature deviates from the Story 1.6 code sketch (which omitted
+    ``today``) because the re-read needs an operator-TZ date to compute
+    ``age_days`` without touching ``date.today()`` — keeping tests
+    clock-free matches the ``update_api_key`` and ``update_customer``
+    precedent.
+
+    ``reason`` is shape-validated here (NUL / LF / CR / strip-empty /
+    1024-char cap) so the audit-row contract is enforced at every call-
+    site — not only from the CLI. Raises ``ValueError`` for any violation.
+    The CLI performs the same checks upfront (exit 2) so these are
+    defense-in-depth for non-CLI callers.
+    """
+    from comadre.keys.audit import log_event
+
+    if "\x00" in reason:
+        raise ValueError("reason contains NUL byte")
+    if "\n" in reason or "\r" in reason:
+        raise ValueError("reason must be a single line")
+    reason = reason.strip()
+    if not reason:
+        raise ValueError("reason must be non-empty")
+    if len(reason) > 1024:
+        raise ValueError("reason exceeds 1024 characters")
+
+    with conn:
+        row = conn.execute(
+            "SELECT status FROM api_key WHERE id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "revoked":
+            raise ValueError("already revoked")
+
+        cursor = conn.execute(
+            "UPDATE api_key SET status = 'revoked' "
+            "WHERE id = ? AND status != 'revoked'",
+            (key_id,),
+        )
+        # Guard against a concurrent revocation slipping between the SELECT
+        # and UPDATE. Under the single-writer CLI this is effectively
+        # unreachable, but the RuntimeError surfaces it as exit 5 rather
+        # than silently succeeding on a no-op UPDATE.
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "revoke_api_key: update failed to match any row after SELECT "
+                f"succeeded for {key_id!r}"
+            )
+
+        log_event(
+            conn,
+            actor=actor,
+            action="revoke_key",
+            target_type="api_key",
+            target_id=key_id,
+            details={"reason": reason},
+        )
+
+    refreshed = get_key_detail_by_id(conn, key_id, today=today)
+    if refreshed is None:
+        raise RuntimeError(f"revoke_api_key: row vanished after commit for {key_id!r}")
+    return RevokeKeyResult(
+        key=refreshed, customer_name=refreshed.customer_name, reason=reason
+    )
