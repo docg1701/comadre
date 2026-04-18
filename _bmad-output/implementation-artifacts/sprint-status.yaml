@@ -1,5 +1,5 @@
 # generated: 2026-04-16
-# last_updated: 2026-04-17 (story 1.4 closed via code-review workflow — 4 patches applied, 3 deferred)
+# last_updated: 2026-04-17 (story 1.5 closed via code-review workflow — patches applied, 7 deferred)
 # project: comadre
 # project_key: NOKEY
 # tracking_system: file-system
@@ -61,7 +61,7 @@ development_status:
   1-2-api-key-issuance: done
   1-3-customer-key-listing: done
   1-4-key-customer-detail-view-with-audit-trail: done
-  1-5-customer-updates-notes: backlog
+  1-5-customer-updates-notes: done
   1-6-key-lifecycle-update-rotate-revoke: backlog
   epic-1-retrospective: optional
 

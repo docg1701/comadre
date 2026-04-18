@@ -28,6 +28,7 @@ from comadre.keys.db import (
     list_audit_events,
     list_customers,
     resolve_show_target,
+    update_customer,
 )
 from comadre.keys.models import (
     ApiKeyRecord,
@@ -1557,5 +1558,366 @@ class TestShowHelpersDoNotWrite:
                 "audit_log": _count_rows(conn, "audit_log"),
             }
             assert before == after
+        finally:
+            conn.close()
+
+
+_UPDATE_FROZEN_TODAY = date(2026, 4, 20)
+
+
+def _seed_customer_with_notes(
+    conn: sqlite3.Connection,
+    *,
+    email: str = "helena@clinica.com",
+    notes: str = "",
+) -> str:
+    """Seed a customer with a specific email/notes via ``insert_customer``."""
+    cid = generate_customer_id()
+    insert_customer(
+        conn,
+        CustomerRecord(
+            id=cid,
+            name="Helena Ribeiro",
+            email=email,
+            tax_id_kind="cpf",
+            tax_id_encrypted=b"gAAAAA-ciphertext-blob",
+            notes=notes,
+            registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+            deleted_at=None,
+        ),
+        actor="cli:tester",
+    )
+    return cid
+
+
+class TestUpdateCustomer:
+    """Story 1.5 — unit coverage for the ``update_customer`` helper."""
+
+    def test_email_only_changes_email_column(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="seed notes")
+
+            result = update_customer(
+                conn,
+                cid,
+                new_email="new@example.com",
+                add_note=None,
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+
+            assert result is not None
+            assert result.updated_fields == ("email",)
+            row = conn.execute(
+                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["email"] == "new@example.com"
+            assert row["notes"] == "seed notes"
+
+            audit = conn.execute(
+                "SELECT action, target_type, target_id, details_json "
+                "FROM audit_log WHERE action = 'update_customer'"
+            ).fetchall()
+            assert len(audit) == 1
+            assert audit[0]["action"] == "update_customer"
+            assert audit[0]["target_type"] == "customer"
+            assert audit[0]["target_id"] == cid
+            assert audit[0]["details_json"] == '{"fields": ["email"]}'
+        finally:
+            conn.close()
+
+    def test_note_only_changes_notes_column(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="seed")
+
+            result = update_customer(
+                conn,
+                cid,
+                new_email=None,
+                add_note="new note",
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+
+            assert result is not None
+            assert result.updated_fields == ("notes",)
+            row = conn.execute(
+                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["email"] == "helena@clinica.com"
+            assert row["notes"] == "seed\n[2026-04-20] new note"
+
+            audit = conn.execute(
+                "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()
+            assert audit["details_json"] == '{"fields": ["notes"]}'
+        finally:
+            conn.close()
+
+    def test_note_on_empty_existing_no_leading_newline(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="")
+
+            update_customer(
+                conn,
+                cid,
+                new_email=None,
+                add_note="first",
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+
+            row = conn.execute(
+                "SELECT notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["notes"] == "[2026-04-20] first"
+        finally:
+            conn.close()
+
+    def test_note_appends_second_entry(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="")
+
+            update_customer(
+                conn,
+                cid,
+                new_email=None,
+                add_note="first",
+                actor="cli:tester",
+                today=date(2026, 4, 20),
+            )
+            update_customer(
+                conn,
+                cid,
+                new_email=None,
+                add_note="second",
+                actor="cli:tester",
+                today=date(2026, 5, 12),
+            )
+
+            row = conn.execute(
+                "SELECT notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["notes"] == ("[2026-04-20] first\n[2026-05-12] second")
+            audit_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()[0]
+            assert audit_count == 2
+        finally:
+            conn.close()
+
+    def test_both_email_and_note_in_one_txn(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="seed")
+
+            result = update_customer(
+                conn,
+                cid,
+                new_email="both@example.com",
+                add_note="bumped",
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+
+            assert result is not None
+            assert result.updated_fields == ("email", "notes")
+            row = conn.execute(
+                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["email"] == "both@example.com"
+            assert row["notes"] == "seed\n[2026-04-20] bumped"
+
+            audit = conn.execute(
+                "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
+            ).fetchall()
+            assert len(audit) == 1
+            assert audit[0]["details_json"] == '{"fields": ["email", "notes"]}'
+        finally:
+            conn.close()
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = update_customer(
+                conn,
+                "cust_01nonexistent0000000000000",
+                new_email="x@e.com",
+                add_note=None,
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+            assert result is None
+            audit_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()[0]
+            assert audit_count == 0
+        finally:
+            conn.close()
+
+    def test_tombstone_returns_none(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="pre-tombstone")
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-18T00:00:00Z", cid),
+            )
+            conn.commit()
+
+            result = update_customer(
+                conn,
+                cid,
+                new_email="x@e.com",
+                add_note="x",
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+            assert result is None
+
+            row = conn.execute(
+                "SELECT email, notes, deleted_at FROM customer WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["email"] == "helena@clinica.com"
+            assert row["notes"] == "pre-tombstone"
+            assert row["deleted_at"] == "2026-04-18T00:00:00Z"
+
+            audit_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()[0]
+            assert audit_count == 0
+        finally:
+            conn.close()
+
+    def test_rolls_back_when_audit_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="seed")
+
+            import comadre.keys.audit as audit_module
+
+            def _boom(*_args: object, **_kw: object) -> None:
+                raise sqlite3.IntegrityError("forced audit failure")
+
+            monkeypatch.setattr(audit_module, "log_event", _boom)
+
+            with pytest.raises(sqlite3.IntegrityError):
+                update_customer(
+                    conn,
+                    cid,
+                    new_email="rollback@example.com",
+                    add_note="rollback",
+                    actor="cli:tester",
+                    today=_UPDATE_FROZEN_TODAY,
+                )
+
+            row = conn.execute(
+                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["email"] == "helena@clinica.com"
+            assert row["notes"] == "seed"
+
+            audit_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()[0]
+            assert audit_count == 0
+        finally:
+            conn.close()
+
+    def test_same_email_value_still_audits(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, email="a@b.com", notes="seed")
+
+            result = update_customer(
+                conn,
+                cid,
+                new_email="a@b.com",
+                add_note=None,
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+
+            assert result is not None
+            assert result.updated_fields == ("email",)
+            audit = conn.execute(
+                "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()
+            assert audit["details_json"] == '{"fields": ["email"]}'
+        finally:
+            conn.close()
+
+    def test_audit_details_does_not_leak_values(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="seed")
+
+            secret_email = "secret-operator-email@novaclinica.com"
+            secret_note = "sensitive-operator-note"
+            update_customer(
+                conn,
+                cid,
+                new_email=secret_email,
+                add_note=secret_note,
+                actor="cli:tester",
+                today=_UPDATE_FROZEN_TODAY,
+            )
+
+            row = conn.execute(
+                "SELECT actor, action, target_type, target_id, details_json "
+                "FROM audit_log WHERE action = 'update_customer'"
+            ).fetchone()
+            joined = " | ".join(
+                str(row[col])
+                for col in (
+                    "actor",
+                    "action",
+                    "target_type",
+                    "target_id",
+                    "details_json",
+                )
+            )
+            assert secret_email not in joined
+            assert secret_note not in joined
+            assert row["details_json"] == '{"fields": ["email", "notes"]}'
+        finally:
+            conn.close()
+
+    def test_today_uses_caller_supplied_value(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_notes(conn, notes="")
+
+            update_customer(
+                conn,
+                cid,
+                new_email=None,
+                add_note="future",
+                actor="cli:tester",
+                today=date(2030, 1, 1),
+            )
+
+            row = conn.execute(
+                "SELECT notes FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert row["notes"] == "[2030-01-01] future"
         finally:
             conn.close()

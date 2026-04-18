@@ -1,0 +1,1571 @@
+diff --git a/_bmad-output/implementation-artifacts/sprint-status.yaml b/_bmad-output/implementation-artifacts/sprint-status.yaml
+index 6a9c034..022f429 100644
+--- a/_bmad-output/implementation-artifacts/sprint-status.yaml
++++ b/_bmad-output/implementation-artifacts/sprint-status.yaml
+@@ -1,5 +1,5 @@
+ # generated: 2026-04-16
+-# last_updated: 2026-04-17 (story 1.4 closed via code-review workflow — 4 patches applied, 3 deferred)
++# last_updated: 2026-04-17 (story 1.5 implementation complete — ready for code review)
+ # project: comadre
+ # project_key: NOKEY
+ # tracking_system: file-system
+@@ -61,7 +61,7 @@ development_status:
+   1-2-api-key-issuance: done
+   1-3-customer-key-listing: done
+   1-4-key-customer-detail-view-with-audit-trail: done
+-  1-5-customer-updates-notes: backlog
++  1-5-customer-updates-notes: review
+   1-6-key-lifecycle-update-rotate-revoke: backlog
+   epic-1-retrospective: optional
+ 
+diff --git a/src/comadre/keys/cli/commands/customers.py b/src/comadre/keys/cli/commands/customers.py
+index c17389f..bd14c22 100644
+--- a/src/comadre/keys/cli/commands/customers.py
++++ b/src/comadre/keys/cli/commands/customers.py
+@@ -18,7 +18,7 @@ from typing import cast
+ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+ 
+ import typer
+-from pydantic import ValidationError
++from pydantic import EmailStr, TypeAdapter, ValidationError
+ 
+ from comadre.config import get_settings
+ from comadre.exceptions import InvalidTaxIdError
+@@ -44,6 +44,7 @@ from comadre.keys.crypto import (
+     validate_cpf,
+ )
+ from comadre.keys.db import (
++    UpdateCustomerResult,
+     _apply_migrations,
+     count_tombstones,
+     generate_customer_id,
+@@ -53,6 +54,7 @@ from comadre.keys.db import (
+     list_audit_events,
+     list_customers,
+     resolve_show_target,
++    update_customer,
+ )
+ from comadre.keys.models import (
+     AuditEventRow,
+@@ -584,3 +586,195 @@ def show_cmd(
+ 
+     if events is not None:
+         render_audit_tail(events)
++
++
++# ---------------------------------------------------------------------------
++# `update-customer` — email + append-note mutation (Story 1.5).
++# ---------------------------------------------------------------------------
++
++_EMAIL_ADAPTER = TypeAdapter(EmailStr)
++
++_UPDATE_CUSTOMER_NEITHER_HINT = (
++    'Provide --email NEW_EMAIL or --add-note "text" (or both).'
++)
++_UPDATE_CUSTOMER_NOTE_EMPTY_HINT = (
++    "Provide note text with content. Whitespace-only notes are rejected."
++)
++_UPDATE_CUSTOMER_NOTE_NUL_HINT = "Note text must not contain NUL bytes."
++_UPDATE_CUSTOMER_NOT_FOUND_HINT = (
++    "Run 'comadre-keys list-customers' to see registered records."
++)
++
++
++def _update_confirmation_suffix(updated_fields: tuple[str, ...]) -> str:
++    """Map ``updated_fields`` to the ConfirmationLine human suffix.
++
++    Grammar is fixed: ``email changed`` / ``note added`` joined with
++    ``, `` (comma-space) when both fire. Story 1.5 AC1/AC2/AC3.
++    """
++    parts: list[str] = []
++    if "email" in updated_fields:
++        parts.append("email changed")
++    if "notes" in updated_fields:
++        parts.append("note added")
++    return ", ".join(parts)
++
++
++@app.command("update-customer")
++def update_customer_cmd(
++    customer_id: str = typer.Argument(
++        ...,
++        metavar="CUSTOMER_ID",
++        help=(
++            "Customer ID from create-customer / list-customers. "
++            "Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
++        ),
++    ),
++    email: str | None = typer.Option(
++        None,
++        "--email",
++        help=(
++            "Replace the stored email address. "
++            'Example: --email "helena@novaclinica.com".'
++        ),
++    ),
++    add_note: str | None = typer.Option(
++        None,
++        "--add-note",
++        help=(
++            "Append a dated note to the customer record. "
++            'Example: --add-note "paga tarde - lembrar dia 3".'
++        ),
++    ),
++) -> None:
++    """Update a customer's email and/or append a dated operator note.
++
++    Example: comadre-keys update-customer cust_01j8xr3e4c5m7kn9p2qt8vwy
++             --add-note "paga tarde - lembrar dia 3"
++    """
++    # 1. Neither-flag check — runs before any DB / settings work so the
++    # cheapest usage mistake never opens a connection.
++    if email is None and add_note is None:
++        render_error(
++            "Usage error: at least one of --email or --add-note is required",
++            _UPDATE_CUSTOMER_NEITHER_HINT,
++        )
++        raise typer.Exit(code=2)
++
++    # 2. Email shape check (if provided). Pre-strip before pydantic so
++    # operators who copy-paste with trailing whitespace get the same
++    # normalized storage as other commands.
++    if email is not None:
++        stripped_email = email.strip()
++        try:
++            email = _EMAIL_ADAPTER.validate_python(stripped_email)
++        except ValidationError as exc:
++            render_error("Usage error: invalid email", first_error_msg(exc))
++            raise typer.Exit(code=2) from None
++
++    # 3. Note shape check (if provided). Strip outer whitespace, reject
++    # empty-after-strip, and reject NUL bytes (Story 1.1 deferred UX edge
++    # picked up here — SQLite accepts NULs but they break later greps).
++    if add_note is not None:
++        if "\x00" in add_note:
++            render_error(
++                "Usage error: --add-note contains illegal characters",
++                _UPDATE_CUSTOMER_NOTE_NUL_HINT,
++            )
++            raise typer.Exit(code=2)
++        stripped_note = add_note.strip()
++        if not stripped_note:
++            render_error(
++                "Usage error: --add-note must be non-empty",
++                _UPDATE_CUSTOMER_NOTE_EMPTY_HINT,
++            )
++            raise typer.Exit(code=2)
++        add_note = stripped_note
++
++    # 4. Settings load — same exit-6 mapping as the sibling commands. The
++    # encryption key isn't used here (no tax-ID operation), but we still
++    # validate its presence so the operator gets a consistent configuration
++    # error surface across all `comadre-keys` verbs.
++    try:
++        settings = get_settings()
++    except ValidationError as exc:
++        if is_missing_encryption_key(exc):
++            render_error(
++                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
++                _missing_key_hint,
++            )
++        else:
++            render_error("Configuration error", first_error_msg(exc))
++        raise typer.Exit(code=6) from None
++    except (OSError, PermissionError) as exc:
++        render_error("Configuration error: settings file unreadable", str(exc))
++        raise typer.Exit(code=6) from None
++
++    if settings.key_registry_encryption_key is None:
++        render_error(
++            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
++            _missing_key_hint,
++        )
++        raise typer.Exit(code=6)
++
++    try:
++        billing_tz = ZoneInfo(settings.billing_timezone)
++    except (ZoneInfoNotFoundError, ValueError):
++        render_error(
++            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
++            (
++                "Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
++                f"Got: {settings.billing_timezone}"
++            ),
++        )
++        raise typer.Exit(code=6) from None
++
++    today = _resolve_today_in_tz(billing_tz)
++
++    # 5. Open DB + migrations + mutation. Close in finally + suppress.
++    try:
++        conn = get_connection(settings.key_registry_db_path)
++    except sqlite3.Error as exc:
++        render_error("Database error", str(exc))
++        raise typer.Exit(code=5) from None
++
++    result: UpdateCustomerResult | None
++    try:
++        try:
++            _apply_migrations(conn)
++        except sqlite3.Error as exc:
++            render_error("Database error", str(exc))
++            raise typer.Exit(code=5) from None
++
++        try:
++            result = update_customer(
++                conn,
++                customer_id,
++                new_email=email,
++                add_note=add_note,
++                actor=get_cli_actor(),
++                today=today,
++            )
++        except sqlite3.Error as exc:
++            render_error("Database error", str(exc))
++            raise typer.Exit(code=5) from None
++    finally:
++        with contextlib.suppress(sqlite3.Error):
++            conn.close()
++
++    if result is None:
++        render_error(
++            f"Customer not found: {customer_id}",
++            _UPDATE_CUSTOMER_NOT_FOUND_HINT,
++        )
++        raise typer.Exit(code=3)
++
++    _logger.info(
++        "Updated customer | id=%s | fields=%s",
++        customer_id,
++        ",".join(result.updated_fields),
++    )
++    suffix = _update_confirmation_suffix(result.updated_fields)
++    render_confirmation(
++        f"Updated: {result.customer.id} ({result.customer.name}) \u2014 {suffix}"
++    )
+diff --git a/src/comadre/keys/db.py b/src/comadre/keys/db.py
+index 378c1d6..f094909 100644
+--- a/src/comadre/keys/db.py
++++ b/src/comadre/keys/db.py
+@@ -38,6 +38,22 @@ from comadre.keys.models import (
+ )
+ 
+ ShowTargetKind = Literal["customer", "key_single", "key_ambiguous", "not_found"]
++UpdatedField = Literal["email", "notes"]
++
++
++@dataclass(frozen=True, slots=True)
++class UpdateCustomerResult:
++    """Return payload from ``update_customer``.
++
++    Carries the refreshed ``CustomerDetailRow`` so the CLI can feed it to
++    the ConfirmationLine renderer without a follow-up ``get_customer_detail``
++    round-trip. ``updated_fields`` is a sorted, de-duplicated tuple of the
++    columns the caller actually touched — used for both the audit payload
++    and the human suffix.
++    """
++
++    customer: CustomerDetailRow
++    updated_fields: tuple[UpdatedField, ...]
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -231,6 +247,103 @@ def get_customer(
+     )
+ 
+ 
++def update_customer(
++    conn: sqlite3.Connection,
++    customer_id: str,
++    *,
++    new_email: str | None,
++    add_note: str | None,
++    actor: str,
++    today: date,
++) -> UpdateCustomerResult | None:
++    """Apply the email/notes mutation inside a single transaction.
++
++    Returns ``None`` when the customer is missing or tombstoned. Otherwise
++    commits the mutation + an ``update_customer`` audit row and returns the
++    refreshed detail row.
++
++    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
++    transaction so the UPDATE and the audit write either both commit or
++    both roll back (same contract as ``insert_customer`` / ``insert_api_key``).
++
++    ``today`` is the operator-TZ date used to stamp the appended note
++    (``[YYYY-MM-DD] text``). The caller resolves it via the existing
++    ``cli._clock.resolve_today_in_tz`` seam so tests freeze the clock with
++    ``monkeypatch`` instead of the helper touching ``date.today()`` directly.
++    """
++    from comadre.keys.audit import log_event
++
++    updated: list[UpdatedField] = []
++    with conn:
++        row = conn.execute(
++            "SELECT notes FROM customer WHERE id = ? AND deleted_at IS NULL",
++            (customer_id,),
++        ).fetchone()
++        if row is None:
++            return None
++
++        existing_notes = row["notes"] or ""
++
++        # Build the SET clause dynamically so only the touched columns are
++        # rewritten. The predicate fragments are literal column-name strings
++        # (``"email = ?"`` / ``"notes = ?"``) — operator input only lands in
++        # the positional ``?`` bindings, never in SQL text.
++        set_parts: list[str] = []
++        params: list[object] = []
++        if new_email is not None:
++            set_parts.append("email = ?")
++            params.append(new_email)
++            updated.append("email")
++        if add_note is not None:
++            stamped = f"[{today.isoformat()}] {add_note}"
++            new_notes = (
++                stamped if not existing_notes else f"{existing_notes}\n{stamped}"
++            )
++            set_parts.append("notes = ?")
++            params.append(new_notes)
++            updated.append("notes")
++
++        if not set_parts:
++            # Defensive: the CLI layer rejects neither-flag before we get
++            # here. If a future caller skips that check, we still don't
++            # want to write a no-op audit row.
++            return None
++
++        params.append(customer_id)
++        # Defense-in-depth: the SELECT above already filtered tombstones,
++        # but re-applying ``deleted_at IS NULL`` to the UPDATE prevents a
++        # mutation slipping through if a future caller restructures the
++        # SELECT-then-UPDATE pair.
++        sql = (
++            f"UPDATE customer SET {', '.join(set_parts)} "
++            "WHERE id = ? AND deleted_at IS NULL"
++        )
++        conn.execute(sql, params)
++
++        fields_sorted = sorted(set(updated))
++        log_event(
++            conn,
++            actor=actor,
++            action="update_customer",
++            target_type="customer",
++            target_id=customer_id,
++            details={"fields": fields_sorted},
++        )
++
++    refreshed = get_customer_detail(conn, customer_id)
++    if refreshed is None:
++        # Shouldn't happen — the row existed inside the transaction and
++        # nothing else in this process is racing it. Raise so the CLI
++        # surfaces an exit-5 instead of misreading it as "tombstone".
++        raise RuntimeError(
++            f"update_customer: row vanished after commit for {customer_id!r}"
++        )
++    return UpdateCustomerResult(
++        customer=refreshed,
++        updated_fields=tuple(sorted(set(updated))),
++    )
++
++
+ def list_customers(
+     conn: sqlite3.Connection,
+     *,
+diff --git a/tests/test_keys_db.py b/tests/test_keys_db.py
+index b5bd13b..6930965 100644
+--- a/tests/test_keys_db.py
++++ b/tests/test_keys_db.py
+@@ -28,6 +28,7 @@ from comadre.keys.db import (
+     list_audit_events,
+     list_customers,
+     resolve_show_target,
++    update_customer,
+ )
+ from comadre.keys.models import (
+     ApiKeyRecord,
+@@ -1559,3 +1560,364 @@ class TestShowHelpersDoNotWrite:
+             assert before == after
+         finally:
+             conn.close()
++
++
++_UPDATE_FROZEN_TODAY = date(2026, 4, 20)
++
++
++def _seed_customer_with_notes(
++    conn: sqlite3.Connection,
++    *,
++    email: str = "helena@clinica.com",
++    notes: str = "",
++) -> str:
++    """Seed a customer with a specific email/notes via ``insert_customer``."""
++    cid = generate_customer_id()
++    insert_customer(
++        conn,
++        CustomerRecord(
++            id=cid,
++            name="Helena Ribeiro",
++            email=email,
++            tax_id_kind="cpf",
++            tax_id_encrypted=b"gAAAAA-ciphertext-blob",
++            notes=notes,
++            registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
++            deleted_at=None,
++        ),
++        actor="cli:tester",
++    )
++    return cid
++
++
++class TestUpdateCustomer:
++    """Story 1.5 — unit coverage for the ``update_customer`` helper."""
++
++    def test_email_only_changes_email_column(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="seed notes")
++
++            result = update_customer(
++                conn,
++                cid,
++                new_email="new@example.com",
++                add_note=None,
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++
++            assert result is not None
++            assert result.updated_fields == ("email",)
++            row = conn.execute(
++                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["email"] == "new@example.com"
++            assert row["notes"] == "seed notes"
++
++            audit = conn.execute(
++                "SELECT action, target_type, target_id, details_json "
++                "FROM audit_log WHERE action = 'update_customer'"
++            ).fetchall()
++            assert len(audit) == 1
++            assert audit[0]["action"] == "update_customer"
++            assert audit[0]["target_type"] == "customer"
++            assert audit[0]["target_id"] == cid
++            assert audit[0]["details_json"] == '{"fields": ["email"]}'
++        finally:
++            conn.close()
++
++    def test_note_only_changes_notes_column(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="seed")
++
++            result = update_customer(
++                conn,
++                cid,
++                new_email=None,
++                add_note="new note",
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++
++            assert result is not None
++            assert result.updated_fields == ("notes",)
++            row = conn.execute(
++                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["email"] == "helena@clinica.com"
++            assert row["notes"] == "seed\n[2026-04-20] new note"
++
++            audit = conn.execute(
++                "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()
++            assert audit["details_json"] == '{"fields": ["notes"]}'
++        finally:
++            conn.close()
++
++    def test_note_on_empty_existing_no_leading_newline(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="")
++
++            update_customer(
++                conn,
++                cid,
++                new_email=None,
++                add_note="first",
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++
++            row = conn.execute(
++                "SELECT notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["notes"] == "[2026-04-20] first"
++        finally:
++            conn.close()
++
++    def test_note_appends_second_entry(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="")
++
++            update_customer(
++                conn,
++                cid,
++                new_email=None,
++                add_note="first",
++                actor="cli:tester",
++                today=date(2026, 4, 20),
++            )
++            update_customer(
++                conn,
++                cid,
++                new_email=None,
++                add_note="second",
++                actor="cli:tester",
++                today=date(2026, 5, 12),
++            )
++
++            row = conn.execute(
++                "SELECT notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["notes"] == ("[2026-04-20] first\n[2026-05-12] second")
++            audit_count = conn.execute(
++                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()[0]
++            assert audit_count == 2
++        finally:
++            conn.close()
++
++    def test_both_email_and_note_in_one_txn(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="seed")
++
++            result = update_customer(
++                conn,
++                cid,
++                new_email="both@example.com",
++                add_note="bumped",
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++
++            assert result is not None
++            assert result.updated_fields == ("email", "notes")
++            row = conn.execute(
++                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["email"] == "both@example.com"
++            assert row["notes"] == "seed\n[2026-04-20] bumped"
++
++            audit = conn.execute(
++                "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
++            ).fetchall()
++            assert len(audit) == 1
++            assert audit[0]["details_json"] == '{"fields": ["email", "notes"]}'
++        finally:
++            conn.close()
++
++    def test_missing_returns_none(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            result = update_customer(
++                conn,
++                "cust_01nonexistent0000000000000",
++                new_email="x@e.com",
++                add_note=None,
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++            assert result is None
++            audit_count = conn.execute(
++                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()[0]
++            assert audit_count == 0
++        finally:
++            conn.close()
++
++    def test_tombstone_returns_none(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="pre-tombstone")
++            conn.execute(
++                "UPDATE customer SET deleted_at = ? WHERE id = ?",
++                ("2026-04-18T00:00:00Z", cid),
++            )
++            conn.commit()
++
++            result = update_customer(
++                conn,
++                cid,
++                new_email="x@e.com",
++                add_note="x",
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++            assert result is None
++
++            row = conn.execute(
++                "SELECT email, notes, deleted_at FROM customer WHERE id = ?",
++                (cid,),
++            ).fetchone()
++            assert row["email"] == "helena@clinica.com"
++            assert row["notes"] == "pre-tombstone"
++            assert row["deleted_at"] == "2026-04-18T00:00:00Z"
++
++            audit_count = conn.execute(
++                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()[0]
++            assert audit_count == 0
++        finally:
++            conn.close()
++
++    def test_rolls_back_when_audit_fails(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="seed")
++
++            import comadre.keys.audit as audit_module
++
++            def _boom(*_args: object, **_kw: object) -> None:
++                raise sqlite3.IntegrityError("forced audit failure")
++
++            monkeypatch.setattr(audit_module, "log_event", _boom)
++
++            with pytest.raises(sqlite3.IntegrityError):
++                update_customer(
++                    conn,
++                    cid,
++                    new_email="rollback@example.com",
++                    add_note="rollback",
++                    actor="cli:tester",
++                    today=_UPDATE_FROZEN_TODAY,
++                )
++
++            row = conn.execute(
++                "SELECT email, notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["email"] == "helena@clinica.com"
++            assert row["notes"] == "seed"
++
++            audit_count = conn.execute(
++                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()[0]
++            assert audit_count == 0
++        finally:
++            conn.close()
++
++    def test_same_email_value_still_audits(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, email="a@b.com", notes="seed")
++
++            result = update_customer(
++                conn,
++                cid,
++                new_email="a@b.com",
++                add_note=None,
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++
++            assert result is not None
++            assert result.updated_fields == ("email",)
++            audit = conn.execute(
++                "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()
++            assert audit["details_json"] == '{"fields": ["email"]}'
++        finally:
++            conn.close()
++
++    def test_audit_details_does_not_leak_values(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="seed")
++
++            secret_email = "secret-operator-email@novaclinica.com"
++            secret_note = "sensitive-operator-note"
++            update_customer(
++                conn,
++                cid,
++                new_email=secret_email,
++                add_note=secret_note,
++                actor="cli:tester",
++                today=_UPDATE_FROZEN_TODAY,
++            )
++
++            row = conn.execute(
++                "SELECT actor, action, target_type, target_id, details_json "
++                "FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()
++            joined = " | ".join(
++                str(row[col])
++                for col in (
++                    "actor",
++                    "action",
++                    "target_type",
++                    "target_id",
++                    "details_json",
++                )
++            )
++            assert secret_email not in joined
++            assert secret_note not in joined
++            assert row["details_json"] == '{"fields": ["email", "notes"]}'
++        finally:
++            conn.close()
++
++    def test_today_uses_caller_supplied_value(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_notes(conn, notes="")
++
++            update_customer(
++                conn,
++                cid,
++                new_email=None,
++                add_note="future",
++                actor="cli:tester",
++                today=date(2030, 1, 1),
++            )
++
++            row = conn.execute(
++                "SELECT notes FROM customer WHERE id = ?", (cid,)
++            ).fetchone()
++            assert row["notes"] == "[2030-01-01] future"
++        finally:
++            conn.close()
+diff --git a/tests/test_keys_cli_update_customer.py b/tests/test_keys_cli_update_customer.py
+new file mode 100644
+index 0000000..e0e9318
+--- /dev/null
++++ b/tests/test_keys_cli_update_customer.py
+@@ -0,0 +1,812 @@
++"""End-to-end CLI tests for ``comadre-keys update-customer`` (Story 1.5)."""
++
++from __future__ import annotations
++
++import json
++import logging
++import re
++import sqlite3
++from collections.abc import Callable, Iterator
++from datetime import date
++from io import StringIO
++from pathlib import Path
++
++import pytest
++from cryptography.fernet import Fernet
++from rich.console import Console
++from typer.testing import CliRunner
++
++import comadre.keys.cli.commands.customers as customers_cmd
++import comadre.keys.cli.output as output_mod
++from comadre.config import get_settings
++from comadre.keys.cli.app import app
++
++runner = CliRunner()
++
++
++@pytest.fixture(autouse=True)
++def _clear_settings_cache() -> Iterator[None]:
++    get_settings.cache_clear()
++    yield
++    get_settings.cache_clear()
++
++
++@pytest.fixture(autouse=True)
++def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
++    stdout_buf = StringIO()
++    stderr_buf = StringIO()
++    output_mod._reset_for_tests()
++    output_mod._stdout_console = Console(
++        file=stdout_buf, force_terminal=False, no_color=True, width=120
++    )
++    output_mod._stderr_console = Console(
++        file=stderr_buf, force_terminal=False, no_color=True, width=120
++    )
++    yield stdout_buf, stderr_buf
++    output_mod._reset_for_tests()
++
++
++@pytest.fixture()
++def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
++    key = Fernet.generate_key().decode()
++    db_path = tmp_path / "registry.db"
++    monkeypatch.setenv("API_KEY", "test-api-key")
++    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
++    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
++    return {"db_path": str(db_path), "key": key}
++
++
++def _buffers() -> tuple[str, str]:
++    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
++    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
++    return stdout_file.getvalue(), stderr_file.getvalue()
++
++
++def _clear_buffers() -> None:
++    for attr in ("_stdout_console", "_stderr_console"):
++        console = getattr(output_mod, attr)
++        console.file.seek(0)  # type: ignore[union-attr]
++        console.file.truncate()  # type: ignore[union-attr]
++
++
++def _seed_customer(
++    env: dict[str, str],
++    *,
++    name: str = "Helena Ribeiro",
++    email: str = "helena@clinica.com",
++    cpf: str = "123.456.789-09",
++    notes: str | None = None,
++) -> str:
++    args = [
++        "create-customer",
++        "--name",
++        name,
++        "--email",
++        email,
++        "--cpf",
++        cpf,
++    ]
++    if notes is not None:
++        args.extend(["--notes", notes])
++    _clear_buffers()
++    result = runner.invoke(app, args)
++    assert result.exit_code == 0, result.output
++    stdout, _stderr = _buffers()
++    match = re.search(r"cust_[0-9a-z]{26}", stdout)
++    assert match is not None, stdout
++    _clear_buffers()
++    return match.group(0)
++
++
++def _count(env: dict[str, str], table: str) -> int:
++    conn = sqlite3.connect(env["db_path"])
++    try:
++        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
++    finally:
++        conn.close()
++
++
++def _fetch_customer(env: dict[str, str], cid: str) -> dict[str, object]:
++    conn = sqlite3.connect(env["db_path"])
++    try:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            "SELECT email, notes, deleted_at FROM customer WHERE id = ?",
++            (cid,),
++        ).fetchone()
++        assert row is not None
++        return {
++            "email": row["email"],
++            "notes": row["notes"] or "",
++            "deleted_at": row["deleted_at"],
++        }
++    finally:
++        conn.close()
++
++
++def _latest_update_audit(env: dict[str, str]) -> dict[str, object] | None:
++    conn = sqlite3.connect(env["db_path"])
++    try:
++        conn.row_factory = sqlite3.Row
++        row = conn.execute(
++            "SELECT actor, action, target_type, target_id, details_json "
++            "FROM audit_log WHERE action = 'update_customer' "
++            "ORDER BY id DESC LIMIT 1"
++        ).fetchone()
++        if row is None:
++            return None
++        return dict(row)
++    finally:
++        conn.close()
++
++
++def _count_update_audits(env: dict[str, str]) -> int:
++    conn = sqlite3.connect(env["db_path"])
++    try:
++        return int(
++            conn.execute(
++                "SELECT COUNT(*) FROM audit_log WHERE action = 'update_customer'"
++            ).fetchone()[0]
++        )
++    finally:
++        conn.close()
++
++
++@pytest.fixture()
++def freeze_today(
++    monkeypatch: pytest.MonkeyPatch,
++) -> Callable[[date], None]:
++    """Return a closure that freezes ``_resolve_today_in_tz`` on demand."""
++
++    def _factory(frozen: date) -> None:
++        monkeypatch.setattr(customers_cmd, "_resolve_today_in_tz", lambda _tz: frozen)
++
++    return _factory
++
++
++# ---------------------------------------------------------------------------
++# AC1 — email-only happy path.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerEmailOnly:
++    def test_email_only(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="5 bots, WhatsApp booking")
++        before = _fetch_customer(env, cid)
++
++        result = runner.invoke(
++            app, ["update-customer", cid, "--email", "helena@novaclinica.com"]
++        )
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++
++        after = _fetch_customer(env, cid)
++        assert after["email"] == "helena@novaclinica.com"
++        assert after["notes"] == before["notes"]
++        assert after["deleted_at"] is None
++
++        assert f"Updated: {cid} (Helena Ribeiro) \u2014 email changed" in stdout
++        # Single-line output — no Panel border characters on stdout.
++        assert "\u256d" not in stdout and "\u2570" not in stdout
++
++        audit = _latest_update_audit(env)
++        assert audit is not None
++        assert audit["action"] == "update_customer"
++        assert audit["target_type"] == "customer"
++        assert audit["target_id"] == cid
++        assert audit["details_json"] == '{"fields": ["email"]}'
++
++
++# ---------------------------------------------------------------------------
++# AC2 — note append paths.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerAddNote:
++    def test_stamps_date(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="5 bots")
++
++        result = runner.invoke(
++            app,
++            ["update-customer", cid, "--add-note", "paga tarde"],
++        )
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++
++        after = _fetch_customer(env, cid)
++        assert after["notes"] == "5 bots\n[2026-04-20] paga tarde"
++        assert after["email"] == "helena@clinica.com"
++
++        assert f"Updated: {cid} (Helena Ribeiro) \u2014 note added" in stdout
++
++        audit = _latest_update_audit(env)
++        assert audit is not None
++        assert audit["details_json"] == '{"fields": ["notes"]}'
++
++    def test_second_append_stacks(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        cid = _seed_customer(env, notes="5 bots")
++
++        freeze_today(date(2026, 4, 20))
++        r1 = runner.invoke(app, ["update-customer", cid, "--add-note", "paga tarde"])
++        assert r1.exit_code == 0
++        _clear_buffers()
++
++        freeze_today(date(2026, 5, 12))
++        r2 = runner.invoke(
++            app,
++            ["update-customer", cid, "--add-note", "upgraded 60→120rpm"],
++        )
++        assert r2.exit_code == 0
++
++        after = _fetch_customer(env, cid)
++        assert after["notes"] == (
++            "5 bots\n[2026-04-20] paga tarde\n[2026-05-12] upgraded 60→120rpm"
++        )
++        assert _count_update_audits(env) == 2
++
++    def test_on_empty_notes_no_leading_newline(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env)
++        # Force the seed's notes column back to "" in case create-customer
++        # default changes in a future refactor.
++        conn = sqlite3.connect(env["db_path"])
++        try:
++            conn.execute("UPDATE customer SET notes = '' WHERE id = ?", (cid,))
++            conn.commit()
++        finally:
++            conn.close()
++
++        result = runner.invoke(app, ["update-customer", cid, "--add-note", "first"])
++        assert result.exit_code == 0
++
++        after = _fetch_customer(env, cid)
++        assert after["notes"] == "[2026-04-20] first"
++
++
++# ---------------------------------------------------------------------------
++# AC3 — combined email + note in one transaction.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerBothFlags:
++    def test_both_flags(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="seed")
++
++        result = runner.invoke(
++            app,
++            [
++                "update-customer",
++                cid,
++                "--email",
++                "new@example.com",
++                "--add-note",
++                "bumped tier",
++            ],
++        )
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++
++        after = _fetch_customer(env, cid)
++        assert after["email"] == "new@example.com"
++        assert after["notes"] == "seed\n[2026-04-20] bumped tier"
++
++        audit = _latest_update_audit(env)
++        assert audit is not None
++        assert audit["details_json"] == '{"fields": ["email", "notes"]}'
++        assert _count_update_audits(env) == 1
++
++        assert (
++            f"Updated: {cid} (Helena Ribeiro) \u2014 email changed, note added"
++            in stdout
++        )
++
++    def test_rolls_back_when_log_event_fails(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++        monkeypatch: pytest.MonkeyPatch,
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="seed")
++        before = _fetch_customer(env, cid)
++        audit_before = _count_update_audits(env)
++
++        import comadre.keys.audit as audit_module
++
++        original_log_event = audit_module.log_event
++
++        def _boom(*args: object, **kwargs: object) -> None:
++            action = kwargs.get("action")
++            if action == "update_customer":
++                raise sqlite3.IntegrityError("forced audit failure")
++            return original_log_event(*args, **kwargs)  # type: ignore[arg-type]
++
++        monkeypatch.setattr(audit_module, "log_event", _boom)
++
++        result = runner.invoke(
++            app,
++            [
++                "update-customer",
++                cid,
++                "--email",
++                "rollback@example.com",
++                "--add-note",
++                "should-roll-back",
++            ],
++        )
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 5, stderr
++        assert "Database error" in stderr
++
++        after = _fetch_customer(env, cid)
++        assert after["email"] == before["email"]
++        assert after["notes"] == before["notes"]
++        assert _count_update_audits(env) == audit_before
++
++
++# ---------------------------------------------------------------------------
++# AC4 — missing / tombstoned customer → exit 3.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerNotFound:
++    def test_missing_exits_3(self, env: dict[str, str]) -> None:
++        # Ensure the DB file exists first (migrations applied) so we can
++        # compare audit-row counts before/after.
++        cid_real = _seed_customer(env)
++        audit_before = _count_update_audits(env)
++        missing = "cust_01nonexistent0000000000000"
++
++        _clear_buffers()
++        result = runner.invoke(app, ["update-customer", missing, "--add-note", "x"])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 3
++        assert f"Customer not found: {missing}" in stderr
++        assert "list-customers" in stderr
++
++        assert _count_update_audits(env) == audit_before
++        # The real customer is untouched.
++        after = _fetch_customer(env, cid_real)
++        assert after["email"] == "helena@clinica.com"
++
++    def test_tombstone_treated_as_missing(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="pre-tombstone")
++        conn = sqlite3.connect(env["db_path"])
++        try:
++            conn.execute(
++                "UPDATE customer SET deleted_at = ? WHERE id = ?",
++                ("2026-04-18T00:00:00Z", cid),
++            )
++            conn.commit()
++        finally:
++            conn.close()
++        audit_before = _count_update_audits(env)
++
++        _clear_buffers()
++        result = runner.invoke(app, ["update-customer", cid, "--add-note", "attempt"])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 3
++        assert f"Customer not found: {cid}" in stderr
++        assert _count_update_audits(env) == audit_before
++
++        after = _fetch_customer(env, cid)
++        assert after["email"] == "helena@clinica.com"
++        assert after["notes"] == "pre-tombstone"
++        assert after["deleted_at"] == "2026-04-18T00:00:00Z"
++
++
++# ---------------------------------------------------------------------------
++# AC5 — usage errors (all exit 2 with DB untouched).
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerUsageErrors:
++    def test_without_flags_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        # Bare-minimum env — we want to prove the check runs before DB open.
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setenv("API_KEY", "test-api-key")
++        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
++        monkeypatch.setenv(
++            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
++        )
++
++        result = runner.invoke(app, ["update-customer", "cust_does_not_matter"])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert (
++            "Usage error: at least one of --email or --add-note is required" in stderr
++        )
++        assert not (tmp_path / "registry.db").exists()
++
++    def test_empty_email_exits_2(self, env: dict[str, str]) -> None:
++        cid = _seed_customer(env)
++        _clear_buffers()
++        result = runner.invoke(app, ["update-customer", cid, "--email", ""])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "Usage error: invalid email" in stderr
++
++    def test_malformed_email_exits_2(self, env: dict[str, str]) -> None:
++        cid = _seed_customer(env)
++        _clear_buffers()
++        result = runner.invoke(app, ["update-customer", cid, "--email", "not-an-email"])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "Usage error: invalid email" in stderr
++
++    def test_whitespace_note_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setenv("API_KEY", "test-api-key")
++        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
++        monkeypatch.setenv(
++            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
++        )
++
++        result = runner.invoke(app, ["update-customer", "cust_x", "--add-note", "   "])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "Usage error: --add-note must be non-empty" in stderr
++        # Note-shape check fires before DB open.
++        assert not (tmp_path / "registry.db").exists()
++
++    def test_empty_note_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setenv("API_KEY", "test-api-key")
++        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
++        monkeypatch.setenv(
++            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
++        )
++
++        result = runner.invoke(app, ["update-customer", "cust_x", "--add-note", ""])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "Usage error: --add-note must be non-empty" in stderr
++
++    def test_nul_byte_note_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setenv("API_KEY", "test-api-key")
++        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
++        monkeypatch.setenv(
++            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
++        )
++
++        result = runner.invoke(
++            app, ["update-customer", "cust_x", "--add-note", "ok\x00danger"]
++        )
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "Usage error: --add-note contains illegal characters" in stderr
++        assert "NUL" in stderr
++        assert not (tmp_path / "registry.db").exists()
++
++    def test_note_strips_outer_not_inner(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="")
++        conn = sqlite3.connect(env["db_path"])
++        try:
++            conn.execute("UPDATE customer SET notes = '' WHERE id = ?", (cid,))
++            conn.commit()
++        finally:
++            conn.close()
++
++        result = runner.invoke(
++            app,
++            ["update-customer", cid, "--add-note", "  spaced  inside  "],
++        )
++        assert result.exit_code == 0
++        after = _fetch_customer(env, cid)
++        assert after["notes"] == "[2026-04-20] spaced  inside"
++
++    def test_both_flags_note_invalid_no_email_change(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="seed")
++        before = _fetch_customer(env, cid)
++        audit_before = _count_update_audits(env)
++
++        _clear_buffers()
++        result = runner.invoke(
++            app,
++            [
++                "update-customer",
++                cid,
++                "--email",
++                "ok@example.com",
++                "--add-note",
++                "   ",
++            ],
++        )
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "Usage error: --add-note must be non-empty" in stderr
++
++        after = _fetch_customer(env, cid)
++        assert after["email"] == before["email"]
++        assert after["notes"] == before["notes"]
++        assert _count_update_audits(env) == audit_before
++
++
++# ---------------------------------------------------------------------------
++# AC6 — read-after-write: `show` reflects changes.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerReadAfterWrite:
++    def test_show_reflects_changes(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="seed")
++
++        r_upd = runner.invoke(
++            app,
++            [
++                "update-customer",
++                cid,
++                "--email",
++                "after@example.com",
++                "--add-note",
++                "follow-up",
++            ],
++        )
++        assert r_upd.exit_code == 0
++        _clear_buffers()
++
++        r_show = runner.invoke(app, ["show", cid])
++        stdout, _stderr = _buffers()
++        assert r_show.exit_code == 0
++        assert "after@example.com" in stdout
++        assert "[2026-04-20] follow-up" in stdout
++
++
++# ---------------------------------------------------------------------------
++# AC7 — help surface (realistic examples, no DB access).
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerHelp:
++    def test_help_has_realistic_examples(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.delenv("KEY_REGISTRY_DB_PATH", raising=False)
++        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
++
++        result = runner.invoke(app, ["update-customer", "--help"])
++        assert result.exit_code == 0
++        ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
++        cleaned = ansi.sub("", result.stdout)
++        for glyph in ("\u2502", "\u256d", "\u256e", "\u2570", "\u256f", "\u2500"):
++            cleaned = cleaned.replace(glyph, " ")
++        flat = re.sub(r"\s+", " ", cleaned)
++
++        assert "cust_01j8xr" in flat
++        assert "helena@novaclinica.com" in flat
++        assert "paga tarde" in flat
++        assert "--email" in flat
++        assert "--add-note" in flat
++        assert "comadre-keys update-customer cust_01j8xr3e4c5m7kn9p2qt8vwy" in flat
++
++    def test_help_does_not_touch_db(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.delenv("KEY_REGISTRY_DB_PATH", raising=False)
++        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
++
++        result = runner.invoke(app, ["update-customer", "--help"])
++        assert result.exit_code == 0
++        assert not (tmp_path / "registry.db").exists()
++
++
++# ---------------------------------------------------------------------------
++# AC8 — log + audit sanitization.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerSanitization:
++    def test_log_has_no_pii(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        from comadre.logging import get_logger
++
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="seed")
++
++        logger = get_logger("keys.cli")
++        records: list[logging.LogRecord] = []
++
++        class _Capture(logging.Handler):
++            def emit(self, record: logging.LogRecord) -> None:
++                records.append(record)
++
++        handler = _Capture(level=logging.INFO)
++        logger.addHandler(handler)
++        try:
++            _clear_buffers()
++            records.clear()
++            result = runner.invoke(
++                app,
++                [
++                    "update-customer",
++                    cid,
++                    "--email",
++                    "secret@example.com",
++                    "--add-note",
++                    "sensitive-operator-note",
++                ],
++            )
++        finally:
++            logger.removeHandler(handler)
++
++        assert result.exit_code == 0
++        updated = [r for r in records if "Updated customer" in r.getMessage()]
++        assert updated, "Expected an 'Updated customer' INFO record"
++        joined = "\n".join(r.getMessage() for r in updated)
++        assert "Updated customer | id=" + cid in joined
++        assert "fields=email,notes" in joined
++        assert "secret@example.com" not in joined
++        assert "sensitive-operator-note" not in joined
++        assert "Helena Ribeiro" not in joined
++
++    def test_audit_details_json_no_pii(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid = _seed_customer(env, notes="seed")
++
++        result = runner.invoke(
++            app,
++            [
++                "update-customer",
++                cid,
++                "--email",
++                "secret-target@example.com",
++                "--add-note",
++                "sensitive-note-body",
++            ],
++        )
++        assert result.exit_code == 0
++
++        audit = _latest_update_audit(env)
++        assert audit is not None
++        serialized = str(audit)
++        assert "secret-target@example.com" not in serialized
++        assert "sensitive-note-body" not in serialized
++        parsed = json.loads(str(audit["details_json"]))
++        assert parsed == {"fields": ["email", "notes"]}
++
++
++# ---------------------------------------------------------------------------
++# AC9 — same-value email still audits.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerSameEmail:
++    def test_same_email_still_audits(self, env: dict[str, str]) -> None:
++        cid = _seed_customer(env, email="a@b.com", notes="seed")
++        before_count = _count_update_audits(env)
++
++        _clear_buffers()
++        result = runner.invoke(app, ["update-customer", cid, "--email", "a@b.com"])
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        assert f"Updated: {cid} (Helena Ribeiro) \u2014 email changed" in stdout
++
++        assert _count_update_audits(env) == before_count + 1
++        audit = _latest_update_audit(env)
++        assert audit is not None
++        assert audit["details_json"] == '{"fields": ["email"]}'
++
++
++# ---------------------------------------------------------------------------
++# Regression: list-customers row count unchanged after an update.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerListContract:
++    def test_counts_unchanged(
++        self,
++        env: dict[str, str],
++        freeze_today: Callable[[date], None],
++    ) -> None:
++        freeze_today(date(2026, 4, 20))
++        cid_a = _seed_customer(
++            env, name="Helena Ribeiro", email="a@clinica.com", cpf="123.456.789-09"
++        )
++        _seed_customer(
++            env, name="Marcos Santos", email="b@padaria.com", cpf="111.444.777-35"
++        )
++        before = _count(env, "customer")
++        key_count = _count(env, "api_key")
++
++        r = runner.invoke(
++            app,
++            [
++                "update-customer",
++                cid_a,
++                "--email",
++                "new-a@clinica.com",
++                "--add-note",
++                "bump",
++            ],
++        )
++        assert r.exit_code == 0
++
++        assert _count(env, "customer") == before
++        assert _count(env, "api_key") == key_count
++
++
++# ---------------------------------------------------------------------------
++# Regression: audit blocklist still intercepts forbidden top-level keys.
++# ---------------------------------------------------------------------------
++
++
++class TestUpdateCustomerAuditBlocklist:
++    def test_blocklist_intercepts_forbidden_details(self, env: dict[str, str]) -> None:
++        from comadre.keys.audit import log_event
++        from comadre.keys.db import _apply_migrations, get_connection
++
++        conn = get_connection(env["db_path"])
++        try:
++            _apply_migrations(conn)
++            with pytest.raises(ValueError, match="forbidden"), conn:
++                log_event(
++                    conn,
++                    actor="cli:tester",
++                    action="update_customer",
++                    target_type="customer",
++                    target_id="cust_whatever",
++                    details={"email": "secret@example.com"},
++                )
++        finally:
++            conn.close()

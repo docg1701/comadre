@@ -38,6 +38,22 @@ from comadre.keys.models import (
 )
 
 ShowTargetKind = Literal["customer", "key_single", "key_ambiguous", "not_found"]
+UpdatedField = Literal["email", "notes"]
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateCustomerResult:
+    """Return payload from ``update_customer``.
+
+    Carries the refreshed ``CustomerDetailRow`` so the CLI can feed it to
+    the ConfirmationLine renderer without a follow-up ``get_customer_detail``
+    round-trip. ``updated_fields`` is a sorted, de-duplicated tuple of the
+    columns the caller actually touched — used for both the audit payload
+    and the human suffix.
+    """
+
+    customer: CustomerDetailRow
+    updated_fields: tuple[UpdatedField, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +244,103 @@ def get_customer(
             row["registered_at"].replace("Z", "+00:00")
         ),
         deleted_at=None,
+    )
+
+
+def update_customer(
+    conn: sqlite3.Connection,
+    customer_id: str,
+    *,
+    new_email: str | None,
+    add_note: str | None,
+    actor: str,
+    today: date,
+) -> UpdateCustomerResult | None:
+    """Apply the email/notes mutation inside a single transaction.
+
+    Returns ``None`` when the customer is missing or tombstoned. Otherwise
+    commits the mutation + an ``update_customer`` audit row and returns the
+    refreshed detail row.
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE and the audit write either both commit or
+    both roll back (same contract as ``insert_customer`` / ``insert_api_key``).
+
+    ``today`` is the operator-TZ date used to stamp the appended note
+    (``[YYYY-MM-DD] text``). The caller resolves it via the existing
+    ``cli._clock.resolve_today_in_tz`` seam so tests freeze the clock with
+    ``monkeypatch`` instead of the helper touching ``date.today()`` directly.
+    """
+    from comadre.keys.audit import log_event
+
+    updated: list[UpdatedField] = []
+    with conn:
+        row = conn.execute(
+            "SELECT notes FROM customer WHERE id = ? AND deleted_at IS NULL",
+            (customer_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        existing_notes = row["notes"] or ""
+
+        # Build the SET clause dynamically so only the touched columns are
+        # rewritten. The predicate fragments are literal column-name strings
+        # (``"email = ?"`` / ``"notes = ?"``) — operator input only lands in
+        # the positional ``?`` bindings, never in SQL text.
+        set_parts: list[str] = []
+        params: list[object] = []
+        if new_email is not None:
+            set_parts.append("email = ?")
+            params.append(new_email)
+            updated.append("email")
+        if add_note is not None:
+            stamped = f"[{today.isoformat()}] {add_note}"
+            new_notes = (
+                stamped if not existing_notes else f"{existing_notes}\n{stamped}"
+            )
+            set_parts.append("notes = ?")
+            params.append(new_notes)
+            updated.append("notes")
+
+        if not set_parts:
+            # Defensive: the CLI layer rejects neither-flag before we get
+            # here. If a future caller skips that check, we still don't
+            # want to write a no-op audit row.
+            return None
+
+        params.append(customer_id)
+        # Defense-in-depth: the SELECT above already filtered tombstones,
+        # but re-applying ``deleted_at IS NULL`` to the UPDATE prevents a
+        # mutation slipping through if a future caller restructures the
+        # SELECT-then-UPDATE pair.
+        sql = (
+            f"UPDATE customer SET {', '.join(set_parts)} "
+            "WHERE id = ? AND deleted_at IS NULL"
+        )
+        conn.execute(sql, params)
+
+        fields_sorted = sorted(set(updated))
+        log_event(
+            conn,
+            actor=actor,
+            action="update_customer",
+            target_type="customer",
+            target_id=customer_id,
+            details={"fields": fields_sorted},
+        )
+
+    refreshed = get_customer_detail(conn, customer_id)
+    if refreshed is None:
+        # Shouldn't happen — the row existed inside the transaction and
+        # nothing else in this process is racing it. Raise so the CLI
+        # surfaces an exit-5 instead of misreading it as "tombstone".
+        raise RuntimeError(
+            f"update_customer: row vanished after commit for {customer_id!r}"
+        )
+    return UpdateCustomerResult(
+        customer=refreshed,
+        updated_fields=tuple(sorted(set(updated))),
     )
 
 

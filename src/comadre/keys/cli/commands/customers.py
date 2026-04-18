@@ -18,7 +18,7 @@ from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import typer
-from pydantic import ValidationError
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from comadre.config import get_settings
 from comadre.exceptions import InvalidTaxIdError
@@ -44,6 +44,7 @@ from comadre.keys.crypto import (
     validate_cpf,
 )
 from comadre.keys.db import (
+    UpdateCustomerResult,
     _apply_migrations,
     count_tombstones,
     generate_customer_id,
@@ -53,6 +54,7 @@ from comadre.keys.db import (
     list_audit_events,
     list_customers,
     resolve_show_target,
+    update_customer,
 )
 from comadre.keys.models import (
     AuditEventRow,
@@ -584,3 +586,217 @@ def show_cmd(
 
     if events is not None:
         render_audit_tail(events)
+
+
+# ---------------------------------------------------------------------------
+# `update-customer` — email + append-note mutation (Story 1.5).
+# ---------------------------------------------------------------------------
+
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
+
+_UPDATE_CUSTOMER_NEITHER_HINT = (
+    'Provide --email NEW_EMAIL or --add-note "text" (or both).'
+)
+_UPDATE_CUSTOMER_NOTE_EMPTY_HINT = (
+    "Provide note text with content. Whitespace-only notes are rejected."
+)
+_UPDATE_CUSTOMER_NOTE_NUL_HINT = "Note text must not contain NUL bytes."
+_UPDATE_CUSTOMER_NOTE_NEWLINE_HINT = (
+    "Note text must be a single line. Newlines would forge dated entries in "
+    "the stored notes column."
+)
+_UPDATE_CUSTOMER_NOT_FOUND_HINT = (
+    "Run 'comadre-keys list-customers' to see registered records."
+)
+
+
+def _update_confirmation_suffix(updated_fields: tuple[str, ...]) -> str:
+    """Map ``updated_fields`` to the ConfirmationLine human suffix.
+
+    Grammar is fixed: ``email changed`` / ``note added`` joined with
+    ``, `` (comma-space) when both fire. Story 1.5 AC1/AC2/AC3.
+    """
+    parts: list[str] = []
+    if "email" in updated_fields:
+        parts.append("email changed")
+    if "notes" in updated_fields:
+        parts.append("note added")
+    return ", ".join(parts)
+
+
+@app.command("update-customer")
+def update_customer_cmd(
+    customer_id: str = typer.Argument(
+        ...,
+        metavar="CUSTOMER_ID",
+        help=(
+            "Customer ID from create-customer / list-customers. "
+            "Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
+        ),
+    ),
+    email: str | None = typer.Option(
+        None,
+        "--email",
+        help=(
+            "Replace the stored email address. "
+            'Example: --email "helena@novaclinica.com".'
+        ),
+    ),
+    add_note: str | None = typer.Option(
+        None,
+        "--add-note",
+        help=(
+            "Append a dated note to the customer record. "
+            'Example: --add-note "paga tarde - lembrar dia 3".'
+        ),
+    ),
+) -> None:
+    """Update a customer's email and/or append a dated operator note.
+
+    Example: comadre-keys update-customer cust_01j8xr3e4c5m7kn9p2qt8vwy
+             --add-note "paga tarde - lembrar dia 3"
+    """
+    # 1. Neither-flag check — runs before any DB / settings work so the
+    # cheapest usage mistake never opens a connection.
+    if email is None and add_note is None:
+        render_error(
+            "Usage error: at least one of --email or --add-note is required",
+            _UPDATE_CUSTOMER_NEITHER_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Email shape check (if provided). Pre-strip before pydantic so
+    # operators who copy-paste with trailing whitespace get the same
+    # normalized storage as other commands.
+    if email is not None:
+        stripped_email = email.strip()
+        try:
+            email = _EMAIL_ADAPTER.validate_python(stripped_email)
+        except ValidationError as exc:
+            render_error("Usage error: invalid email", first_error_msg(exc))
+            raise typer.Exit(code=2) from None
+
+    # 3. Note shape check (if provided). Strip outer whitespace, reject
+    # empty-after-strip, and reject NUL bytes (Story 1.1 deferred UX edge
+    # picked up here — SQLite accepts NULs but they break later greps).
+    if add_note is not None:
+        if "\x00" in add_note:
+            render_error(
+                "Usage error: --add-note contains illegal characters",
+                _UPDATE_CUSTOMER_NOTE_NUL_HINT,
+            )
+            raise typer.Exit(code=2)
+        # Reject embedded newlines. The stored format is
+        # ``[YYYY-MM-DD] text`` joined with ``\n`` separators, so any LF/CR
+        # inside operator-supplied text would be indistinguishable from a
+        # real stamped entry on later reads — a forgery vector.
+        if "\n" in add_note or "\r" in add_note:
+            render_error(
+                "Usage error: --add-note must be a single line",
+                _UPDATE_CUSTOMER_NOTE_NEWLINE_HINT,
+            )
+            raise typer.Exit(code=2)
+        stripped_note = add_note.strip()
+        if not stripped_note:
+            render_error(
+                "Usage error: --add-note must be non-empty",
+                _UPDATE_CUSTOMER_NOTE_EMPTY_HINT,
+            )
+            raise typer.Exit(code=2)
+        add_note = stripped_note
+
+    # 4. Settings load — same exit-6 mapping as the sibling commands. The
+    # encryption key isn't used here (no tax-ID operation), but we still
+    # validate its presence so the operator gets a consistent configuration
+    # error surface across all `comadre-keys` verbs.
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _missing_key_hint,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _missing_key_hint,
+        )
+        raise typer.Exit(code=6)
+
+    try:
+        billing_tz = ZoneInfo(settings.billing_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        render_error(
+            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
+            (
+                "Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
+                f"Got: {settings.billing_timezone}"
+            ),
+        )
+        raise typer.Exit(code=6) from None
+
+    today = _resolve_today_in_tz(billing_tz)
+
+    # 5. Open DB + migrations + mutation. Close in finally + suppress.
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    result: UpdateCustomerResult | None
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        try:
+            result = update_customer(
+                conn,
+                customer_id,
+                new_email=email,
+                add_note=add_note,
+                actor=get_cli_actor(),
+                today=today,
+            )
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+        except RuntimeError as exc:
+            # Defensive: ``update_customer`` raises ``RuntimeError`` when the
+            # post-commit re-read returns ``None`` (a concurrent tombstone
+            # between commit and re-read — "shouldn't happen" in the single-
+            # writer CLI). Map to exit 5 so the operator sees the same
+            # database-failure surface instead of an unhandled traceback.
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    if result is None:
+        render_error(
+            f"Customer not found: {customer_id}",
+            _UPDATE_CUSTOMER_NOT_FOUND_HINT,
+        )
+        raise typer.Exit(code=3)
+
+    _logger.info(
+        "Updated customer | id=%s | fields=%s",
+        customer_id,
+        ",".join(result.updated_fields),
+    )
+    suffix = _update_confirmation_suffix(result.updated_fields)
+    render_confirmation(
+        f"Updated: {result.customer.id} ({result.customer.name}) \u2014 {suffix}"
+    )
