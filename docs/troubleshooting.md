@@ -216,6 +216,25 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 3. For "Database error" messages, verify the registry path is writable and the volume is mounted: `docker compose exec tts-service ls -la /var/lib/comadre/registry.db`.
 4. The CLI exit codes map to: 0 success, 2 usage error, 3 not found, 5 database error, 6 configuration error (see `comadre-keys --help`).
 
+### `comadre-keys cache-status` reports "unavailable"
+
+**Symptom:** `comadre-keys cache-status` prints the propagation bound message but `Cache health: unavailable (no running API instance).` The same breadcrumb appears in `show <key-prefix> --audit-tail N` output as `Last-24h stats: unavailable.`
+
+**Cause:** The CLI globs per-replica counter snapshots at `{KEY_REGISTRY_DB_PATH}.counters.*.json` (each replica writes `{db}.counters.{hostname}.json` every 15 s). "Unavailable" means no replica's file matched — the glob came back empty, or every candidate failed to parse. A stale snapshot is NOT unavailable; it is surfaced with an age label like `snapshot written 2m ago`.
+
+**Resolution:**
+
+1. Confirm the API process is actually running: `docker compose ps tts-service` (status should be `running`, not `restarting`). A 200 response from `GET /health` is also a good liveness probe.
+2. Check that at least one replica has written a snapshot:
+
+   ```bash
+   docker compose exec tts-service ls -la /var/lib/comadre/registry.db.counters.*.json
+   ```
+
+   If the glob comes up empty, the service may still be in the startup warm-up phase; wait ~20 s and retry. If it stays empty, check the service logs for `Counter snapshot write` warnings.
+3. If the CLI runs on the host (not inside the container) and the container mounts a named Docker volume, the host path `./data/keys/` is unrelated to the in-container path `/var/lib/comadre/`. Set `KEY_REGISTRY_DB_PATH` in your host shell to the mounted location, or run the CLI inside the container (`docker compose exec tts-service ...`).
+4. The "unavailable" state is never an error — `comadre-keys cache-status` exits 0 by design. If you need a non-zero signal in scripts, check `.snapshot_available` from `--format json`.
+
 ### UFW blocking access
 
 **Symptom:** Cannot reach the VPS on ports 80/443 but SSH works.

@@ -21,6 +21,7 @@ import typer
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from comadre.config import get_settings
+from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
@@ -35,6 +36,7 @@ from comadre.keys.cli.output import (
     render_error,
     render_json,
     render_key_detail,
+    render_last_24h_stats,
     render_show_json,
 )
 from comadre.keys.crypto import (
@@ -62,6 +64,7 @@ from comadre.keys.models import (
     CustomerListRow,
     CustomerRecord,
     KeyDetailRow,
+    Last24hStats,
     TaxIdKind,
 )
 from comadre.logging import get_logger
@@ -384,6 +387,57 @@ def _key_detail_to_json(row: KeyDetailRow) -> dict[str, object]:
     }
 
 
+def _load_last_24h_stats(
+    *,
+    key_id: str,
+    db_path: str,
+) -> Last24hStats | None:
+    """Aggregate per-replica counters snapshots for ``key_id``, or return ``None``.
+
+    ``None`` means no replica's snapshot contains this ``key_id`` — either
+    because the API isn't running on any replica, or because the key has
+    not served a request since the last process restart on any replica
+    that is reporting. Every non-fatal parse surprise degrades to
+    "replica not contributing" with a WARN log; ``show`` never crashes
+    on a weird snapshot.
+
+    Data is surfaced regardless of snapshot age. The renderer labels the
+    freshness (``snapshot_age_seconds``) so the operator can judge; we
+    don't hide data behind an arbitrary 60-second cutoff — the "last-24h"
+    name already implies the label is about aggregation, not freshness.
+    """
+    snapshots = read_all_snapshots(db_path)
+    aggregated = aggregate_key_stats(snapshots, key_id)
+    if aggregated is None:
+        return None
+    return Last24hStats(
+        requests_total=aggregated.requests_total,
+        auth_success=aggregated.auth_success,
+        rate_limit_429=aggregated.rate_limit_429,
+        peak_rpm=aggregated.peak_rpm,
+        avg_rpm_last_60s=aggregated.avg_rpm_last_60s,
+        last_activity_at=aggregated.last_activity_at,
+        snapshot_age_seconds=aggregated.snapshot_age_seconds,
+        process_uptime_seconds=aggregated.process_uptime_seconds,
+        replicas=aggregated.replicas,
+    )
+
+
+def _last_24h_stats_to_json(stats: Last24hStats) -> dict[str, object]:
+    """Serialize ``Last24hStats`` to the ``show --format json`` ``stats`` shape."""
+    return {
+        "requests_total": stats.requests_total,
+        "auth_success": stats.auth_success,
+        "rate_limit_429": stats.rate_limit_429,
+        "peak_rpm": stats.peak_rpm,
+        "avg_rpm_last_60s": stats.avg_rpm_last_60s,
+        "last_activity_at": stats.last_activity_at,
+        "snapshot_age_seconds": stats.snapshot_age_seconds,
+        "process_uptime_seconds": stats.process_uptime_seconds,
+        "replicas": stats.replicas,
+    }
+
+
 def _audit_event_to_json(event: AuditEventRow) -> dict[str, object]:
     """Serialize an ``AuditEventRow`` to the AC8 event shape (fixed key order).
 
@@ -540,6 +594,19 @@ def show_cmd(
         with contextlib.suppress(sqlite3.Error):
             conn.close()
 
+    # Story 2.3 — per-key last-24h stats. Key-target-only (AC14); the
+    # customer-target aggregate is future work. Stats are only loaded when
+    # ``--audit-tail`` is requested because that is the forensic surface —
+    # a bare ``show`` stays snappy and untouched by file I/O on the
+    # snapshot.
+    stats: Last24hStats | None = None
+    if audit_tail is not None and resolved.kind == "key_single":
+        key_row = cast(KeyDetailRow, resolved.value)
+        stats = _load_last_24h_stats(
+            key_id=key_row.id,
+            db_path=str(settings.key_registry_db_path),
+        )
+
     # Redact pasted-plaintext targets before logging — the resolver accepts
     # `cmdr_live_<secret>` as a convenience for operators who paste the full
     # key, but the secret must never reach the structured log. Truncating to
@@ -576,6 +643,8 @@ def show_cmd(
                 target_type="api_key",
                 target=_key_detail_to_json(cast(KeyDetailRow, resolved.value)),
                 events=events_payload,
+                stats=_last_24h_stats_to_json(stats) if stats is not None else None,
+                include_stats=audit_tail is not None,
             )
         return
 
@@ -583,6 +652,12 @@ def show_cmd(
         render_customer_detail(cast(CustomerDetailRow, resolved.value))
     else:
         render_key_detail(cast(KeyDetailRow, resolved.value))
+        # Story 2.3 — last-24h stats between DetailPanel and AuditTail.
+        # Rendered only when ``--audit-tail`` was requested (the operator
+        # is already in "forensic mode"); a bare ``show <key>`` stays
+        # exactly as Story 1.4 shipped it.
+        if audit_tail is not None:
+            render_last_24h_stats(stats)
 
     if events is not None:
         render_audit_tail(events)

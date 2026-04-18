@@ -978,6 +978,250 @@ class TestPerKeyRateLimit:
             )
 
 
+class TestRequestCounters:
+    """Story 2.3 — per-key counters on the /v1/audio/speech hot path.
+
+    The ``app`` fixture in ``conftest`` does not attach
+    ``request_counters`` (production lifespan does). These tests attach a
+    fresh ``RequestCounters`` per-case so we exercise the ``keys/auth.py``
+    and ``rate_limit.py`` integration points end-to-end.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _freeze_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from comadre.keys import auth as auth_module
+
+        monkeypatch.setattr(
+            auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
+        )
+
+    @pytest.fixture()
+    def _counters(self, app: Any) -> Any:
+        from comadre.counters import RequestCounters
+
+        rc = RequestCounters(snapshot_path=None)
+        app.state.request_counters = rc
+        return rc
+
+    async def test_happy_path_increments_requests_and_auth(
+        self, app: Any, client: AsyncClient, _counters: Any
+    ) -> None:
+        plaintext, kid, _cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=60
+        )
+        headers = {"Authorization": f"Bearer {plaintext}"}
+        r = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+        assert r.status_code == 200
+        bucket = _counters.per_key[kid]
+        assert bucket.requests_total == 1
+        assert bucket.auth_success == 1
+        assert bucket.rate_limit_429 == 0
+
+    async def test_429_increments_rate_limit_counter(
+        self, app: Any, client: AsyncClient, _counters: Any
+    ) -> None:
+        plaintext, kid, _cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=2
+        )
+        headers = {"Authorization": f"Bearer {plaintext}"}
+        for _ in range(2):
+            r = await client.post(
+                "/v1/audio/speech", json=_SPEECH_BODY, headers=headers
+            )
+            assert r.status_code == 200
+        trip = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+        assert trip.status_code == 429
+        bucket = _counters.per_key[kid]
+        # AC2 — 3 requests total (auth fired thrice), 3 auth_success,
+        # 1 rate_limit_429.
+        assert bucket.requests_total == 3
+        assert bucket.auth_success == 3
+        assert bucket.rate_limit_429 == 1
+
+    async def test_two_keys_land_in_separate_buckets(
+        self, app: Any, client: AsyncClient, _counters: Any
+    ) -> None:
+        plaintext_a, kid_a, _cid_a = seed_customer_and_key(
+            app.state.registry_db,
+            customer_name="Alice",
+            customer_email="alice@example.com",
+            rate_limit_rpm=10,
+        )
+        plaintext_b, kid_b, _cid_b = seed_customer_and_key(
+            app.state.registry_db,
+            customer_name="Bob",
+            customer_email="bob@example.com",
+            rate_limit_rpm=10,
+        )
+        await client.post(
+            "/v1/audio/speech",
+            json=_SPEECH_BODY,
+            headers={"Authorization": f"Bearer {plaintext_a}"},
+        )
+        for _ in range(2):
+            await client.post(
+                "/v1/audio/speech",
+                json=_SPEECH_BODY,
+                headers={"Authorization": f"Bearer {plaintext_b}"},
+            )
+        assert _counters.per_key[kid_a].requests_total == 1
+        assert _counters.per_key[kid_b].requests_total == 2
+        assert kid_a != kid_b
+
+    async def test_429_log_line_carries_key_id(
+        self, app: Any, client: AsyncClient, _counters: Any
+    ) -> None:
+        """AC6 — the structured 429 log must include ``key_id`` + ``customer_id``."""
+        import logging
+
+        plaintext, kid, cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=1
+        )
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        rate_limit_logger = logging.getLogger("rate_limit")
+        handler = _Capture(level=logging.DEBUG)
+        rate_limit_logger.addHandler(handler)
+        try:
+            headers = {"Authorization": f"Bearer {plaintext}"}
+            await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+            trip = await client.post(
+                "/v1/audio/speech", json=_SPEECH_BODY, headers=headers
+            )
+            assert trip.status_code == 429
+        finally:
+            rate_limit_logger.removeHandler(handler)
+
+        # Find the 429 log line.
+        rendered = [rec.getMessage() for rec in records]
+        hit = next((msg for msg in rendered if "Rate-limit 429" in msg), None)
+        assert hit is not None, f"no 429 log captured; got {rendered!r}"
+        assert f"key_id={kid}" in hit
+        assert f"customer_id={cid}" in hit
+        # AC6 PII guards — no bearer plaintext, no hash, no customer name.
+        assert plaintext not in hit
+        assert "cmdr_live_" not in hit
+
+
+class TestCountersSnapshotLifespan:
+    """Story 2.3 — lifespan provisions the snapshot writer.
+
+    Drives lifespan directly via ``__aenter__`` / ``__aexit__`` instead of
+    an ``AsyncClient`` round-trip, mirroring the ``_run_lifespan`` pattern
+    in ``tests/test_main_lifespan.py``. That path both (a) runs the full
+    startup + shutdown sequence and (b) keeps the test hermetic to the
+    HTTP transport layer.
+    """
+
+    @pytest.fixture()
+    def _registry_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+        from cryptography.fernet import Fernet
+
+        from comadre.config import get_settings
+
+        db_path = tmp_path / "registry.db"
+        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
+        monkeypatch.setenv(
+            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
+        )
+        monkeypatch.setenv("QWEN3_ENABLED", "false")
+        monkeypatch.setenv("VOICES_DIR", str(tmp_path))
+        monkeypatch.setenv("NOISE_DIR", str(tmp_path))
+        get_settings.cache_clear()
+        return db_path
+
+    @pytest.fixture()
+    def _stub_engines(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import comadre.main as main_module
+
+        class _StubKokoro:
+            def load_model(self, **_: object) -> None: ...
+            def warm_up(self) -> None: ...
+
+        class _StubQwen:
+            def load_model(self, **_: object) -> None: ...
+            def warm_up(self, **_: object) -> None: ...
+
+        class _StubRouter:
+            def __init__(self, **_: object) -> None: ...
+            def available_voices(self) -> list[str]:
+                return ["kokoro/pm_santa"]
+
+            def _parse_voice(self, _voice: str) -> None:
+                return None
+
+        monkeypatch.setattr(main_module, "KokoroEngine", _StubKokoro)
+        monkeypatch.setattr(main_module, "QwenEngine", _StubQwen)
+        monkeypatch.setattr(main_module, "EngineRouter", _StubRouter)
+        monkeypatch.setattr(main_module, "ensure_kokoro_models", lambda **_: None)
+        monkeypatch.setattr(main_module, "ensure_qwen3_models", lambda **_: None)
+
+    async def test_lifespan_creates_snapshot_and_mode_0600(
+        self,
+        _stub_engines: None,
+        _registry_env: Path,
+    ) -> None:
+        """AC7 + AC16 — snapshot exists, valid JSON, mode 0600 after shutdown.
+
+        The writer loop starts with a 15s sleep (the production interval).
+        Rather than race that sleep, we let ``stop_snapshot_writer`` fire
+        its best-effort final snapshot during lifespan ``__aexit__`` — the
+        same code path that produces the last-before-restart snapshot in
+        production.
+        """
+        import stat as stat_mod
+
+        from fastapi import FastAPI
+
+        from comadre.counters import counters_snapshot_path, default_replica_id
+        from comadre.main import lifespan
+
+        snapshot_path = counters_snapshot_path(
+            _registry_env, replica_id=default_replica_id()
+        )
+        app = FastAPI()
+        cm = lifespan(app)
+        await cm.__aenter__()
+        assert not snapshot_path.exists()
+        # Register some traffic so the final snapshot has content worth
+        # asserting on.
+        app.state.request_counters.incr_request("key_probe")
+        await cm.__aexit__(None, None, None)
+
+        # Post-shutdown: final snapshot exists with mode 0600 and valid JSON.
+        assert snapshot_path.exists()
+        mode = stat_mod.S_IMODE(snapshot_path.stat().st_mode)
+        assert mode == 0o600
+        data = __import__("json").loads(snapshot_path.read_text(encoding="utf-8"))
+        assert data["schema_version"] == 1
+        assert "auth_cache" in data
+        assert "per_key" in data
+        assert data["per_key"]["key_probe"]["requests_total"] == 1
+
+    async def test_lifespan_shutdown_cancels_task_cleanly(
+        self,
+        _stub_engines: None,
+        _registry_env: Path,
+    ) -> None:
+        """AC16 — shutdown cancels the task; no CancelledError leak."""
+        from fastapi import FastAPI
+
+        from comadre.main import lifespan
+
+        app = FastAPI()
+        cm = lifespan(app)
+        await cm.__aenter__()
+        task = app.state.request_counters._task
+        assert task is not None
+        await cm.__aexit__(None, None, None)
+        assert task.done()
+        assert task.cancelled() or task.exception() is None
+
+
 class TestMonetizationHealthEndpoint:
     """AC12 + AC13: /health with registry-mode auth."""
 

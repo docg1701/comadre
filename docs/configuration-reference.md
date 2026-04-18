@@ -29,6 +29,17 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `QWEN3_TOKENIZER_URL` | *(empty)* | URL to auto-download the Qwen3 tokenizer GGUF. Empty string skips download. | `https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf` |
 | `DOMAIN` | `localhost` | Domain name used by Caddy. A real domain triggers Let's Encrypt; `localhost` uses a self-signed cert from Caddy's internal CA. Compose-level variable, not consumed by the Python process. | `tts.example.com` |
 
+## Auxiliary files
+
+The key registry lives at `KEY_REGISTRY_DB_PATH`, and two sibling files share the same parent directory and mode `0600`:
+
+| Path | Purpose |
+| --- | --- |
+| `{KEY_REGISTRY_DB_PATH}.invalidate` | Cache-invalidation sentinel. The `comadre-keys` CLI touches this file on every `api_key` mutation; the API stats it on each cache read and flushes the `AuthCache` the moment mtime advances. See [rate-limiting.md](rate-limiting.md#operator-surface). |
+| `{KEY_REGISTRY_DB_PATH}.counters.{replica_id}.json` | Per-replica request counters snapshot written every 15 s by the API process (one file per replica, `{replica_id}` = `socket.gethostname()`). The `comadre-keys cache-status` and `show <key-prefix> --audit-tail N` commands glob every matching file and aggregate. See [rate-limiting.md](rate-limiting.md#counters). |
+
+Neither file is a configuration surface — the paths are derived from `KEY_REGISTRY_DB_PATH` and cannot be overridden. The CLI silently degrades when either file is absent (e.g. API not running yet).
+
 ## Rate limiting is not env-configured
 
 Per-key rate limits are set at key-issuance time via `comadre-keys issue-key --rpm <n>` and changed via `comadre-keys update-key --rpm <n>` (both capped at 1..10 000). There is no environment variable that sets a global RPM floor, ceiling, or per-IP limit — the registry row is authoritative. See [rate-limiting.md](rate-limiting.md) and [monetization.md](monetization.md).

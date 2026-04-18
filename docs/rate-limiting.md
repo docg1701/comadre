@@ -117,10 +117,79 @@ Buckets live only in process memory. On container restart — whether via `docke
 
 At Comadre's throughput this trade is fine. Customers rarely notice window resets, and operators already treat restart as a known-safe operation.
 
+## Counters
+
+Comadre exposes per-key usage counters that reset at each replica restart. Reads and updates are pure in-memory dict ops (no I/O on the request path) — the cost budget is the same ≤2 ms p99 the rate-limit dependency aims at.
+
+| Field | Meaning |
+| --- | --- |
+| `requests_total` | Requests that reached the counter layer (every successful auth is counted; a later 429 does not bump this again). |
+| `auth_success` | Successful authentications. Equals `requests_total` in the default config (denials raise before the counter layer). |
+| `rate_limit_429` | Denials from the per-key bucket. Operators use the `rate_limit_429 / requests_total` ratio to spot "customer asking for a tier bump" vs "customer misbehaving". |
+| `peak_rpm` | Max observed moving-window count since the replica started. A burst-then-idle key will still show its historical high-water mark. |
+| `avg_rpm_last_60s` | Current moving-window count — same window the rate-limit enforces against. |
+| `last_activity_at` | ISO 8601 UTC timestamp of the most recent `requests_total` bump. `null` before the key has served any request since start. |
+
+Each replica writes its own JSON snapshot file at `{KEY_REGISTRY_DB_PATH}.counters.{replica_id}.json` every 15 seconds, where `{replica_id}` is `socket.gethostname()` (the container ID under Docker — stable per replica, unique across replicas sharing the same bind-mounted volume). The write is atomic: the JSON is built on the asyncio event loop, serialized, and handed to a worker thread that writes a `tempfile.mkstemp` sibling and then `os.replace`s it into place with mode `0600`. Concurrent writers (two replicas, or the shutdown cancel handler racing a mid-sleep writer) each get a unique tempfile, so no torn output is ever observable.
+
+The snapshot is the CLI's window into the in-memory state — there is no internal HTTP endpoint. The same design rationale applies as the `.invalidate` sentinel: file-based IPC keeps the API's auth hot path small and gives the out-of-process CLI a zero-coupling read surface.
+
+### Cache observability
+
+`comadre-keys cache-status` globs every per-replica snapshot (`{KEY_REGISTRY_DB_PATH}.counters.*.json`) and aggregates their telemetry:
+
+```text
+Auth cache propagation bound: 60 seconds. Key-state changes become visible
+to the API within this window. This command does not force invalidation;
+to empty the cache faster, restart the affected replica(s).
+
+Cache health (from snapshot written 3s ago):
+  Replicas:  2
+  Entries:   24 (maxsize 4096/replica)
+  Hit rate:  98.5% (3684 hits / 3741 lookups)
+  Uptime:    1h 01m (min across replicas)
+```
+
+The header's age label is the **freshest** replica's age — that is the timeliness of the aggregate, not an average. `Uptime` is the **minimum** across replicas — the most conservative window the data has been accumulating. Data is shown regardless of age; a missing snapshot from one replica simply drops it from the aggregate with a WARN log and the aggregate reflects the remaining replicas.
+
+`--format json` always emits `ttl_seconds` + the verbatim propagation message, plus `replicas`, `entries`, `hits`, `misses`, `hit_rate`, `snapshot_age_seconds`, `process_uptime_seconds`, and `maxsize_per_replica` whenever at least one replica is reporting. When no replica is reporting (`replicas == 0`), the payload has `snapshot_available: false` and omits the telemetry fields; the command still exits `0` because "API is down" is a valid operational state, not a CLI error.
+
+### Counter snapshots across replicas
+
+Counters are aggregated across replicas by design, not approximated. Each replica writes `{db}.counters.{hostname}.json`; the CLI reads every matching file and combines them:
+
+| Field | Aggregation |
+| --- | --- |
+| `requests_total`, `auth_success`, `rate_limit_429`, `avg_rpm_last_60s` | Sum across replicas (total cluster traffic). |
+| `peak_rpm` | Max across replicas (highest burst observed anywhere). |
+| `last_activity_at` | Max (most recent activity anywhere in the cluster). |
+| `snapshot_age_seconds` | Min (age of the freshest replica reporting). |
+| `process_uptime_seconds` | Min (the most conservative window the aggregate has been accumulating). |
+| `entries` (cache) | Sum — each replica holds its own LRU, so this is total working-set across the cluster. |
+| `hits`, `misses` | Sum — cluster-wide cache traffic. |
+| `maxsize_per_replica` | Max observed (assumed uniform; reported so operators can spot misconfiguration). |
+
+If a replica's process dies, its snapshot stops updating. Its contribution stays in the aggregate until the stale file is cleaned up (or the operator rolls the deployment — `compose.yaml` redeploys wipe old counters). This is intentional: "last-writer-wins on a single file" would silently hide N-1 replicas' traffic, which is precisely the approximation this design rejects.
+
+### `show --audit-tail` integration
+
+`comadre-keys show <key-prefix> --audit-tail N` appends a Last-24h stats section between the DetailPanel and the AuditTail when at least one replica's snapshot carries the resolved `key_id`:
+
+```text
+Last-24h stats (from snapshot written 3s ago, uptime 1h 01m, aggregated across 2 replicas):
+  Requests total:     150
+  Auth success:       150
+  Rate-limit 429:     3
+  Peak RPM:           35
+  Avg RPM (last 60s): 8
+  Last activity:      2s ago
+```
+
+The `aggregated across N replicas` note is present when `N > 1`; single-replica deployments omit it and read naturally. The section is key-target-only — `show <cust-id>` omits it entirely because the counter is per `key_id`. When no replica reports the specific `key_id`, the section degrades to a single "unavailable" breadcrumb explaining that counters reset on restart.
+
 ## Future direction
 
-- **Shared storage.** Moving bucket state to Redis or a dedicated SQLite bucket table would make per-key caps cluster-wide-strict at the cost of one more dependency. Candidate for a future story; not shipped today.
-- **Observability counters.** A future story adds per-key `requests_total` / `rate_limit_429` / `peak_rpm` counters surfaced via `comadre-keys` for billing and capacity planning.
+- **Shared storage for buckets.** Moving bucket state to Redis or a dedicated SQLite bucket table would make per-key caps cluster-wide-strict at the cost of one more dependency. Candidate for a future story; not shipped today.
 
 ## See also
 

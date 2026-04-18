@@ -19,6 +19,7 @@ import hmac
 import re
 import sqlite3
 from datetime import date
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Header, Request
@@ -37,6 +38,9 @@ from comadre.keys.db import lookup_key_auth
 from comadre.keys.models import ApiKeyRecord, AuthPayload
 from comadre.keys.tokens import API_KEY_PREFIX, hash_api_key
 from comadre.logging import get_logger
+
+if TYPE_CHECKING:
+    from comadre.counters import RequestCounters
 
 _logger = get_logger("keys.auth")
 
@@ -163,6 +167,21 @@ async def verify_api_key_registry(request: Request, token: str) -> None:
         raise ApiKeySuspendedError(settings.operator_contact_hint)
 
     request.state.auth_payload = payload
+
+    # Story 2.3 — register the request against the per-key counters. The
+    # counters live on ``app.state.request_counters`` and are optional at
+    # this boundary so test fixtures that skip lifespan (``tests/conftest``
+    # builds the app directly) keep passing. Both increments run on the
+    # same success path; any denial above raises before reaching this
+    # point, so ``requests_total`` is "requests that successfully
+    # authenticated" by construction. A later 429 bumps ``rate_limit_429``
+    # without re-incrementing ``requests_total``.
+    counters: RequestCounters | None = getattr(
+        request.app.state, "request_counters", None
+    )
+    if counters is not None:
+        counters.incr_request(payload.key_id)
+        counters.incr_auth_success(payload.key_id)
 
 
 def _payload_to_record(payload: AuthPayload) -> ApiKeyRecord:

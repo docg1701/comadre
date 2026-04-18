@@ -17,6 +17,11 @@ from starlette.responses import Response
 from comadre import __version__
 from comadre.api import api_router
 from comadre.config import get_settings
+from comadre.counters import (
+    RequestCounters,
+    counters_snapshot_path,
+    default_replica_id,
+)
 from comadre.download import ensure_kokoro_models, ensure_qwen3_models
 from comadre.exceptions import (
     ComadreError,
@@ -61,12 +66,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sentinel_path = Path(f"{settings.key_registry_db_path}.invalidate")
     app.state.auth_cache = AuthCache(invalidation_sentinel=sentinel_path)
     app.state.rate_limiter = RateLimiter.build()
+    # Story 2.3 — per-key request counters + periodic snapshot writer. The
+    # snapshot file is the CLI's window into the in-memory counters; 15s is
+    # the tension point between "fresh enough for operator forensics" and
+    # "cheap enough to fsync without impact". ``start_snapshot_writer``
+    # requires a running loop, which ``lifespan`` is. The snapshot path
+    # carries a per-replica segment so multi-replica deployments produce
+    # one file per replica (CLI aggregates via glob).
+    replica_id = default_replica_id()
+    counters_path = counters_snapshot_path(
+        settings.key_registry_db_path, replica_id=replica_id
+    )
+    app.state.request_counters = RequestCounters(
+        snapshot_path=counters_path,
+        snapshot_interval_seconds=15,
+    )
+    app.state.request_counters.start_snapshot_writer(
+        auth_cache_snapshot=app.state.auth_cache.snapshot,
+    )
     logger.info(
         "Key registry ready; auth cache initialised (maxsize=%d, ttl=%ds, "
-        "invalidation_sentinel=%s); per-key rate-limiter initialised",
+        "invalidation_sentinel=%s); per-key rate-limiter initialised; "
+        "request counters + snapshot writer scheduled "
+        "(path=%s, replica_id=%s, interval=%ds)",
         app.state.auth_cache.maxsize,
         app.state.auth_cache.ttl,
         sentinel_path,
+        counters_path,
+        replica_id,
+        app.state.request_counters.snapshot_interval_seconds,
     )
 
     # Phase 2.5: Ensure models are downloaded (non-blocking)
@@ -188,6 +216,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("Shutting down...")
+        rc = getattr(app.state, "request_counters", None)
+        if rc is not None:
+            # Best-effort final snapshot + task cancel. A hung writer (e.g.
+            # filesystem full) would otherwise delay container exit; the
+            # ``stop_snapshot_writer`` internals swallow all write failures.
+            await rc.stop_snapshot_writer()
         db = getattr(app.state, "registry_db", None)
         if db is not None:
             db.close()

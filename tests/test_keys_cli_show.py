@@ -417,6 +417,266 @@ class TestShowKeyAuditTail:
 
 
 # ---------------------------------------------------------------------------
+# Story 2.3 — show <key> --audit-tail renders last-24h stats.
+# ---------------------------------------------------------------------------
+
+
+def _write_counters_snapshot(
+    env: dict[str, str],
+    *,
+    key_id: str | None = None,
+    age_seconds: int = 3,
+    requests_total: int = 412,
+    rate_limit_429: int = 3,
+    peak_rpm: int = 47,
+    avg_rpm_last_60s: int = 12,
+    process_uptime_seconds: int = 3712,
+    replica: str = "test-replica",
+) -> Path:
+    """Seed a per-replica counters snapshot file next to the test DB."""
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    written = datetime.now(UTC) - timedelta(seconds=age_seconds)
+    snapshot_path = Path(env["db_path"] + f".counters.{replica}.json")
+    per_key: dict[str, dict[str, object]] = {}
+    if key_id is not None:
+        per_key[key_id] = {
+            "requests_total": requests_total,
+            "auth_success": requests_total,
+            "rate_limit_429": rate_limit_429,
+            "peak_rpm": peak_rpm,
+            "avg_rpm_last_60s": avg_rpm_last_60s,
+            "last_activity_at": (datetime.now(UTC) - timedelta(seconds=2)).strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z"
+            ),
+        }
+    payload = {
+        "schema_version": 1,
+        "written_at": written.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "process_uptime_seconds": process_uptime_seconds,
+        "auth_cache": {
+            "entries": 1,
+            "maxsize": 4096,
+            "ttl_seconds": 60,
+            "hits": 10,
+            "misses": 2,
+        },
+        "per_key": per_key,
+    }
+    snapshot_path.write_text(_json.dumps(payload), encoding="utf-8")
+    return snapshot_path
+
+
+class TestShowKeyLast24hStats:
+    """AC12, AC13, AC14 — last-24h stats section for key targets."""
+
+    def test_fresh_snapshot_renders_section(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        key_id, key_prefix = _issue_key(env, customer_id)
+        _write_counters_snapshot(
+            env,
+            key_id=key_id,
+            requests_total=412,
+            rate_limit_429=3,
+            peak_rpm=47,
+            avg_rpm_last_60s=12,
+        )
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "Last-24h stats" in stdout
+        assert "Requests total:     412" in stdout
+        assert "Rate-limit 429:     3" in stdout
+        assert "Peak RPM:           47" in stdout
+        assert "Avg RPM (last 60s): 12" in stdout
+        # Section appears between DetailPanel and AuditTail.
+        assert stdout.index("Last-24h stats") < stdout.index("Last 1 events:")
+
+    def test_missing_snapshot_renders_unavailable(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _key_id, key_prefix = _issue_key(env, customer_id)
+        # Intentionally no snapshot.
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "Last-24h stats: unavailable." in stdout
+        # AuditTail still renders below.
+        assert "Last 1 events:" in stdout or "No events recorded" in stdout
+
+    def test_snapshot_missing_key_id_renders_unavailable(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _key_id, key_prefix = _issue_key(env, customer_id)
+        # Snapshot present but only for a DIFFERENT key_id.
+        _write_counters_snapshot(env, key_id="key_OTHER", age_seconds=3)
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "Last-24h stats: unavailable." in stdout
+
+    def test_stale_snapshot_renders_with_age_label(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stale data is shown honestly with a freshness label, not hidden.
+
+        Operators can decide whether a 2-minute-old aggregate is
+        acceptable for their diagnostic. Industry-standard behaviour:
+        surface the age, never hide data behind an arbitrary cutoff.
+        """
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        key_id, key_prefix = _issue_key(env, customer_id)
+        _write_counters_snapshot(
+            env, key_id=key_id, age_seconds=120, requests_total=999
+        )
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        # Section renders with a "2m ago" freshness label.
+        assert "Last-24h stats" in stdout
+        assert "2m ago" in stdout
+        # Data is visible — not collapsed to "unavailable".
+        assert "Requests total:     999" in stdout
+
+    def test_multi_replica_aggregates_counters(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two replica snapshots → summed counters + max peak_rpm."""
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        key_id, key_prefix = _issue_key(env, customer_id)
+        _write_counters_snapshot(
+            env,
+            key_id=key_id,
+            replica="alpha",
+            requests_total=100,
+            rate_limit_429=2,
+            peak_rpm=20,
+            avg_rpm_last_60s=5,
+        )
+        _write_counters_snapshot(
+            env,
+            key_id=key_id,
+            replica="beta",
+            requests_total=50,
+            rate_limit_429=1,
+            peak_rpm=35,
+            avg_rpm_last_60s=3,
+        )
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "aggregated across 2 replicas" in stdout
+        assert "Requests total:     150" in stdout  # summed
+        assert "Rate-limit 429:     3" in stdout  # summed
+        assert "Peak RPM:           35" in stdout  # max
+        assert "Avg RPM (last 60s): 8" in stdout  # summed
+
+    def test_customer_target_omits_stats_section(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _issue_key(env, customer_id)
+        _write_counters_snapshot(env, key_id="key_ANY", age_seconds=3)
+        result = runner.invoke(app, ["show", customer_id, "--audit-tail", "20"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "Last-24h stats" not in stdout
+
+    def test_key_target_without_audit_tail_omits_stats_section(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare ``show <key>`` stays Story 1.4-shaped — no forensics section."""
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        key_id, key_prefix = _issue_key(env, customer_id)
+        _write_counters_snapshot(env, key_id=key_id, age_seconds=3)
+        result = runner.invoke(app, ["show", key_prefix])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "Last-24h stats" not in stdout
+
+
+class TestShowKeyLast24hStatsJson:
+    """AC12 / AC14 JSON-shape behaviour for the ``stats`` field."""
+
+    def test_key_json_with_audit_tail_has_stats(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        key_id, key_prefix = _issue_key(env, customer_id)
+        _write_counters_snapshot(env, key_id=key_id, requests_total=42, peak_rpm=5)
+        result = runner.invoke(
+            app, ["show", key_prefix, "--audit-tail", "5", "--format", "json"]
+        )
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        parsed = json.loads(stdout)
+        assert parsed["target_type"] == "api_key"
+        assert "stats" in parsed
+        assert parsed["stats"] is not None
+        assert parsed["stats"]["requests_total"] == 42
+        assert parsed["stats"]["peak_rpm"] == 5
+        # Multi-replica bookkeeping is surfaced in the JSON payload too.
+        assert parsed["stats"]["replicas"] == 1
+
+    def test_key_json_with_audit_tail_missing_snapshot_has_null_stats(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _key_id, key_prefix = _issue_key(env, customer_id)
+        result = runner.invoke(
+            app, ["show", key_prefix, "--audit-tail", "5", "--format", "json"]
+        )
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        parsed = json.loads(stdout)
+        assert parsed["target_type"] == "api_key"
+        assert "stats" in parsed
+        assert parsed["stats"] is None
+
+    def test_customer_json_with_audit_tail_no_stats_field(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _issue_key(env, customer_id)
+        _write_counters_snapshot(env, key_id="key_ANY", age_seconds=3)
+        result = runner.invoke(
+            app, ["show", customer_id, "--audit-tail", "5", "--format", "json"]
+        )
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        parsed = json.loads(stdout)
+        assert "stats" not in parsed
+
+    def test_key_json_without_audit_tail_no_stats_field(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        key_id, key_prefix = _issue_key(env, customer_id)
+        _write_counters_snapshot(env, key_id=key_id, age_seconds=3)
+        result = runner.invoke(app, ["show", key_prefix, "--format", "json"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        parsed = json.loads(stdout)
+        assert "stats" not in parsed
+
+
+# ---------------------------------------------------------------------------
 # AC3 — show <customer-id> populated happy path.
 # ---------------------------------------------------------------------------
 

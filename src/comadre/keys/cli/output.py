@@ -11,6 +11,7 @@ NO_COLOR compliance — rich respects the env var automatically. We do NOT set
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Literal
 
 from rich import box
@@ -19,6 +20,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from comadre.counters import AggregatedCacheStatus
 from comadre.keys.models import (
     ApiKeyListRow,
     AuditEventRow,
@@ -28,6 +30,7 @@ from comadre.keys.models import (
     CustomerStatus,
     IssuedKey,
     KeyDetailRow,
+    Last24hStats,
 )
 
 _stdout_console: Console | None = None
@@ -450,20 +453,240 @@ def render_audit_tail(events: list[AuditEventRow]) -> None:
         stdout_console().print(line, markup=False, highlight=False)
 
 
+CACHE_STATUS_BOUND_MESSAGE = (
+    "Auth cache propagation bound: 60 seconds. Key-state changes become "
+    "visible to the API within this window. This command does not force "
+    "invalidation; to empty the cache faster, restart the affected "
+    "replica(s)."
+)
+"""Story 2.3 AC9 / AC10 — verbatim string; do not rewrap or edit inline.
+
+Public (no underscore) because both ``cache-status`` and its tests import
+it as the single source of truth for AC9's byte-identity assertion.
+"""
+
+
+def _format_uptime(seconds: int) -> str:
+    """Render ``seconds`` as ``HHh MMm`` / ``MMm SSs`` / ``SSs``.
+
+    The snapshot's ``process_uptime_seconds`` can range from 0 (just
+    started) to weeks; we pick a fixed two-unit display so the CLI output
+    stays column-stable regardless of age.
+    """
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {remaining_seconds:02d}s"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours}h {remaining_minutes:02d}m"
+
+
+def _format_seconds_ago(seconds: int) -> str:
+    """Render an age in seconds as a compact human duration.
+
+    Used for ``snapshot written Xs ago`` in ``cache-status`` and for
+    ``Last activity: Xs ago`` in the last-24h stats section. Clamps
+    negatives to zero so a tiny clock skew never produces ``-1s ago``.
+    """
+    seconds = max(0, seconds)
+    if seconds < 60:
+        return f"{seconds}s ago"
+    minutes, _ = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours, remaining_minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {remaining_minutes:02d}m ago"
+    days, remaining_hours = divmod(hours, 24)
+    return f"{days}d {remaining_hours:02d}h ago"
+
+
+def _format_decimal(value: float, *, places: int = 1) -> str:
+    """Return ``value`` with fixed decimal places. Used for hit-rate / avg rpm."""
+    return f"{value:.{places}f}"
+
+
+def render_cache_status(status: AggregatedCacheStatus | None) -> None:
+    """Story 2.3 AC9 — emit the cache-status table output.
+
+    ``status=None`` → no readable snapshot from any replica. The verbatim
+    ``CACHE_STATUS_BOUND_MESSAGE`` always leads — AC9 requires it on every
+    reachable state. Multi-replica aggregates are surfaced with a
+    ``Replicas:`` row so operators see the cluster topology; single-replica
+    output still reads naturally (``Replicas: 1``).
+
+    Data is shown with an honest age label regardless of freshness: the
+    operator decides whether a 3-minute-old aggregate is acceptable for
+    their diagnostic. We do not hide data behind an arbitrary cutoff.
+
+    No ``markup`` / ``highlight`` processing: the message is plain prose,
+    not Rich markup, and all numeric fields are already-typed integers.
+    """
+    console = stdout_console()
+    console.print(CACHE_STATUS_BOUND_MESSAGE, markup=False, highlight=False)
+    console.print("", markup=False, highlight=False)
+
+    if status is None:
+        console.print(
+            "Cache health: unavailable (no running API instance).",
+            markup=False,
+            highlight=False,
+        )
+        return
+
+    lookups = status.lookups
+    hit_rate_pct = status.hit_rate * 100.0
+    age_label = _format_seconds_ago(status.snapshot_age_seconds)
+    console.print(
+        f"Cache health (from snapshot written {age_label}):",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Replicas:  {status.replicas}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Entries:   {status.entries} (maxsize {status.maxsize_per_replica}/replica)",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Hit rate:  {_format_decimal(hit_rate_pct)}% "
+        f"({status.hits} hits / {lookups} lookups)",
+        markup=False,
+        highlight=False,
+    )
+    uptime_label = _format_uptime(status.process_uptime_seconds)
+    console.print(
+        f"  Uptime:    {uptime_label} (min across replicas)",
+        markup=False,
+        highlight=False,
+    )
+
+
+_LAST_24H_UNAVAILABLE_LINES: tuple[str, ...] = (
+    "Last-24h stats: unavailable.",
+    "  The API may not be running, or this key has not served a request",
+    "  since the last restart. Counters reset on restart (not durable).",
+)
+
+
+def render_last_24h_stats(stats: Last24hStats | None) -> None:
+    """Story 2.3 §7 — render the last-24h stats section for key targets.
+
+    Prints a blank leader line to separate this section from the preceding
+    DetailPanel (mirrors ``render_audit_tail``). When ``stats`` is ``None``
+    the canonical "unavailable" breadcrumb is rendered; callers DO NOT
+    need to compute their own message.
+
+    Multi-replica aggregate: when ``stats.replicas > 1`` the header
+    appends "aggregated across N replicas" so the operator can't mistake
+    the counters for single-replica-only. Data is shown regardless of age
+    — freshness is surfaced as a label, not used to hide data behind an
+    arbitrary cutoff.
+
+    ``markup=False, highlight=False`` avoids the Rich console gobbling any
+    bracketed substring in a future counter field.
+    """
+    console = stdout_console()
+    console.print("", markup=False, highlight=False)
+
+    if stats is None:
+        for line in _LAST_24H_UNAVAILABLE_LINES:
+            console.print(line, markup=False, highlight=False)
+        return
+
+    replica_note = (
+        f", aggregated across {stats.replicas} replicas" if stats.replicas > 1 else ""
+    )
+    header = (
+        f"Last-24h stats (from snapshot written "
+        f"{_format_seconds_ago(stats.snapshot_age_seconds)}, "
+        f"uptime {_format_uptime(stats.process_uptime_seconds)}"
+        f"{replica_note}):"
+    )
+    console.print(header, markup=False, highlight=False)
+    console.print(
+        f"  Requests total:     {stats.requests_total}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Auth success:       {stats.auth_success}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Rate-limit 429:     {stats.rate_limit_429}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Peak RPM:           {stats.peak_rpm}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  Avg RPM (last 60s): {stats.avg_rpm_last_60s}",
+        markup=False,
+        highlight=False,
+    )
+    if stats.last_activity_at is None:
+        last_text = "never"
+    else:
+        last_text = _last_activity_ago(stats.last_activity_at)
+    console.print(
+        f"  Last activity:      {last_text}",
+        markup=False,
+        highlight=False,
+    )
+
+
+def _last_activity_ago(iso_ts: str) -> str:
+    """Return "Xs ago" from an ISO 8601 UTC timestamp.
+
+    Robust against coarse ISO forms (trailing ``Z``, no fractional seconds).
+    On parse failure returns the raw timestamp — the renderer would rather
+    surface a strange string than a misleading "X seconds ago".
+    """
+    try:
+        iso_clean = iso_ts.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(iso_clean)
+        now = datetime.now(UTC)
+        delta_seconds = int((now - parsed).total_seconds())
+        return _format_seconds_ago(delta_seconds)
+    except (ValueError, TypeError):
+        return iso_ts
+
+
 def render_show_json(
     *,
     target_type: Literal["customer", "api_key"],
     target: dict[str, object],
     events: list[dict[str, object]] | None,
+    stats: dict[str, object] | None = None,
+    include_stats: bool = False,
 ) -> None:
     """Emit the AC8 single-object JSON envelope via the shared stdout console.
 
     ``events=None`` omits the ``events`` key entirely — distinct from an
     empty-list emission triggered by ``--audit-tail N`` returning zero rows.
+
+    Story 2.3 — ``include_stats=True`` adds ``"stats": <dict or null>`` to
+    the payload. Presence is caller-controlled: a key-target ``show`` with
+    ``--audit-tail`` sets ``include_stats=True`` and passes the parsed
+    ``Last24hStats`` dict (or ``None`` when the snapshot is unavailable).
+    Customer targets and bare (no ``--audit-tail``) ``show`` calls leave
+    ``include_stats=False`` so the JSON payload stays schema-stable.
     """
     payload: dict[str, object] = {"target_type": target_type, "target": target}
     if events is not None:
         payload["events"] = events
+    if include_stats:
+        payload["stats"] = stats
     stdout_console().print_json(data=payload)
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from limits import parse
 from limits.aio.storage import MemoryStorage
@@ -31,6 +32,12 @@ from starlette.requests import Request
 
 from comadre.exceptions import KeyRegistryError, RateLimitError
 from comadre.keys.models import AuthPayload
+from comadre.logging import get_logger
+
+if TYPE_CHECKING:
+    from comadre.counters import RequestCounters
+
+_rate_limit_logger = get_logger("rate_limit")
 
 
 @dataclass
@@ -122,6 +129,23 @@ async def check_rate_limit(request: Request) -> None:
     # "budget is available now."
     reset_header = max(int(reset_time), int(now) + 1)
     if not allowed:
+        # Story 2.3 — register the denial against per-key counters and emit
+        # a structured log line carrying ``key_id`` + ``customer_id``. Access
+        # log already records the request at the HTTP layer; this line adds
+        # the attribution an operator needs to grep "which customer is
+        # hammering us?" without joining the HTTP log against the registry.
+        # No log line on allow (hot path; access log is sufficient).
+        counters: RequestCounters | None = getattr(
+            request.app.state, "request_counters", None
+        )
+        if counters is not None:
+            counters.incr_429(payload.key_id)
+        _rate_limit_logger.info(
+            "Rate-limit 429 | key_id=%s | customer_id=%s | rpm=%d",
+            payload.key_id,
+            payload.customer_id,
+            rpm,
+        )
         raise RateLimitError(
             retry_after=retry_after,
             limit=rpm,

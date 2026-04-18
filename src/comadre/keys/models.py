@@ -199,6 +199,35 @@ class IssuedKey:
 
 
 @dataclass(frozen=True, slots=True)
+class Last24hStats:
+    """Per-key counter snapshot row rendered by ``show <key-prefix> --audit-tail``.
+
+    Populated by aggregating every per-replica ``{db}.counters.*.json``
+    file (Story 2.3). Callers upstream pass ``None`` to
+    ``render_last_24h_stats`` when no replica reports this key.
+
+    Counter fields are summed across replicas, except ``peak_rpm`` which
+    is the max observed in any one replica and ``last_activity_at`` which
+    is the most recent timestamp anywhere. ``snapshot_age_seconds`` is the
+    age of the FRESHEST contributing snapshot; ``process_uptime_seconds``
+    is the MIN across contributing replicas (the most conservative window
+    the data has been accumulating). ``replicas`` counts how many replicas
+    reported this key so the renderer can surface the multi-replica nature
+    of the aggregate.
+    """
+
+    requests_total: int
+    auth_success: int
+    rate_limit_429: int
+    peak_rpm: int
+    avg_rpm_last_60s: int
+    last_activity_at: str | None
+    snapshot_age_seconds: int
+    process_uptime_seconds: int
+    replicas: int
+
+
+@dataclass(frozen=True, slots=True)
 class AuthPayload:
     """Minimal authorization payload cached per bearer-token hash.
 
