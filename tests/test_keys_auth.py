@@ -563,3 +563,95 @@ class TestZoneInfoFailureFailsClosed:
             assert hash_api_key(plaintext) not in msg
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Story 3.1 AC4 — FR20 full round-trip via CLI + sentinel-driven invalidation.
+# ---------------------------------------------------------------------------
+
+
+class TestFR20RoundTripViaCli:
+    """Suspend → auth-denied → mark-paid → auth-allowed, all via CLI verbs.
+
+    Exercises the end-to-end chain:
+      1. Seed active key; authenticate → payload cached.
+      2. ``comadre-keys suspend`` (via CliRunner) touches the sentinel.
+      3. Authenticate again → AuthCache flushes, DB lookup returns suspended,
+         ``ApiKeySuspendedError`` raised on the very next request.
+      4. ``comadre-keys mark-paid --until <future>`` re-touches the sentinel.
+      5. Authenticate again → cache flushed, DB now active → 200.
+    """
+
+    async def test_full_fr20_round_trip(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from cryptography.fernet import Fernet
+        from typer.testing import CliRunner
+
+        import comadre.keys.cli.output as output_mod
+        from comadre.config import get_settings
+        from comadre.keys.cli.app import app
+
+        # Env wiring so the CLI sees the same registry file as our test conn.
+        db_path = tmp_path / "registry.db"
+        enc_key = Fernet.generate_key().decode()
+        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", enc_key)
+        get_settings.cache_clear()
+
+        output_mod._reset_for_tests()  # Rich console singletons.
+
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            plaintext, _kid, _cid = _seed_key(
+                conn, status="active", paid_until="2099-12-31"
+            )
+
+            # Read the real key_prefix so the CLI verbs can resolve it.
+            row = conn.execute("SELECT key_prefix FROM api_key LIMIT 1").fetchone()
+            assert row is not None
+            key_prefix = row["key_prefix"]
+
+            settings = Settings(
+                operator_contact_hint=CONTACT_HINT,
+                key_registry_encryption_key=SecretStr(enc_key),
+                key_registry_db_path=str(db_path),
+            )
+            sentinel_path = Path(str(db_path) + ".invalidate")
+            sentinel_path.touch(exist_ok=True)
+            cache = AuthCache(invalidation_sentinel=sentinel_path)
+
+            # Step 1 — authenticate active key; payload caches.
+            request = _make_request(conn, cache, settings)
+            await verify_api_key_registry(request, token=plaintext)
+            token_hash = hash_api_key(plaintext)
+            assert cache.get(token_hash) is not None
+
+            runner = CliRunner()
+
+            # Step 2 — suspend via CLI (touches sentinel on success).
+            result = runner.invoke(app, ["suspend", key_prefix])
+            assert result.exit_code == 0, result.output
+
+            # Step 3 — next auth attempt must raise ApiKeySuspendedError.
+            request = _make_request(conn, cache, settings)
+            with pytest.raises(ApiKeySuspendedError):
+                await verify_api_key_registry(request, token=plaintext)
+
+            # Step 4 — mark-paid re-extends + reactivates.
+            result = runner.invoke(
+                app, ["mark-paid", key_prefix, "--until", "2099-12-31"]
+            )
+            assert result.exit_code == 0, result.output
+
+            # Step 5 — auth now succeeds; cache re-populates.
+            request = _make_request(conn, cache, settings)
+            await verify_api_key_registry(request, token=plaintext)
+            assert request.state.auth_payload.status == "active"
+        finally:
+            conn.close()
+            output_mod._reset_for_tests()
+            get_settings.cache_clear()

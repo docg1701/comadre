@@ -29,9 +29,12 @@ from comadre.keys.db import (
     list_audit_events,
     list_customers,
     lookup_key_auth,
+    mark_key_paid,
+    reactivate_key,
     resolve_show_target,
     revoke_api_key,
     rotate_api_key,
+    suspend_key,
     update_api_key,
     update_customer,
 )
@@ -2879,6 +2882,439 @@ class TestRevokeApiKey:
             conn.close()
 
 
+def _latest_audit(conn: sqlite3.Connection, action: str) -> dict[str, object]:
+    row = conn.execute(
+        "SELECT action, target_type, target_id, details_json FROM audit_log "
+        "WHERE action = ? ORDER BY id DESC LIMIT 1",
+        (action,),
+    ).fetchone()
+    assert row is not None, f"missing audit row for action={action!r}"
+    return dict(row)
+
+
+def _count_audit(conn: sqlite3.Connection, action: str) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = ?", (action,)
+        ).fetchone()[0]
+    )
+
+
+class TestMarkKeyPaid:
+    """Story 3.1 — unit coverage for the ``mark_key_paid`` helper."""
+
+    def test_active_happy_path_updates_paid_until(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn, status="active", paid_until="2026-05-05"
+            )
+
+            result = mark_key_paid(
+                conn,
+                kid,
+                paid_until="2026-06-05",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            assert result is not None
+            assert result.reactivated is False
+            after = _fetch_api_key(conn, kid)
+            assert after["paid_until"] == "2026-06-05"
+            assert after["status"] == "active"
+            audit = _latest_audit(conn, "mark_paid")
+            assert audit["target_type"] == "api_key"
+            assert audit["target_id"] == kid
+            assert json.loads(str(audit["details_json"])) == {
+                "paid_until": "2026-06-05",
+                "reactivated": False,
+            }
+        finally:
+            conn.close()
+
+    def test_suspended_reactivates_and_sets_paid_until(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn, status="suspended", paid_until="2026-04-05"
+            )
+
+            result = mark_key_paid(
+                conn,
+                kid,
+                paid_until="2026-06-05",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            assert result is not None
+            assert result.reactivated is True
+            assert result.key.status == "active"
+            after = _fetch_api_key(conn, kid)
+            assert after["status"] == "active"
+            assert after["paid_until"] == "2026-06-05"
+            audit = _latest_audit(conn, "mark_paid")
+            assert json.loads(str(audit["details_json"])) == {
+                "paid_until": "2026-06-05",
+                "reactivated": True,
+            }
+        finally:
+            conn.close()
+
+    def test_revoked_raises_valueerror(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="revoked")
+            before = _fetch_api_key(conn, kid)
+
+            with pytest.raises(ValueError, match="cannot mark-paid a revoked key"):
+                mark_key_paid(
+                    conn,
+                    kid,
+                    paid_until="2026-06-05",
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+
+            after = _fetch_api_key(conn, kid)
+            assert after == before
+            assert _count_audit(conn, "mark_paid") == 0
+        finally:
+            conn.close()
+
+    def test_complimentary_raises_valueerror(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn, billing_mode="complimentary", price_monthly=0.0
+            )
+
+            with pytest.raises(
+                ValueError, match="cannot mark-paid a complimentary key"
+            ):
+                mark_key_paid(
+                    conn,
+                    kid,
+                    paid_until="2026-06-05",
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+            after = _fetch_api_key(conn, kid)
+            assert after["paid_until"] is None
+            assert _count_audit(conn, "mark_paid") == 0
+        finally:
+            conn.close()
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = mark_key_paid(
+                conn,
+                "key_01nonexistent00000000000000",
+                paid_until="2026-06-05",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+            assert result is None
+        finally:
+            conn.close()
+
+    def test_past_date_accepted_without_warning(self, tmp_path: Path) -> None:
+        """AC8 — retroactive logging is a legitimate workflow."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="active")
+
+            result = mark_key_paid(
+                conn,
+                kid,
+                paid_until="2020-01-01",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            assert result is not None
+            after = _fetch_api_key(conn, kid)
+            assert after["paid_until"] == "2020-01-01"
+            audit = _latest_audit(conn, "mark_paid")
+            assert json.loads(str(audit["details_json"])) == {
+                "paid_until": "2020-01-01",
+                "reactivated": False,
+            }
+        finally:
+            conn.close()
+
+    def test_audit_failure_rolls_back_paid_until_update(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn, status="active", paid_until="2026-05-05"
+            )
+            before = _fetch_api_key(conn, kid)
+
+            import comadre.keys.audit as audit_module
+
+            original = audit_module.log_event
+
+            def _boom(*args: object, **kwargs: object) -> None:
+                if kwargs.get("action") == "mark_paid":
+                    raise sqlite3.IntegrityError("forced audit failure")
+                return original(*args, **kwargs)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(audit_module, "log_event", _boom)
+
+            with pytest.raises(sqlite3.IntegrityError):
+                mark_key_paid(
+                    conn,
+                    kid,
+                    paid_until="2026-06-05",
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+
+            after = _fetch_api_key(conn, kid)
+            assert after == before
+            assert _count_audit(conn, "mark_paid") == 0
+        finally:
+            conn.close()
+
+    def test_other_columns_byte_equal(self, tmp_path: Path) -> None:
+        """Active-path ``mark_paid`` touches ONLY the ``paid_until`` column."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn, status="active", paid_until="2026-05-05", rate_limit_rpm=60
+            )
+            before = _fetch_api_key(conn, kid)
+
+            mark_key_paid(
+                conn,
+                kid,
+                paid_until="2026-06-05",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+            after = _fetch_api_key(conn, kid)
+            assert after["paid_until"] == "2026-06-05"
+            for col in (
+                "id",
+                "customer_id",
+                "key_hash",
+                "key_prefix",
+                "status",
+                "billing_mode",
+                "rate_limit_rpm",
+                "price_monthly",
+                "created_at",
+                "last_used_at",
+                "notes",
+            ):
+                assert after[col] == before[col], col
+        finally:
+            conn.close()
+
+
+class TestSuspendKey:
+    """Story 3.1 — unit coverage for the ``suspend_key`` helper."""
+
+    def test_active_becomes_suspended_with_audit(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="active")
+
+            result = suspend_key(
+                conn,
+                kid,
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            assert result is not None
+            assert result.key.status == "suspended"
+            after = _fetch_api_key(conn, kid)
+            assert after["status"] == "suspended"
+            audit = _latest_audit(conn, "suspend_key")
+            assert audit["target_type"] == "api_key"
+            assert audit["target_id"] == kid
+            assert audit["details_json"] is None
+        finally:
+            conn.close()
+
+    def test_already_suspended_raises_valueerror(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="suspended")
+
+            with pytest.raises(ValueError, match="already suspended"):
+                suspend_key(
+                    conn,
+                    kid,
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+            assert _count_audit(conn, "suspend_key") == 0
+        finally:
+            conn.close()
+
+    def test_revoked_raises_valueerror(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="revoked")
+            before = _fetch_api_key(conn, kid)
+
+            with pytest.raises(ValueError, match="cannot suspend a revoked key"):
+                suspend_key(
+                    conn,
+                    kid,
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+            after = _fetch_api_key(conn, kid)
+            assert after == before
+            assert _count_audit(conn, "suspend_key") == 0
+        finally:
+            conn.close()
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = suspend_key(
+                conn,
+                "key_01nonexistent00000000000000",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+            assert result is None
+        finally:
+            conn.close()
+
+    def test_complimentary_can_be_manually_suspended(self, tmp_path: Path) -> None:
+        """AC12 — complimentary key with abuse is still suspendable by operator."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn,
+                status="active",
+                billing_mode="complimentary",
+                price_monthly=0.0,
+            )
+
+            suspend_key(
+                conn,
+                kid,
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+            after = _fetch_api_key(conn, kid)
+            assert after["status"] == "suspended"
+            assert after["billing_mode"] == "complimentary"
+            assert _count_audit(conn, "suspend_key") == 1
+        finally:
+            conn.close()
+
+
+class TestReactivateKey:
+    """Story 3.1 — unit coverage for the ``reactivate_key`` helper (FR20)."""
+
+    def test_suspended_becomes_active_paid_until_preserved(
+        self, tmp_path: Path
+    ) -> None:
+        """AC13 — the load-bearing FR20-complement invariant."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(
+                conn, status="suspended", paid_until="2026-04-05"
+            )
+
+            result = reactivate_key(
+                conn,
+                kid,
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            assert result is not None
+            assert result.key.status == "active"
+            after = _fetch_api_key(conn, kid)
+            assert after["status"] == "active"
+            # The load-bearing assertion — reactivate MUST NOT touch paid_until.
+            assert after["paid_until"] == "2026-04-05"
+            audit = _latest_audit(conn, "reactivate_key")
+            assert audit["target_type"] == "api_key"
+            assert audit["target_id"] == kid
+            assert audit["details_json"] is None
+        finally:
+            conn.close()
+
+    def test_already_active_raises_valueerror(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="active")
+
+            with pytest.raises(ValueError, match="already active"):
+                reactivate_key(
+                    conn,
+                    kid,
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+            assert _count_audit(conn, "reactivate_key") == 0
+        finally:
+            conn.close()
+
+    def test_revoked_raises_valueerror(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="revoked")
+            before = _fetch_api_key(conn, kid)
+
+            with pytest.raises(ValueError, match="cannot reactivate a revoked key"):
+                reactivate_key(
+                    conn,
+                    kid,
+                    actor="cli:tester",
+                    today=_STORY_1_6_TODAY,
+                )
+            after = _fetch_api_key(conn, kid)
+            assert after == before
+            assert _count_audit(conn, "reactivate_key") == 0
+        finally:
+            conn.close()
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            result = reactivate_key(
+                conn,
+                "key_01nonexistent00000000000000",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+            assert result is None
+        finally:
+            conn.close()
+
+
 class TestLookupKeyAuth:
     @staticmethod
     def _seed(
@@ -3097,6 +3533,67 @@ class TestAuthCacheSentinelTouched:
                 conn,
                 kid,
                 reason="leaked",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+    def test_mark_key_paid_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="active")
+            before = self._advance_sentinel_past_now(db_path)
+
+            mark_key_paid(
+                conn,
+                kid,
+                paid_until="2026-06-05",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+    def test_suspend_key_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="active")
+            before = self._advance_sentinel_past_now(db_path)
+
+            suspend_key(
+                conn,
+                kid,
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+    def test_reactivate_key_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn, status="suspended")
+            before = self._advance_sentinel_past_now(db_path)
+
+            reactivate_key(
+                conn,
+                kid,
                 actor="cli:tester",
                 today=_STORY_1_6_TODAY,
             )

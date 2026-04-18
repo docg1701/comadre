@@ -734,12 +734,13 @@ def _key_update_clauses(result: UpdateKeyResult) -> list[str]:
     return clauses
 
 
-def _load_settings_and_tz() -> tuple[object, ZoneInfo] | None:
+def load_settings_and_tz() -> tuple[object, ZoneInfo] | None:
     """Return ``(settings, billing_tz)`` or ``None`` after rendering an error.
 
-    Shared configuration-surface for the three Story 1.6 commands so the
-    encryption-key / billing-TZ exit-6 mapping stays DRY without touching
-    the existing ``issue-key`` / ``list-keys`` / ``show`` paths.
+    Shared configuration-surface for the Story 1.6 and Story 3.1 command
+    modules so the encryption-key / billing-TZ exit-6 mapping stays DRY
+    without touching the existing ``issue-key`` / ``list-keys`` / ``show``
+    paths.
 
     Returns ``None`` when the caller should ``raise typer.Exit(code=6)``;
     the error panel has already been rendered.
@@ -779,7 +780,7 @@ def _load_settings_and_tz() -> tuple[object, ZoneInfo] | None:
     return settings, billing_tz
 
 
-def _resolve_key_target(
+def resolve_key_target(
     conn: sqlite3.Connection,
     raw_target: str,
     today: date,
@@ -788,9 +789,9 @@ def _resolve_key_target(
 
     Rejects the ``customer`` / ``not_found`` / ``key_ambiguous`` branches
     of ``resolve_show_target`` with the right error panels and exit codes
-    for the Story 1.6 key-verb commands. All three commands share the
-    same four-branch map, so the dispatch lives here to keep each command
-    body focused on its own validation ladder.
+    for the Story 1.6 + Story 3.1 key-verb commands. All six commands
+    share the same four-branch map, so the dispatch lives here to keep
+    each command body focused on its own validation ladder.
     """
     resolved = resolve_show_target(conn, raw_target, today=today)
     echoed = _truncate_ident(raw_target)
@@ -906,7 +907,7 @@ def update_key_cmd(
             raise typer.Exit(code=2)
 
     # 5. Settings + TZ (exit 6).
-    loaded = _load_settings_and_tz()
+    loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
@@ -927,7 +928,7 @@ def update_key_cmd(
             raise typer.Exit(code=5) from None
 
         # 7. Resolve prefix → KeyDetailRow (exit 3 / 2 on non-key branches).
-        key_row = _resolve_key_target(conn, key_prefix, today=today)
+        key_row = resolve_key_target(conn, key_prefix, today=today)
 
         # 8. Complimentary + --price mutex (exit 2). Placed AFTER resolve so
         # missing-key → exit 3 takes precedence over usage-error echoing a
@@ -1014,7 +1015,7 @@ def rotate_key_cmd(
     Example: comadre-keys rotate-key Pq_abc12
     """
     # 1. Settings + TZ (exit 6).
-    loaded = _load_settings_and_tz()
+    loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
@@ -1037,7 +1038,7 @@ def rotate_key_cmd(
             raise typer.Exit(code=5) from None
 
         # 3. Resolve prefix → KeyDetailRow.
-        key_row = _resolve_key_target(conn, key_prefix, today=today)
+        key_row = resolve_key_target(conn, key_prefix, today=today)
 
         # 4. Reject revoked rotation BEFORE generating entropy (story scope
         # guard §"Do NOT generate the new plaintext before the revocation
@@ -1179,7 +1180,7 @@ def revoke_key_cmd(
     reason = stripped_reason
 
     # 2. Settings + TZ (exit 6).
-    loaded = _load_settings_and_tz()
+    loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
@@ -1200,7 +1201,7 @@ def revoke_key_cmd(
             raise typer.Exit(code=5) from None
 
         # 4. Resolve prefix → KeyDetailRow.
-        key_row = _resolve_key_target(conn, key_prefix, today=today)
+        key_row = resolve_key_target(conn, key_prefix, today=today)
 
         # 5. Confirmation gate (UX-DR11 Destroy-tier pattern).
         if not yes:

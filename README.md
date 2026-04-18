@@ -131,6 +131,7 @@ Each engine has its own:
 - **HTTPS via Caddy** -- auto-TLS reverse proxy with Let's Encrypt or self-signed certs
 - **Browser demo** -- public landing page at the root path for trying the API from any device (bring your own API key)
 - **Registry-backed API keys** -- issue, rotate, and revoke keys via the `comadre-keys` CLI. Keys are stored as SHA-256 hashes in an encrypted SQLite registry; tax IDs are Fernet-encrypted at rest.
+- **Billing lifecycle verbs** -- `comadre-keys mark-paid <prefix> --until YYYY-MM-DD` confirms a payment (auto-reactivates suspended keys); `comadre-keys suspend <prefix>` / `comadre-keys reactivate <prefix>` are the manual out-of-cycle levers.
 - **Per-key rate limiting** -- each API key carries its own `rate_limit_rpm`. Customers on higher tiers get higher throughput; customers on smaller tiers are bounded predictably. Buckets are keyed on the registry's `key_id` and stable across key rotation. See [docs/rate-limiting.md](docs/rate-limiting.md).
 - **Operator observability** -- per-key counters (`requests_total`, `rate_limit_429`, `peak_rpm`) snapshot every 15 s to disk. Inspect the auth cache with `comadre-keys cache-status`; inspect a specific key's last-24h activity with `comadre-keys show <key-prefix> --audit-tail N`.
 

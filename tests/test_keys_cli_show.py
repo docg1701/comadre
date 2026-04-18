@@ -415,6 +415,73 @@ class TestShowKeyAuditTail:
         _stdout, _stderr = _buffers()
         assert result.exit_code == 0
 
+    def test_billing_verbs_render_via_real_commands(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Story 3.1 AC21 — MARK_PAID / SUSPEND_KEY / REACTIVATE_KEY render verbatim.
+
+        Exercises the three new commands end-to-end (not ``_raw_insert_audit``)
+        so the test closes the loop: ``show --audit-tail`` renders whatever
+        action strings the Story 3.1 commands actually write.
+        """
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _key_id, key_prefix = _issue_key(env, customer_id)
+
+        # Sequence: mark-paid (active; no reactivation), suspend, reactivate.
+        _clear_buffers()
+        assert (
+            runner.invoke(
+                app, ["mark-paid", key_prefix, "--until", "2026-06-05"]
+            ).exit_code
+            == 0
+        )
+        _clear_buffers()
+        assert runner.invoke(app, ["suspend", key_prefix]).exit_code == 0
+        _clear_buffers()
+        assert runner.invoke(app, ["reactivate", key_prefix]).exit_code == 0
+        _clear_buffers()
+
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+        for action in ("MARK_PAID", "SUSPEND_KEY", "REACTIVATE_KEY"):
+            assert action in stdout
+        # The MARK_PAID row carries the JSON details suffix.
+        assert '{"paid_until": "2026-06-05", "reactivated": false}' in stdout
+        # SUSPEND_KEY and REACTIVATE_KEY have no trailing details block
+        # (details_json IS NULL). Check: the action line ends at the actor
+        # field with no trailing {...} JSON.
+        for action in ("SUSPEND_KEY", "REACTIVATE_KEY"):
+            for line in stdout.splitlines():
+                if action in line:
+                    assert "{" not in line.split(action, 1)[1]
+
+    def test_mark_paid_reactivation_renders_true_details(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Story 3.1 AC21 — ``mark_paid`` on suspended writes ``reactivated: true``."""
+        _freeze_today(monkeypatch, date(2026, 4, 16))
+        customer_id = _seed_customer(env)
+        _key_id, key_prefix = _issue_key(env, customer_id)
+
+        _clear_buffers()
+        assert runner.invoke(app, ["suspend", key_prefix]).exit_code == 0
+        _clear_buffers()
+        assert (
+            runner.invoke(
+                app, ["mark-paid", key_prefix, "--until", "2026-06-05"]
+            ).exit_code
+            == 0
+        )
+        _clear_buffers()
+
+        result = runner.invoke(app, ["show", key_prefix, "--audit-tail", "20"])
+        stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+        assert "MARK_PAID" in stdout
+        assert '{"paid_until": "2026-06-05", "reactivated": true}' in stdout
+
 
 # ---------------------------------------------------------------------------
 # Story 2.3 — show <key> --audit-tail renders last-24h stats.

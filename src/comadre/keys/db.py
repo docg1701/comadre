@@ -106,6 +106,36 @@ class RotateKeyResult:
 
 
 @dataclass(frozen=True, slots=True)
+class MarkPaidResult:
+    """Return payload from ``mark_key_paid``.
+
+    ``key`` is the refreshed ``KeyDetailRow`` (post-mutation). ``reactivated``
+    captures the FR20 side-effect: True when the row was ``suspended`` and
+    this call flipped it to ``active``; False when the row was already
+    ``active`` and only ``paid_until`` changed. The CLI uses the flag to
+    render a slightly different ConfirmationLine suffix (``... → paid until
+    2026-06-05 (reactivated)`` vs just ``... → paid until 2026-06-05``).
+    """
+
+    key: KeyDetailRow
+    reactivated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SuspendKeyResult:
+    """Return payload from ``suspend_key`` — refreshed ``KeyDetailRow`` only."""
+
+    key: KeyDetailRow
+
+
+@dataclass(frozen=True, slots=True)
+class ReactivateKeyResult:
+    """Return payload from ``reactivate_key`` — refreshed ``KeyDetailRow`` only."""
+
+    key: KeyDetailRow
+
+
+@dataclass(frozen=True, slots=True)
 class RevokeKeyResult:
     """Return payload from ``revoke_api_key``.
 
@@ -172,6 +202,11 @@ def _touch_auth_cache_sentinel(conn: sqlite3.Connection) -> None:
     ``pragma_database_list`` returns the file path the main database is
     attached to; an in-memory DB (``:memory:`` / blank file) returns an
     empty string and we silently skip — no sentinel to maintain.
+
+    The FS touch is best-effort: a post-commit ``OSError`` (disk full,
+    EPERM, read-only FS) is swallowed rather than re-raised. The DB commit
+    is authoritative; cache staleness falls back to ``AuthCache``'s 60 s
+    TTL in that window.
     """
     row = conn.execute(
         "SELECT file FROM pragma_database_list WHERE name = 'main'"
@@ -179,8 +214,9 @@ def _touch_auth_cache_sentinel(conn: sqlite3.Connection) -> None:
     if row is None or not row[0]:
         return
     sentinel = Path(row[0] + ".invalidate")
-    sentinel.touch(exist_ok=True)
-    _chmod_0600(sentinel)
+    with contextlib.suppress(OSError):
+        sentinel.touch(exist_ok=True)
+        _chmod_0600(sentinel)
 
 
 def get_connection(path: str | Path) -> sqlite3.Connection:
@@ -1122,3 +1158,207 @@ def revoke_api_key(
     return RevokeKeyResult(
         key=refreshed, customer_name=refreshed.customer_name, reason=reason
     )
+
+
+def mark_key_paid(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    paid_until: str,
+    actor: str,
+    today: date,
+) -> MarkPaidResult | None:
+    """Extend ``paid_until`` and auto-reactivate a suspended key (FR15 / FR20).
+
+    Returns ``None`` when the row is missing. Raises ``ValueError`` when the
+    row is revoked (terminal) or complimentary (no billing semantics); the
+    CLI short-circuits the complimentary path before calling this helper,
+    so the ValueError is defense-in-depth for non-CLI callers.
+
+    The UPDATE uses a single CASE expression to flip ``status`` from
+    ``suspended`` to ``active`` atomically with the ``paid_until`` write —
+    a Python-side branch would open a 1-microsecond race between the SELECT
+    and the UPDATE. The ``WHERE id = ? AND status != 'revoked'`` predicate
+    mirrors the defense-in-depth pattern from ``update_api_key``.
+
+    ``paid_until`` is caller-validated (YYYY-MM-DD); this helper stores it
+    verbatim. Past dates are accepted — retroactive payment logging is a
+    legitimate operator workflow (see Story 3.1 AC8).
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE and audit row either both commit or both roll
+    back.
+    """
+    from comadre.keys.audit import log_event
+
+    reactivated: bool
+    with conn:
+        row = conn.execute(
+            "SELECT status, billing_mode FROM api_key WHERE id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "revoked":
+            raise ValueError("cannot mark-paid a revoked key")
+        if row["billing_mode"] == "complimentary":
+            raise ValueError("cannot mark-paid a complimentary key")
+
+        reactivated = row["status"] == "suspended"
+
+        cursor = conn.execute(
+            "UPDATE api_key SET "
+            "paid_until = ?, "
+            "status = CASE WHEN status = 'suspended' THEN 'active' ELSE status END "
+            "WHERE id = ? AND status != 'revoked'",
+            (paid_until, key_id),
+        )
+        if cursor.rowcount != 1:
+            # Concurrent writer revoked the row between SELECT and UPDATE;
+            # the ``status != 'revoked'`` predicate made our UPDATE a no-op.
+            # Matches the defense-in-depth pattern in suspend_key / reactivate_key.
+            raise RuntimeError(
+                "mark_key_paid: update failed to match any row after SELECT "
+                f"succeeded for {key_id!r}"
+            )
+        log_event(
+            conn,
+            actor=actor,
+            action="mark_paid",
+            target_type="api_key",
+            target_id=key_id,
+            details={"paid_until": paid_until, "reactivated": reactivated},
+        )
+
+    _touch_auth_cache_sentinel(conn)
+
+    refreshed = get_key_detail_by_id(conn, key_id, today=today)
+    if refreshed is None:
+        raise RuntimeError(f"mark_key_paid: row vanished after commit for {key_id!r}")
+    return MarkPaidResult(key=refreshed, reactivated=reactivated)
+
+
+def suspend_key(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    actor: str,
+    today: date,
+) -> SuspendKeyResult | None:
+    """Mark an active ``api_key`` row suspended (Story 3.1 — manual verb).
+
+    Returns ``None`` when the row is missing. Raises ``ValueError`` when the
+    row is revoked (terminal) or already suspended (rejects the no-op so the
+    operator sees the correction rather than a misleading audit row).
+
+    Writes an audit row with ``action='suspend_key'`` and ``details_json IS
+    NULL`` — matching the action-name the cron sweep (Story 3.3) will use
+    so ``show --audit-tail`` renders manual and cron suspensions identically
+    (operators distinguish via the actor column).
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE and audit row either both commit or both
+    roll back.
+    """
+    from comadre.keys.audit import log_event
+
+    with conn:
+        row = conn.execute(
+            "SELECT status FROM api_key WHERE id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "revoked":
+            raise ValueError("cannot suspend a revoked key")
+        if row["status"] == "suspended":
+            raise ValueError("already suspended")
+
+        cursor = conn.execute(
+            "UPDATE api_key SET status = 'suspended' "
+            "WHERE id = ? AND status = 'active'",
+            (key_id,),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "suspend_key: update failed to match any row after SELECT "
+                f"succeeded for {key_id!r}"
+            )
+        log_event(
+            conn,
+            actor=actor,
+            action="suspend_key",
+            target_type="api_key",
+            target_id=key_id,
+            details=None,
+        )
+
+    _touch_auth_cache_sentinel(conn)
+
+    refreshed = get_key_detail_by_id(conn, key_id, today=today)
+    if refreshed is None:
+        raise RuntimeError(f"suspend_key: row vanished after commit for {key_id!r}")
+    return SuspendKeyResult(key=refreshed)
+
+
+def reactivate_key(
+    conn: sqlite3.Connection,
+    key_id: str,
+    *,
+    actor: str,
+    today: date,
+) -> ReactivateKeyResult | None:
+    """Flip a suspended ``api_key`` row back to active (Story 3.1 — FR20 path).
+
+    Returns ``None`` when the row is missing. Raises ``ValueError`` when the
+    row is revoked (terminal) or already active.
+
+    ``paid_until`` is explicitly preserved — the UPDATE SET clause does not
+    touch it. ``reactivate`` is the "goodwill without payment" path: an
+    operator reactivating a suspended key without running ``mark-paid``
+    first must not silently extend the billing date (Story 3.1 AC13,
+    Journey 3 delinquent-customer flow).
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE and audit row either both commit or both
+    roll back.
+    """
+    from comadre.keys.audit import log_event
+
+    with conn:
+        row = conn.execute(
+            "SELECT status FROM api_key WHERE id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "revoked":
+            raise ValueError("cannot reactivate a revoked key")
+        if row["status"] == "active":
+            raise ValueError("already active")
+
+        cursor = conn.execute(
+            "UPDATE api_key SET status = 'active' "
+            "WHERE id = ? AND status = 'suspended'",
+            (key_id,),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "reactivate_key: update failed to match any row after SELECT "
+                f"succeeded for {key_id!r}"
+            )
+        log_event(
+            conn,
+            actor=actor,
+            action="reactivate_key",
+            target_type="api_key",
+            target_id=key_id,
+            details=None,
+        )
+
+    _touch_auth_cache_sentinel(conn)
+
+    refreshed = get_key_detail_by_id(conn, key_id, today=today)
+    if refreshed is None:
+        raise RuntimeError(f"reactivate_key: row vanished after commit for {key_id!r}")
+    return ReactivateKeyResult(key=refreshed)

@@ -145,3 +145,38 @@ class TestLogEvent:
         conn.rollback()
         count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
         assert count == 0
+
+    def test_mark_paid_details_shape_roundtrips(self, conn: sqlite3.Connection) -> None:
+        """Story 3.1 — the new ``mark_paid`` details_json shape passes the guard.
+
+        ``{"paid_until": "...", "reactivated": <bool>}`` contains no forbidden
+        keys and should round-trip unchanged. Sort-keys ordering places
+        ``paid_until`` before ``reactivated`` alphabetically.
+        """
+        log_event(
+            conn,
+            actor="cli:alice",
+            action="mark_paid",
+            target_type="api_key",
+            target_id="key_01abcde",
+            details={"paid_until": "2026-06-05", "reactivated": False},
+        )
+        row = conn.execute("SELECT details_json FROM audit_log").fetchone()
+        assert (
+            row["details_json"] == '{"paid_until": "2026-06-05", "reactivated": false}'
+        )
+
+        log_event(
+            conn,
+            actor="cli:alice",
+            action="mark_paid",
+            target_type="api_key",
+            target_id="key_01abcde",
+            details={"paid_until": "2026-06-05", "reactivated": True},
+        )
+        rows = conn.execute(
+            "SELECT details_json FROM audit_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert (
+            rows["details_json"] == '{"paid_until": "2026-06-05", "reactivated": true}'
+        )

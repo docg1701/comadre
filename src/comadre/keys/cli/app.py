@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import typer
 
+from comadre.keys.cli.commands.billing import app as billing_app
 from comadre.keys.cli.commands.customers import app as customers_app
 from comadre.keys.cli.commands.keys import app as keys_app
 from comadre.keys.cli.commands.system import app as system_app
@@ -21,6 +22,7 @@ app = typer.Typer(
 )
 app.registered_commands.extend(customers_app.registered_commands)
 app.registered_commands.extend(keys_app.registered_commands)
+app.registered_commands.extend(billing_app.registered_commands)
 app.registered_commands.extend(system_app.registered_commands)
 
 
