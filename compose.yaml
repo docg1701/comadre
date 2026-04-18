@@ -36,8 +36,11 @@ services:
       - comadre-models:/models:rw
       - comadre-voices:/voices:ro
       - comadre-audio:/audio:rw
+      - comadre-registry:/var/lib/comadre:rw
     environment:
-      API_KEY: ${API_KEY:?API_KEY must be set}
+      KEY_REGISTRY_ENCRYPTION_KEY: ${KEY_REGISTRY_ENCRYPTION_KEY:?KEY_REGISTRY_ENCRYPTION_KEY must be set}
+      KEY_REGISTRY_DB_PATH: /var/lib/comadre/registry.db
+      OPERATOR_CONTACT_HINT: "${OPERATOR_CONTACT_HINT:-}"
       DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
       PORT: "8000"
       ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
@@ -54,8 +57,6 @@ services:
       QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
       KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
       KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
-      RATE_LIMIT_SPEECH: "${RATE_LIMIT_SPEECH:-30/minute}"
-      RATE_LIMIT_HEALTH: "${RATE_LIMIT_HEALTH:-60/minute}"
     deploy:
       replicas: 1
       resources:
@@ -76,6 +77,8 @@ volumes:
     name: comadre-voices
   comadre-audio:
     name: comadre-audio
+  comadre-registry:
+    name: comadre-registry
   caddy-data:
     name: caddy-data
   caddy-config:

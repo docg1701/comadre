@@ -101,10 +101,7 @@ _UPDATE_KEY_NOTES_OVERSIZE_HINT = (
     "Operator notes are capped at 1024 characters per update. Summarize "
     "or split across multiple update-key calls."
 )
-_UPDATE_KEY_RPM_RANGE_HINT = (
-    "Provide --rpm in the range 1..10000. "
-    "Story 2.2 set this cap; revisit when VPS-tier-aware caps land."
-)
+_UPDATE_KEY_RPM_RANGE_HINT = "Provide --rpm in the range 1..10000."
 _UPDATE_KEY_COMPLIMENTARY_HINT = (
     "Complimentary keys are bundled externally; omit --price or rotate "
     "via revoke-key + issue-key."

@@ -1,6 +1,6 @@
 # Story 2.2: Dynamic Per-Key Rate Limiting
 
-Status: review
+Status: done
 
 > **2026-04-18 rewrite.** Original Story 2.2 shipped a slowapi 0.1.9-based per-key bucket with dual-mode fallback (legacy per-IP under `MONETIZATION_ENABLED=false`). Code review surfaced a library-level gotcha — slowapi's limit-provider callable cannot receive the `Request` object — and the operator decided to (a) retire FR27 (legacy single-`API_KEY` mode) and NFR31 (byte-identical 1.6.2 auth), and (b) drop slowapi entirely. This rewrite uses `limits.aio.strategies.MovingWindowRateLimiter` directly behind a FastAPI `Depends(check_rate_limit)`, with per-key-only enforcement. Per-IP rate-limit removed from the application layer (no replacement at the reverse-proxy layer either — per-key caps + well-dimensioned key sales protect the TTS compute surface). See `_bmad-output/planning-artifacts/prd.md` revision note dated 2026-04-18 for the full rationale.
 
@@ -48,7 +48,9 @@ Swaps the `/v1/audio/speech` rate-limit from a `@slowapi.limiter.limit(...)` dec
    - Deleted: `TestMonetizationDisabledRateLimit`, `TestMonetizationDisabledStillSucceeds`, `TestMonetizationOffBootstrap`, `TestMonetizationSettings` (replaced by `TestRegistrySettings`), `test_response_headers_match_legacy_mode`, `test_429_envelope_matches_legacy`, `test_resolve_and_keyfunc_called_once_per_request` (slowapi-specific).
 8. **Story 1.6 deferred-work closure** — `issue-key --rpm` cap at `1..10_000` (mirroring `update-key`) shipped in the pre-rewrite Story 2.2 diff; retained in the rewrite. `_KEY_RPM_MAX` reused from `src/comadre/keys/cli/commands/keys.py`.
 9. **Docs**:
-   - `docs/monetization.md` content from the pre-rewrite story (slowapi multi-replica note etc.) is now stale; a follow-up pass should trim it to reflect the `limits`-library semantics. Out of scope for this story.
+   - `docs/rate-limiting.md` created — authoritative operator reference for the `limits`-library semantics (moving window, bucket identity, multi-replica caveat, X-RateLimit headers, rotate/revoke stability, `/health` policy).
+   - `docs/monetization.md`, `docs/api-reference.md`, `docs/configuration-reference.md`, `docs/deployment-guide.md`, `docs/troubleshooting.md`, `docs/replica-scaling-report.md`, `docs/local-testing-guide.md`, `docs/api-architecture.md`, `docs/proxmox-vm-setup.md` rewritten in the 2026-04-18 sweep to reflect the registry-only auth path and the `limits`-library rate-limit (cross-linked from `rate-limiting.md`).
+   - `CLAUDE.md` and `README.md` rewritten to match the 2.0.0 shipped reality.
    - Planning artifacts (`prd.md`, `epics.md`, `architecture.md`) already carry the FR27/NFR31 retirement notes (Phase B).
 
 ## Acceptance Criteria
@@ -178,21 +180,80 @@ claude-opus-4-7 (1M context).
 
 ### File List
 
-- `src/comadre/rate_limit.py` (rewritten)
-- `src/comadre/api.py` (decorator → Depends)
-- `src/comadre/main.py` (slowapi purged; RateLimiter built in lifespan)
-- `src/comadre/config.py` (rate_limit_speech / rate_limit_health removed)
+- `src/comadre/rate_limit.py` (rewritten; guards, dynamic Retry-After, X-RateLimit-* headers, rpm>=1 validation)
+- `src/comadre/exceptions.py` (`RateLimitError` carries `limit`/`remaining`/`reset`; handler emits X-RateLimit-* headers)
+- `src/comadre/api.py` (`@limiter.limit` decorator → `Depends(check_rate_limit)`)
+- `src/comadre/main.py` (slowapi purged; `RateLimiter` built in lifespan; `AuthCache` wired to invalidation sentinel; `_try_auth` logs unexpected exceptions)
+- `src/comadre/config.py` (rate_limit_speech / rate_limit_health removed; `key_registry_encryption_key` promoted to required)
+- `src/comadre/keys/auth.py` (bearer shape-check short-circuit blocks DoS via unknown-token spray; `verify_api_key` moved here)
+- `src/comadre/keys/cache.py` (`AuthCache` gains `invalidation_sentinel` param; `get()` flushes when sentinel mtime advances)
+- `src/comadre/keys/db.py` (`_touch_auth_cache_sentinel` helper; `update_api_key` / `rotate_api_key` / `revoke_api_key` touch the sentinel on commit)
+- `src/comadre/keys/cli/commands/keys.py` (`issue-key --rpm` cap 1..10 000; `_UPDATE_KEY_RPM_RANGE_HINT` trimmed)
 - `pyproject.toml` + `uv.lock` (slowapi → limits)
-- `.env.example` (legacy env vars removed)
-- `tests/rate_limit.py` (rewritten)
-- `tests/test_api.py` (TestPerKeyRateLimit rewritten; TestRegistryAuth renamed; legacy tests deleted)
-- `tests/test_config.py` (api_key / monetization tests removed; TestRegistrySettings added)
-- `tests/test_main_lifespan.py` (MonetizationOff bootstrap deleted; registry_env fixture renamed)
-- `tests/test_keys_cli_issue.py` (TestMonetizationDisabledStillSucceeds deleted)
-- `tests/test_health.py` (warming-up test seeds a real key)
-- `tests/conftest.py` (single `app` fixture; `auth_headers` seeds real key; `fernet_key` added)
+- `.env.example` (rewritten from scratch; `KEY_REGISTRY_ENCRYPTION_KEY` required at top)
+- `compose.yaml` (hard-require `KEY_REGISTRY_ENCRYPTION_KEY`; `comadre-registry` named volume; dead env vars removed)
+- `deploy/ansible/playbooks/{bootstrap,update,health,deploy-voices}.yml` (legacy `api_key_value` purged; `/health` probes drop Authorization header)
+- `deploy/ansible/inventory/{production,oracle}.yml(.example)` (dead vars removed; `key_registry_encryption_key` added)
+- `deploy/bin/rotate-api-key.sh` (deleted — replaced by `comadre-keys rotate-key`)
+- `CLAUDE.md`, `README.md` (rate-limiting and auth sections rewritten to 2.0.0 reality)
+- `docs/rate-limiting.md` (new — algorithm, bucket identity, multi-replica caveat, X-RateLimit headers, operator surface)
+- `docs/{monetization,api-reference,configuration-reference,deployment-guide,troubleshooting,replica-scaling-report,local-testing-guide,api-architecture,proxmox-vm-setup}.md` (swept for stale refs; auth + rate-limit sections rewritten)
+- `tests/test_rate_limit.py` (rewritten: X-RateLimit headers, dynamic Retry-After, guards, rotation-survivability, concurrent-hit atomicity)
+- `tests/test_api.py` (TestPerKeyRateLimit asserts dynamic Retry-After + X-RateLimit-* headers; `test_db_error_returns_500_envelope` uses valid-shape bearer)
+- `tests/test_keys_cache.py` (`TestInvalidationSentinel` — sentinel-present, sentinel-appearing, sentinel-advance)
+- `tests/test_keys_db.py` (`TestAuthCacheSentinelTouched` — every mutation advances sentinel mtime and leaves 0600 mode)
+- `tests/test_keys_cli_issue.py` (hint assertion updated; dead `monkeypatch.setenv("API_KEY", …)` removed)
+- `tests/{test_keys_cli_*,test_config,test_main_lifespan,conftest}.py` (dead `monkeypatch.setenv("API_KEY"/"MONETIZATION_ENABLED"/"RATE_LIMIT_HEALTH", …)` calls removed)
 
 ## Change Log
 
-- **2026-04-18** — Rewrite. FR27 / NFR31 retired upstream (PRD/epics/architecture revised 2026-04-18). slowapi removed. Per-key-only rate-limit via `limits` library; no replacement per-IP layer. All tests pass (1016/1016).
+- **2026-04-18 (second review pass)** — Second adversarial pass on the full Story 2.2 scope (commit `1d27e12` + uncommitted review-cycle patches). 1 decision-needed resolved (`/health` shape-valid-random DoS → mitigate at Caddy layer; documented); 11 patches applied (math.ceil `Retry-After`, `_try_auth` surfaces `KeyRegistryError`, RFC-6750 case-insensitive Bearer scheme, clamped X-RateLimit-Remaining/Reset, URL-safe-base64 charset regex on the token shape check, AuthCache mtime strict-increase, middleware-based X-RateLimit-* header emission to fix a latent bug where the allow-path headers never reached the client because `/v1/audio/speech` returns its own Response, tightened access-log sanitization regexes, removed dead Settings kwargs in tests, and rewrote Scope §9 to match the shipped docs sweep); 4 deferred (library-level hit/stats atomicity, cross-mount sentinel propagation, mtime-based invalidation collision risk on coarse-mtime filesystems, pydantic ValidationError input-value leak in lifespan logs). Test suite: 1029 pass / 0 fail; `uv run ruff check .` clean; `uv run mypy src/` clean.
+- **2026-04-18 (review cycle)** — All code-review findings resolved in one coherent sweep. Rate-limit hardened (dynamic `Retry-After`, X-RateLimit-* headers, state guards, rpm>=1 validation); bearer shape-check short-circuit blocks the `/health` DoS vector; cross-process `AuthCache` invalidation via filesystem sentinel (revoked keys stop authenticating on the next request); all infrastructure orphans (compose, ansible, scripts) rewritten to the 2.0.0 surface; `deploy/bin/rotate-api-key.sh` deleted; every doc under `docs/` / `CLAUDE.md` / `README.md` rewritten to match shipped reality; dead `monkeypatch.setenv("API_KEY", …)` / `"MONETIZATION_ENABLED"` / `"RATE_LIMIT_*"` calls purged from every test file; `docs/rate-limiting.md` created. Final grep across the tree (excluding `_bmad-output/`) for `slowapi` / `MONETIZATION_ENABLED` / `RATE_LIMIT_SPEECH` / `RATE_LIMIT_HEALTH` / `rotate-api-key` / `api_key_value` / `FR27` returns zero matches. Test suite: 1029 pass / 0 fail (previously 1016).
+- **2026-04-18** — Initial rewrite. Retired `API_KEY` single-secret mode upstream. slowapi removed. Per-key-only rate-limit via `limits` library.
 - **2026-04-17** — Original Story 2.2 dev-story cycle landed (with slowapi workaround). Code review triage surfaced the library constraint; this rewrite supersedes that implementation.
+
+### Review Findings
+
+Triaged from three adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) on 2026-04-18 against commit `1d27e12`.
+
+- [x] [Review][Decision] Infra orphans resolved — `compose.yaml` now hard-requires `KEY_REGISTRY_ENCRYPTION_KEY` and exposes a `comadre-registry` named volume mounted at `/var/lib/comadre`; ansible playbooks (`bootstrap`, `update`, `health`, `deploy-voices`) write `KEY_REGISTRY_ENCRYPTION_KEY` and drop the `Authorization: Bearer` header from every `/health` probe; `deploy/bin/rotate-api-key.sh` deleted outright in favour of `comadre-keys rotate-key`.
+- [x] [Review][Decision] `/health` SQLite DoS resolved — `verify_api_key` short-circuits on malformed bearer shape (`cmdr_live_` + 43 chars) before touching the DB, so unknown-bearer spray hits a constant-time rejection rather than serialising on `app.state.registry_db`.
+- [x] [Review][Decision] Cache invalidation resolved — CLI mutations (`update-key`, `rotate-key`, `revoke-key`) touch `{KEY_REGISTRY_DB_PATH}.invalidate`; `AuthCache.get()` stats the sentinel on every read and flushes the cache when mtime advances. Revoked keys stop authenticating on the very next request; no 60s window.
+- [x] [Review][Decision] Per-replica `MemoryStorage` documented explicitly in `docs/rate-limiting.md` (multi-replica behaviour section); current `replicas: 1` stays the default. Shared-storage rate-limiting is tracked as a future story, not shipped here.
+- [x] [Review][Decision] `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers re-added on both allow and 429 paths via `get_window_stats()`; `Retry-After` is now dynamic and matches `X-RateLimit-Reset - now`.
+- [x] [Review][Patch] AC12 cleanup sweep complete — `.env.example` rewritten from scratch, `CLAUDE.md` / `README.md` / every doc under `docs/` / every `tests/test_keys_cli*.py` / `tests/conftest.py` / `tests/test_main_lifespan.py` scrubbed of slowapi / `MONETIZATION_ENABLED` / `API_KEY` / `RATE_LIMIT_SPEECH` / `RATE_LIMIT_HEALTH` references. Final grep across the tree (excluding `_bmad-output/`) returns zero matches.
+- [x] [Review][Patch] `check_rate_limit` now guards `request.state.auth_payload` and `request.app.state.rate_limiter` with explicit `getattr` checks that raise diagnosable `KeyRegistryError` instead of opaque 500s [`src/comadre/rate_limit.py`].
+- [x] [Review][Patch] `Retry-After` is now dynamic, computed as `max(1, X-RateLimit-Reset - now)`. `RateLimitError` carries `limit` / `remaining` / `reset` / `retry_after`; handler emits all four headers [`src/comadre/rate_limit.py`, `src/comadre/exceptions.py`].
+- [x] [Review][Patch] `_UPDATE_KEY_RPM_RANGE_HINT` trimmed to `"Provide --rpm in the range 1..10000."` — no more story reference [`src/comadre/keys/cli/commands/keys.py`].
+- [x] [Review][Patch] `check_rate_limit` rejects `rate_limit_rpm < 1` with a diagnosable `KeyRegistryError`; covered by `TestCheckRateLimitGuards::test_rpm_below_one_rejected` [`src/comadre/rate_limit.py`, `tests/test_rate_limit.py`].
+- [x] [Review][Patch] Rotation-survivability covered by `TestCheckRateLimit::test_rotation_preserves_bucket` in `tests/test_rate_limit.py`.
+- [x] [Review][Patch] Concurrent-hit atomicity covered by `TestCheckRateLimit::test_concurrent_hits_are_atomic` in `tests/test_rate_limit.py` (`asyncio.gather` of N+1 hits on rpm=N bucket).
+- [x] [Review][Patch] `docs/rate-limiting.md` created; covers moving-window semantics, per-replica caveat, X-RateLimit headers, rotate/revoke stability, and `/health` policy.
+- [x] [Review][Patch] `_try_auth` now distinguishes `ComadreError` (expected auth denials, silent) from any other exception (logged at ERROR with `exc_info=True`) so auth-path regressions surface in the logs [`src/comadre/main.py`].
+- [x] [Review][Patch] File List updated below to include `src/comadre/keys/auth.py`, `src/comadre/keys/cache.py`, `src/comadre/keys/cli/commands/keys.py`, `src/comadre/keys/db.py`, `src/comadre/exceptions.py`.
+- [x] [Review][Defer] Timing-attack surface: cache hit vs. miss latency is now observable on every request (dual-mode hmac path is gone) — defensive constant-time / timing-equalisation mitigation is a standalone hardening task [`src/comadre/keys/auth.py`].
+- [x] [Review][Defer] `api_key.rate_limit_rpm` CHECK has no upper bound (`> 0` only) — CLI caps at 10 000 but a direct SQL edit or malformed backup restore could set `rpm=10^9`, bloating `MemoryStorage`. Schema hardening belongs to a future story [`src/comadre/keys/migrations/v001_initial.sql`].
+- [x] [Review][Defer] Denied-key spam (suspended / revoked) never reaches `check_rate_limit`, so the bucket accrues no cost — by design (auth-first). Mitigation belongs with DoS-hardening story.
+- [x] [Review][Defer] `MemoryStorage` retains bucket state per unique `key_id` for the lifetime of the process — verify `limits` eviction semantics at scale; practically minor for Comadre key cardinality [`src/comadre/rate_limit.py`].
+- [x] [Review][Defer] NFR7 (`≤2 ms p99` budget on the added path) is unverified — add `scripts/bench_rate_limit.py` in a follow-up story.
+
+### Review Findings — Second Pass (2026-04-18)
+
+Second adversarial pass triaged after the post-rewrite cleanup sweep. Same three layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) against the full Story 2.2 scope (commit `1d27e12` + uncommitted review-cycle patches).
+
+- [x] [Review][Defer] `/health` SQLite DoS only half-resolved — shape-valid-random bearers (`cmdr_live_` + 43 valid chars) still serialize on the single SQLite connection, shape check stops garbage only. Operator decision 2026-04-18: mitigate at the Caddy / reverse-proxy layer (IP-based rate limit on `/health` unauthenticated path) rather than re-adding an app-layer limit. Deferred-work entry tracks the Caddy config; `docs/rate-limiting.md` updated to state `/health` rate limiting is expected at the infra layer. [`src/comadre/main.py:300-303`, `src/comadre/keys/auth.py:79-93`]
+- [x] [Review][Patch] `retry_after` now uses `math.ceil` — sub-second remainders round up so a client retrying at `Retry-After` finds the bucket open, not a second 429 [`src/comadre/rate_limit.py`].
+- [x] [Review][Patch] `_try_auth` now catches `KeyRegistryError` before the general `ComadreError` branch and logs at ERROR with `exc_info=True`; a DB meltdown no longer silently masks behind `/health 200 minimal` [`src/comadre/main.py`].
+- [x] [Review][Patch] Bearer-scheme check is now RFC 6750 case-insensitive (`authorization[:6].lower() != "bearer"`); token bytes still compared verbatim against the registry hash [`src/comadre/keys/auth.py`].
+- [x] [Review][Patch] `X-RateLimit-Remaining` clamped to `max(0, remaining)` — `hit`/`get_window_stats` race can no longer emit a negative header [`src/comadre/rate_limit.py`].
+- [x] [Review][Patch] Shape check replaced with `_VALID_TOKEN_RE = re.compile(rf"\A{re.escape(API_KEY_PREFIX)}[A-Za-z0-9_-]{{43}}\Z")` — Unicode, whitespace, and any non-URL-safe-base64 char rejected before any cache or DB lookup [`src/comadre/keys/auth.py`].
+- [x] [Review][Patch] `X-RateLimit-Reset` clamped to `max(int(reset_time), int(now) + 1)` — the header can no longer expose a past-unix-timestamp under clock skew or stale windows [`src/comadre/rate_limit.py`].
+- [x] [Review][Patch] `test_per_key_limit_allows_exactly_rpm_requests` asserts `x-ratelimit-limit` / `-remaining` / `-reset` on both 200 responses. Surfaced a real architectural bug: FastAPI does not merge dependency-injected Response headers when the route returns its own `Response` object (as `/v1/audio/speech` does). Fix: `check_rate_limit` stashes the header triple on `request.state.rate_limit_headers`, and a new `access_log_middleware` merge step writes them onto every outbound response [`src/comadre/rate_limit.py`, `src/comadre/main.py`].
+- [x] [Review][Patch] `test_access_log_clean_on_429` tightened — the loose `[0-9a-f]{64}` is anchored to word boundaries and augmented with a `key_`/`cust_` ULID-shape regex `\b(?:key|cust)_[0-9A-HJKMNP-TV-Z]{26}\b`, catching any accidental ULID leak beyond the specific IDs seeded [`tests/test_api.py`].
+- [x] [Review][Patch] `tests/test_keys_auth.py` — removed dead `api_key=SecretStr(...)` and `monetization_enabled=True` Settings kwargs. Change Log's "zero matches" claim is now actually true [`tests/test_keys_auth.py`].
+- [x] [Review][Patch] Scope §9 rewritten to reflect the documentation sweep that actually shipped: `docs/rate-limiting.md` created; `docs/monetization.md` + 8 other docs rewritten in the 2026-04-18 cleanup; `CLAUDE.md` / `README.md` rewritten to 2.0.0 reality.
+- [x] [Review][Patch] `AuthCache._flush_if_invalidated` uses `>` (strictly-increasing) — clock rollback no longer triggers spurious flushes. Same-tick collisions on coarse-mtime filesystems remain a documented defer-item [`src/comadre/keys/cache.py`].
+- [x] [Review][Defer] `get_window_stats` is not strictly atomic with `.hit()` — `MemoryStorage.get_moving_window` has no lock. Under concurrent load, headers can drift from the actual consumed state. Impact is header accuracy only; retry semantics remain correct. Library-level mitigation. [`src/comadre/rate_limit.py:108-109`]
+- [x] [Review][Defer] Cross-mount sentinel invalidation silently fails — if CLI runs on host and API in container with a non-bind-mount copy, sentinel touches don't propagate. Documented in `docs/troubleshooting.md:211-213` but no runtime guard or startup self-check. [`src/comadre/keys/db.py:163-183`]
+- [x] [Review][Defer] Sentinel invalidation via mtime is vulnerable to coarse-mtime filesystems (FAT32 / NFS / some overlay FS) and same-tick collisions on ext4. Move to content-based signaling (write a monotonic counter to the sentinel file) in a hardening pass. [`src/comadre/keys/cache.py:72-79`]
+- [x] [Review][Defer] Pydantic `ValidationError` for a malformed `KEY_REGISTRY_ENCRYPTION_KEY` leaks the raw input value in the error repr; if startup crashes, the bad key appears in Docker / systemd logs. Defensive mitigation (truncate repr in the field validator, or catch+re-raise sanitized in lifespan) belongs with a broader secret-handling hardening pass. [`src/comadre/config.py`]

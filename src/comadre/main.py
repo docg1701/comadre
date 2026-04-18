@@ -18,7 +18,11 @@ from comadre import __version__
 from comadre.api import api_router
 from comadre.config import get_settings
 from comadre.download import ensure_kokoro_models, ensure_qwen3_models
-from comadre.exceptions import register_exception_handlers
+from comadre.exceptions import (
+    ComadreError,
+    KeyRegistryError,
+    register_exception_handlers,
+)
 from comadre.health import build_health_response, build_minimal_health_response
 from comadre.keys.auth import verify_api_key
 from comadre.keys.cache import AuthCache
@@ -50,17 +54,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     logger.info("Structured logging configured")
 
-    # Phase 2a: Key-registry bootstrap (sole auth path as of 2026-04-18)
+    # Phase 2a: Key-registry bootstrap
     logger.info("Opening key registry at %s", settings.key_registry_db_path)
     app.state.registry_db = get_connection(settings.key_registry_db_path)
     _apply_migrations(app.state.registry_db)
-    app.state.auth_cache = AuthCache()
+    sentinel_path = Path(f"{settings.key_registry_db_path}.invalidate")
+    app.state.auth_cache = AuthCache(invalidation_sentinel=sentinel_path)
     app.state.rate_limiter = RateLimiter.build()
     logger.info(
-        "Key registry ready; auth cache initialised (maxsize=%d, ttl=%ds); "
-        "per-key rate-limiter initialised",
+        "Key registry ready; auth cache initialised (maxsize=%d, ttl=%ds, "
+        "invalidation_sentinel=%s); per-key rate-limiter initialised",
         app.state.auth_cache.maxsize,
         app.state.auth_cache.ttl,
+        sentinel_path,
     )
 
     # Phase 2.5: Ensure models are downloaded (non-blocking)
@@ -261,6 +267,15 @@ def create_app() -> FastAPI:
             response.status_code,
             duration,
         )
+        # Apply X-RateLimit-* headers stashed by ``check_rate_limit``.
+        # A dedicated middleware (not dependency-injected Response headers)
+        # is the reliable channel because routes returning their own
+        # Response object — ``/v1/audio/speech`` serves audio bytes as a
+        # raw Response — replace the injected one, losing its headers.
+        extra = getattr(request.state, "rate_limit_headers", None)
+        if extra:
+            for name, value in extra.items():
+                response.headers[name] = value
         return response
 
     register_exception_handlers(app)
@@ -269,13 +284,36 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
 
     async def _try_auth(request: Request) -> bool:
-        """Return True if the request carries a valid API key."""
+        """Return True if the request carries a valid API key.
+
+        Normal auth denials (missing header, unknown key, suspended,
+        revoked) surface as ``ComadreError`` subclasses and are expected
+        for any unauthenticated ``/health`` probe — caller treats them as
+        "fall back to minimal envelope", no log line. A ``KeyRegistryError``
+        is NOT a normal denial: it means the registry DB is unreachable
+        or corrupt, and every authenticated request is failing closed.
+        Log it so a silent ``/health 200 minimal`` doesn't mask a broken
+        auth path. Anything else also gets an ERROR-level log.
+        """
         try:
             await verify_api_key(
                 request,
                 authorization=request.headers.get("authorization", ""),
             )
+        except KeyRegistryError:
+            logger.error(
+                "Key registry error during /health auth probe — "
+                "authenticated traffic is failing closed",
+                exc_info=True,
+            )
+            return False
+        except ComadreError:
+            return False
         except Exception:
+            logger.error(
+                "Unexpected exception during /health auth probe",
+                exc_info=True,
+            )
             return False
         return True
 

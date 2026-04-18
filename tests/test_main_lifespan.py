@@ -70,11 +70,7 @@ def _stub_engine_init(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture()
 def registry_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set env vars so ``get_settings()`` builds a registry-mode Settings.
-
-    2026-04-18: legacy single-API_KEY mode retired (FR27). Registry is the
-    sole auth path; this is the default — no toggle to flip on.
-    """
+    """Set env vars so ``get_settings()`` builds a valid Settings."""
     db_path = tmp_path / "registry.db"
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode())

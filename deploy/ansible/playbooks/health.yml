@@ -31,14 +31,6 @@
           Run bootstrap.yml first to deploy the service.
         success_msg: "Comadre directory found."
 
-    - name: "[Prereq] Warn if API key is missing (diagnostics will be limited)"
-      when: (api_key_value | default('')) | length == 0
-      ansible.builtin.debug:
-        msg: >-
-          WARNING: COMADRE_API_KEY is not set. Health diagnostics will be
-          limited (no engine status, memory, version). Export the variable
-          for full diagnostics.
-
     # =========================================================================
     # Container State
     # =========================================================================
@@ -81,32 +73,20 @@
         validate_certs: false
         return_content: true
         status_code: [200, 503]
-        headers:
-          Authorization: "Bearer {{ api_key_value }}"
       register: health_check
       ignore_errors: true
 
-    - name: "[Health] Warn on high memory usage"
+    - name: "[Health] Explain Qwen3 voice is missing"
       when:
         - health_check is defined
         - health_check.json is defined
-        - (health_check.json.memory_mb | default(0) | int) > 5120
+        - not (health_check.json.voices | default([]) | select('match', '^qwen/') | list | length)
       ansible.builtin.debug:
         msg: >-
-          WARNING: Memory usage is {{ health_check.json.memory_mb }} MB (threshold: 5 GB).
-          Consider restarting the container: cd ~/comadre && docker compose restart
-          Verify daily restart cron is active: crontab -l | grep comadre-daily-restart
-
-    - name: "[Health] Explain Qwen3 disabled status"
-      when:
-        - health_check is defined
-        - health_check.json is defined
-        - not (health_check.json.engines.qwen3.loaded | default(false))
-      ansible.builtin.debug:
-        msg: >-
-          INFO: Qwen3 engine is not loaded.
-          Check that the qwen3-tts-cli binary, model, and tokenizer files
-          are correctly deployed. See docs for troubleshooting.
+          INFO: No qwen/* voices are reported.
+          Either QWEN3_ENABLED is false for this host, or the qwen3-tts-cli
+          binary / model / tokenizer are not deployed correctly.
+          See docs for troubleshooting.
 
     # =========================================================================
     # Disk Usage
@@ -165,6 +145,10 @@
           {{ health_check is defined
           and health_check.json is defined
           and health_check is not failed }}
+        kokoro_voice_count: >-
+          {{ hc.voices | default([]) | select('match', '^kokoro/') | list | length }}
+        qwen_voice_count: >-
+          {{ hc.voices | default([]) | select('match', '^qwen/') | list | length }}
         daily_restart_cron: >-
           {{ 'Active'
           if (crontab_check.stdout | default(''))
@@ -186,14 +170,9 @@
           {% if has_health | bool %}
           Service Status:  {{ hc.status | default('unknown') }}
           Loaded Voices:   {{ hc.voices | default([]) | join(', ') }}
-          Kokoro Engine:   {{ 'Loaded' if (hc.engines.kokoro.loaded | default(false)) else 'Not loaded' }}
-          Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
           Voice Count:     {{ hc.voices | default([]) | length }}
-          Queue Depth:     {{ hc.queue_depth | default('N/A') }}
-          Uptime:          {{ hc.uptime_seconds | default('N/A') }}s
-          Memory Usage:    {{ hc.memory_mb | default('N/A') }} MB
-          {%- if (hc.memory_mb | default(0) | int) > 5120 %} *** HIGH ***{% endif %}
-          Version:         {{ hc.version | default('N/A') }}
+            kokoro/*:      {{ kokoro_voice_count }}
+            qwen/*:        {{ qwen_voice_count }}
           {% else %}
           Service Status:  Unable to query health endpoint
           {% if not container_running | bool %}

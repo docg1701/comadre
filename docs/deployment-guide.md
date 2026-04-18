@@ -16,7 +16,7 @@ Full lifecycle management for Comadre TTS service using Ansible playbooks.
 - Ansible 2.14+ installed
 - `community.docker` Ansible collection installed
 - SSH access to the VPS
-- `COMADRE_API_KEY` environment variable set
+- `KEY_REGISTRY_ENCRYPTION_KEY` environment variable set (Fernet key — see [Bootstrap](#bootstrap----first-deployment) for generation)
 
 Install the required Ansible collection:
 
@@ -37,15 +37,15 @@ all:
       ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
-    api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
+    key_registry_encryption_key: "{{ lookup('env', 'KEY_REGISTRY_ENCRYPTION_KEY') }}"
+    operator_contact_hint: "Contact ops@example.com for billing."
+    billing_timezone: "America/Sao_Paulo"
     voices_local_dir: ""
     repo_url: "YOUR_REPO_URL"
     repo_branch: "master"
     default_voice: "kokoro/pm_santa"
     domain: "localhost"
     landing_enabled: true
-    rate_limit_speech: "30/minute"
-    rate_limit_health: "60/minute"
     restart_hour: 3
     kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
     kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
@@ -64,15 +64,15 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | --- | --- | --- |
 | `ansible_host` | Yes | VPS IP address or hostname |
 | `ansible_user` | Yes | SSH user with key-based auth |
-| `api_key_value` | Yes | API authentication key (reads from `COMADRE_API_KEY` env var) |
+| `key_registry_encryption_key` | Yes | Fernet key for encrypting tax IDs at rest (reads from `KEY_REGISTRY_ENCRYPTION_KEY` env var on the control machine). Maps to the `KEY_REGISTRY_ENCRYPTION_KEY` env var inside the container. |
+| `operator_contact_hint` | No | Customer-facing contact string echoed in 401 hints. Maps to `OPERATOR_CONTACT_HINT`. |
+| `billing_timezone` | No | IANA timezone for billing calculations (default: `America/Sao_Paulo`). Maps to `BILLING_TIMEZONE`. |
 | `repo_url` | Yes | Git repository URL |
 | `repo_branch` | No | Branch to deploy (default: `master`) |
 | `default_voice` | No | Default voice for TTS when none specified (default: `kokoro/pm_santa`) |
 | `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed). Set to a real domain for Let's Encrypt auto-cert. |
 | `landing_enabled` | No | Deploy the public landing page at the root URL (default: `true`). When false, Caddy uses `Caddyfile-no-landing` which proxies all paths to the API. The API endpoints (`/v1/*`, `/health`, etc.) are always available regardless. |
 | `qwen3_enabled` | No | Enable Qwen3 engine (default: `true`). Set `false` on hosts where the x86_64 binary cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). Maps to `QWEN3_ENABLED` env var. |
-| `rate_limit_speech` | No | Rate limit for speech endpoint per IP (default: `30/minute`) |
-| `rate_limit_health` | No | Rate limit for health endpoint per IP (default: `60/minute`) |
 | `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
 | `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
 | `kokoro_model_url` | No | URL to download Kokoro ONNX model on first start (default: GitHub release URL) |
@@ -88,7 +88,7 @@ A fresh deploy requires three playbooks in sequence:
 
 ```bash
 cd deploy/ansible
-export COMADRE_API_KEY="your-secret-key"
+export KEY_REGISTRY_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 
 # 1. Bootstrap — installs everything, builds and starts services
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
@@ -99,9 +99,16 @@ ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
 
 # 3. Verify — read-only diagnostic check
 ansible-playbook playbooks/health.yml -i inventory/production.yml
+
+# 4. Register the first customer and issue their API key
+ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
+  comadre-keys create-customer --name 'Acme Demo' --email ops@acme.example --tax-id 11144477735"
+ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
+  comadre-keys issue-key --customer cust_<ulid-from-previous-step> --rpm 60 --price 149"
+# The plaintext (cmdr_live_...) is printed once; copy it to your client config now.
 ```
 
-After these three steps, the service is fully operational with all voices available.
+After these four steps, the service is fully operational and ready to authenticate traffic.
 
 ## Available Playbooks
 
@@ -121,7 +128,7 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 **What it does:**
 
 1. Verifies the target is Ubuntu/Debian and SSH is working
-2. Validates that `API_KEY` and `repo_url` are configured
+2. Validates that `KEY_REGISTRY_ENCRYPTION_KEY` and `repo_url` are configured
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
 5. Installs and configures UFW firewall (ports 22, 80, 443)
@@ -132,13 +139,16 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 10. Configures cron jobs (daily restart, audio cleanup)
 11. Waits for the health endpoint to report `healthy`
 
-**Bootstrap does NOT deploy voice files.** Run `deploy-voices.yml` after bootstrap to copy voice files from your local machine to the VPS.
+**Bootstrap does NOT deploy voice files and does NOT create customers or API keys.** Run `deploy-voices.yml` afterwards to copy voice files, and use `comadre-keys create-customer` + `comadre-keys issue-key` to populate the registry before any traffic is expected.
 
 **Run:**
 
 ```bash
 cd deploy/ansible
-export COMADRE_API_KEY="your-secret-key-here"
+# Generate the registry encryption key (one-time).
+export KEY_REGISTRY_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+# IMPORTANT: Store this value in your password manager. Losing it means losing
+# the ability to decrypt every tax ID already in the registry.
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
   -e "ansible_become_password=YOUR_SUDO_PASS"
 ```
@@ -157,11 +167,11 @@ Endpoint URL:    https://YOUR_VPS_DOMAIN
 ============================================
 ```
 
-**Test the deployment:**
+**Test the deployment (after issuing a key):**
 
 ```bash
 curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
   -d '{"input":"Ola mundo", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
@@ -368,60 +378,80 @@ The default Caddyfile serves a self-contained HTML page at the root URL that let
 
 The API endpoints (`/v1/*`, `/health`, `/docs`, `/openapi.json`, `/redoc`) are always available regardless of the `landing_enabled` setting.
 
-## API Key Rotation
+## Key Registry Management
 
-### How the Key Works
+Comadre authenticates every TTS request against a SQLite key registry encrypted with a single Fernet key (`KEY_REGISTRY_ENCRYPTION_KEY`). Customers and their API keys are managed entirely through the `comadre-keys` CLI, which runs inside the tts-service container and shares the registry volume.
 
-The API key is generated during bootstrap and stored in `~/comadre/.env` on the VPS. Clients send it as `Authorization: Bearer <key>` in every request. The key is a 256-bit random value (base64-encoded), validated with timing-safe comparison.
+### How keys work
 
-### Initial Setup (During Bootstrap)
+- The registry file lives at `/var/lib/comadre/registry.db` inside the container (bind-mounted from the `comadre-registry` named volume).
+- Each key row stores a SHA-256 hash of the plaintext, an 8-character display prefix, the customer id, `rate_limit_rpm`, `billing_mode`, `price_monthly`, `status`, and `paid_until`.
+- Plaintext is a `cmdr_live_<random>` token shown only at issuance (and again after `rotate-key`).
+- Authentication is constant-time — unknown tokens, revoked keys, and suspended/past-due keys all return 401 with the same timing profile.
 
-The key is set before running bootstrap:
-
-```bash
-# 1. Generate a key on your local machine
-openssl rand -base64 32
-# Output: <your-generated-key-here>
-
-# 2. Export it for the Ansible playbook
-export COMADRE_API_KEY="<paste-the-generated-key-here>"
-
-# 3. Run bootstrap — the key is written to ~/comadre/.env on the VPS
-ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
-
-# 4. Copy the key to your n8n/chatbot config — this is the only time you see it
-```
-
-### Rotating a Compromised Key
-
-If the key is compromised, rotate it in one command:
+### Initial bootstrap — generate and store the encryption key
 
 ```bash
-ssh YOUR_VPS_IP "bash ~/comadre/deploy/bin/rotate-api-key.sh"
+# 1. Generate the Fernet key on your control machine (one-time, per deployment).
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Example output: j8F4...k2Y=
+
+# 2. Store the value in your password manager. Losing it means every tax ID
+#    already in the registry is unrecoverable.
+
+# 3. Export it for Ansible and run bootstrap.
+export KEY_REGISTRY_ENCRYPTION_KEY="j8F4...k2Y="
+ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  -e "ansible_become_password=YOUR_SUDO_PASS"
 ```
 
-Output:
+Bootstrap writes `KEY_REGISTRY_ENCRYPTION_KEY` into `~/comadre/.env` on the VPS. The tts-service container reads it at startup.
 
-```text
-=== New API Key (shown once) ===
+### Seed the first customer and issue a key
 
-  aB3xK9mP2qR7nW4vL8cJ5fT1hY6dS0gU=
+```bash
+ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
+  comadre-keys create-customer \
+    --name 'Acme Demo' \
+    --email ops@acme.example \
+    --tax-id 11144477735"
+# → cust_01jABC...
 
-=================================
-
-Container restarted. Waiting for health check...
-Service is healthy. Key rotation complete.
+ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
+  comadre-keys issue-key \
+    --customer cust_01jABC... \
+    --rpm 60 \
+    --billing-mode manual \
+    --price 149"
+# → cmdr_live_XXXXXXXXXXXXX   (printed once; paste into the client config now)
 ```
 
-The script waits up to 180 seconds for the health check to pass after restarting the container (models must reload).
+### Rotating a compromised key
 
-**Immediately after rotation:**
+```bash
+ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
+  comadre-keys rotate-key <key-prefix-or-id>"
+```
 
-1. Copy the new key from the output
-2. Update your n8n/chatbot config with the new key
-3. All requests with the old key will return 401
+The old plaintext stops working immediately. The `key_id` is preserved, so the per-key rate-limit bucket and all billing state carry over. The new plaintext is printed once — copy it into the client config before the terminal scrolls away. No container restart is required; the registry is read at every cache miss and the cached entry for the old hash simply never matches again.
 
-The new key is shown only once. If you lose it, rotate again.
+### Raising or lowering a customer's throughput
+
+```bash
+comadre-keys update-key <key-prefix> --rpm 120
+```
+
+`--rpm` accepts values in the range 1..10 000. Every `comadre-keys` mutation touches the registry invalidation sentinel, so the change takes effect on the very next request — no cache-TTL wait.
+
+### Retiring a key
+
+```bash
+comadre-keys revoke-key <key-prefix> --reason "bundle contract ended 2026-09-30"
+```
+
+Revocation is terminal — subsequent requests return 401. Issue a fresh key with `comadre-keys issue-key` if the customer returns.
+
+See [monetization.md](monetization.md) for the full CLI reference and lifecycle reasoning.
 
 ## Firewall (UFW)
 
@@ -541,14 +571,16 @@ Memory breakdown per replica: Python process with Kokoro loaded ~4.2 GB peak RSS
 | Voices (`comadre-voices`) | Shared volume (read-only) | All replicas discover the same voices |
 | Audio (`comadre-audio`) | Shared volume | Cleanup cron runs on one replica |
 | FIFO queue (`asyncio.Lock`) | Per-instance | Each replica has its own queue |
-| Rate limiting (slowapi) | Per-instance in-memory | Effective limit = configured limit x replica count |
-| Health endpoint | Per-instance | Reports queue depth and memory for that replica only |
+| Per-key rate-limit buckets (`limits` in-memory) | Per-instance | Each replica holds its own moving-window counters. Effective RPM for a customer = `rate_limit_rpm × replicas`. |
+| Auth cache (`AuthCache`) | Per-instance | 60 s TTL ceiling; every `comadre-keys` mutation touches `{KEY_REGISTRY_DB_PATH}.invalidate` and each replica's cache flushes on the next read, so a CLI change propagates across replicas synchronously when they share the registry volume. |
+| Key registry SQLite | Shared volume (`comadre-registry`) | All replicas read and write the same file. |
+| Health endpoint | Per-instance | Reports queue depth and memory for that replica only. |
 
 ### Caveats
 
-- **Rate limiting is per-instance.** With 2 replicas, a client can send 60 req/min (30 per replica) instead of 30. For strict global rate limiting, an external store (Redis) would be needed.
+- **Rate-limit buckets are per-instance.** With N replicas the effective RPM for a key is `N × rate_limit_rpm` because each replica's `limits` in-memory storage runs its own moving window. The default deploy is `replicas: 1`, so this is dormant; if you scale up, either (a) divide the intended per-key RPM by the replica count when setting `comadre-keys update-key --rpm`, or (b) accept the multiplied limit as acceptable elasticity. Shared-storage rate-limiting (Redis/SQLite) is a candidate future story. See [rate-limiting.md](rate-limiting.md).
 - **Queue depth is per-instance.** The `/health` endpoint reports the queue depth of whichever replica handles the request. For cluster-wide monitoring, check all replicas or use centralized logging.
 - **Audio cleanup cron** runs `docker compose exec` which targets one replica. Since the audio volume is shared, this is sufficient.
-- **All replicas restart simultaneously.** The daily restart cron (`docker compose up -d --no-build`) and key rotation script recreate all replicas at once. Each replica loads ~3.4 GB of models on startup, causing a memory spike of `N * 3.4 GB`. With 2+ replicas on a VPS with limited RAM, this can trigger OOM kills. To mitigate, restart replicas individually: `for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 120; done`.
+- **All replicas restart simultaneously.** The daily restart cron (`docker compose up -d --no-build`) recreates all replicas at once. Each replica loads ~3.4 GB of models on startup, causing a memory spike of `N * 3.4 GB`. With 2+ replicas on a VPS with limited RAM, this can trigger OOM kills. To mitigate, restart replicas individually: `for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 120; done`.
 - **First deployment with replicas > 1** should start with `replicas: 1` to download and cache models in the shared volume. After models are cached, scale up. Concurrent downloads from multiple replicas to the same temp file can corrupt the model.
 - **Caddy blocks on all replicas healthy.** The `depends_on: condition: service_healthy` in compose.yaml means Caddy waits for every replica to pass its healthcheck before starting. If any single replica fails (e.g., OOM during concurrent model loading), Caddy never starts and the entire service is unreachable. For multi-replica deployments, consider changing to `condition: service_started`.

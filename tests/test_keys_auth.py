@@ -38,8 +38,6 @@ def _settings(**overrides: Any) -> Settings:
     from cryptography.fernet import Fernet
 
     defaults: dict[str, Any] = {
-        "api_key": SecretStr("sentinel-never-used"),
-        "monetization_enabled": True,
         "operator_contact_hint": CONTACT_HINT,
         "key_registry_encryption_key": SecretStr(Fernet.generate_key().decode()),
     }

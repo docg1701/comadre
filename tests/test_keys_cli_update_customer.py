@@ -50,7 +50,6 @@ def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     key = Fernet.generate_key().decode()
     db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("API_KEY", "test-api-key")
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
     return {"db_path": str(db_path), "key": key}
@@ -465,7 +464,6 @@ class TestUpdateCustomerUsageErrors:
     ) -> None:
         # Bare-minimum env — we want to prove the check runs before DB open.
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.setenv(
             "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
@@ -499,7 +497,6 @@ class TestUpdateCustomerUsageErrors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.setenv(
             "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
@@ -516,7 +513,6 @@ class TestUpdateCustomerUsageErrors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.setenv(
             "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
@@ -531,7 +527,6 @@ class TestUpdateCustomerUsageErrors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.setenv(
             "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
@@ -550,7 +545,6 @@ class TestUpdateCustomerUsageErrors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.setenv(
             "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
@@ -576,7 +570,6 @@ class TestUpdateCustomerUsageErrors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.setenv(
             "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()

@@ -118,9 +118,9 @@ class Settings(BaseSettings):
     key_registry_encryption_key: SecretStr = Field(
         ...,
         description=(
-            "Fernet key for encrypting tax IDs at rest. Required — Comadre 2.0.0 "
-            "is registry-only (FR27 retired). Generate with "
-            "Fernet.generate_key().decode()."
+            "Fernet key for encrypting tax IDs at rest. Required — generate "
+            'with `python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"`.'
         ),
     )
     operator_contact_hint: str = Field(

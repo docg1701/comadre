@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from comadre.keys.cache import (
     AUTH_CACHE_DEFAULT_MAXSIZE,
     AUTH_CACHE_DEFAULT_TTL_SECONDS,
@@ -97,3 +99,56 @@ class TestAuthCache:
         fetched = cache.get("h1")
         assert fetched is not None
         assert fetched.rate_limit_rpm == 120
+
+
+class TestInvalidationSentinel:
+    """Cross-process invalidation via filesystem mtime.
+
+    The CLI (``comadre-keys revoke-key``, ``rotate-key``, ``update-key``)
+    runs in a different OS process from the FastAPI app but shares the
+    registry DB directory via the docker volume mount. On mutation the
+    CLI touches ``{db_path}.invalidate``; the API's ``AuthCache.get()``
+    stats this sentinel and flushes the cache if mtime advanced since
+    the last read. A revoked key stops authenticating on the very next
+    request — no 60-second TTL window.
+    """
+
+    def test_sentinel_absent_is_silent_noop(self, tmp_path: Any) -> None:
+        sentinel = tmp_path / "registry.db.invalidate"
+        assert not sentinel.exists()
+        cache = AuthCache(invalidation_sentinel=sentinel)
+        cache.set("h1", _payload())
+        assert cache.get("h1") is not None  # no flush, no stat failure
+
+    def test_sentinel_touch_between_reads_flushes_cache(self, tmp_path: Any) -> None:
+        import os
+        import time
+
+        sentinel = tmp_path / "registry.db.invalidate"
+        sentinel.touch()
+        cache = AuthCache(invalidation_sentinel=sentinel)
+        cache.set("h1", _payload())
+        assert cache.get("h1") is not None
+
+        # Advance mtime by an integer second (os.stat reports ns but some
+        # filesystems coalesce sub-second touches — pin a later timestamp
+        # explicitly so the test is deterministic regardless of host FS).
+        future = time.time() + 2.0
+        os.utime(sentinel, (future, future))
+
+        # Next get() sees the advanced mtime and flushes the whole cache.
+        assert cache.get("h1") is None
+        assert cache.snapshot()["entries"] == 0
+
+    def test_sentinel_appearing_after_init_flushes_cache(self, tmp_path: Any) -> None:
+        """Lifespan built the cache before any mutation touched the sentinel."""
+        sentinel = tmp_path / "registry.db.invalidate"
+        cache = AuthCache(invalidation_sentinel=sentinel)  # sentinel absent
+        cache.set("h1", _payload())
+        assert cache.get("h1") is not None
+
+        # First CLI mutation creates the sentinel.
+        sentinel.touch()
+
+        # Next get() detects the mtime change (0 → present) and flushes.
+        assert cache.get("h1") is None

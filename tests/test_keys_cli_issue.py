@@ -54,7 +54,6 @@ def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     key = Fernet.generate_key().decode()
     db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("API_KEY", "test-api-key")
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
     return {"db_path": str(db_path), "key": key}
@@ -427,7 +426,7 @@ class TestIssueKeyUsageErrors:
         _stdout, stderr = _buffers()
         assert result.exit_code == 2
         assert "Usage error: --rpm must be between 1 and 10000" in stderr
-        assert "VPS-tier-aware" in stderr
+        assert "Provide --rpm in the range 1..10000" in stderr
         conn = sqlite3.connect(env["db_path"])
         try:
             after = conn.execute("SELECT COUNT(*) FROM api_key").fetchone()[0]

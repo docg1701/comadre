@@ -57,21 +57,31 @@ Comadre is **~5x cheaper than AI33.pro Edge tier**, **~10x cheaper than AI33.pro
 # Clone and configure
 git clone git@github.com:docg1701/comadre.git
 cd comadre
-cp .env.example .env   # Set API_KEY
+cp .env.example .env
+# Generate the registry encryption key and paste it into .env as
+# KEY_REGISTRY_ENCRYPTION_KEY=<value>:
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # Build and run
 docker compose up --build -d
 
+# Issue the first customer + API key via the comadre-keys CLI
+docker compose exec tts-service comadre-keys create-customer \
+  --name "Acme Demo" --email ops@acme.example --tax-id 11144477735
+docker compose exec tts-service comadre-keys issue-key \
+  --customer <cust_id_from_previous_step> --rpm 60 --price 149
+# The issued plaintext (cmdr_live_...) is shown once — copy it now.
+
 # Test with Kokoro (fast)
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
 
 # Test with Qwen3 (cloned voice, if configured)
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
   --output test_clone.ogg
@@ -120,8 +130,8 @@ Each engine has its own:
 - **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally via `deploy.replicas` in compose.yaml
 - **HTTPS via Caddy** -- auto-TLS reverse proxy with Let's Encrypt or self-signed certs
 - **Browser demo** -- public landing page at the root path for trying the API from any device (bring your own API key)
-- **Rate limiting** -- per-IP rate limiting via slowapi behind Caddy reverse proxy (configurable per endpoint)
-- **API key rotation** -- one-command key rotation without redeployment
+- **Registry-backed API keys** -- issue, rotate, and revoke keys via the `comadre-keys` CLI. Keys are stored as SHA-256 hashes in an encrypted SQLite registry; tax IDs are Fernet-encrypted at rest.
+- **Per-key rate limiting** -- each API key carries its own `rate_limit_rpm`. Customers on higher tiers get higher throughput; customers on smaller tiers are bounded predictably. Buckets are keyed on the registry's `key_id` and stable across key rotation. See [docs/rate-limiting.md](docs/rate-limiting.md).
 
 ## Requirements
 
@@ -145,8 +155,10 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml -e "ansible_b
 ## Documentation
 
 - [docs/api-reference.md](docs/api-reference.md) -- API endpoint spec, schemas, error codes, curl examples
-- [docs/deployment-guide.md](docs/deployment-guide.md) -- Deployment lifecycle: bootstrap, update, cleanup, HTTPS, API key rotation
+- [docs/deployment-guide.md](docs/deployment-guide.md) -- Deployment lifecycle: bootstrap, update, cleanup, HTTPS, key registry bootstrap
 - [docs/configuration-reference.md](docs/configuration-reference.md) -- Environment variables reference
+- [docs/monetization.md](docs/monetization.md) -- Customer tiers, per-key pricing, rate-limit lifecycle
+- [docs/rate-limiting.md](docs/rate-limiting.md) -- Per-key algorithm, bucket identity, 429 semantics, operator controls
 - [docs/troubleshooting.md](docs/troubleshooting.md) -- Common issues with resolution steps
 - [docs/api-architecture.md](docs/api-architecture.md) -- Internal API design, queue architecture, post-processing pipelines
 - [docs/feasibility-report-tts-engine.md](docs/feasibility-report-tts-engine.md) -- Engine evaluation (10+ configs, 400+ samples)
@@ -158,12 +170,14 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml -e "ansible_b
 ```bash
 # Saturation test (concurrency-based, 6 scenarios)
 uv run --group test python scripts/loadtest.py \
-  --url https://YOUR_VPS_DOMAIN --api-key KEY --scenario all
+  --url https://YOUR_VPS_DOMAIN --api-key cmdr_live_YOUR_PLAINTEXT --scenario all
 
 # Capacity test (rate-based, WhatsApp context, ElevenLabs cost comparison)
 uv run --group test python scripts/capacity_test.py \
-  --url https://YOUR_VPS_DOMAIN --api-key KEY
+  --url https://YOUR_VPS_DOMAIN --api-key cmdr_live_YOUR_PLAINTEXT
 ```
+
+Issue a dedicated load-test key via `comadre-keys issue-key --rpm 10000 --billing-mode complimentary`, and `comadre-keys revoke-key` it when the run is done.
 
 ## Development
 

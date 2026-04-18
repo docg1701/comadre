@@ -39,13 +39,27 @@ Kokoro models download automatically. Qwen3 models must be converted or copied m
 cp .env.example .env
 ```
 
-Edit `.env` and set `API_KEY` to any non-empty value:
+Edit `.env` and set `KEY_REGISTRY_ENCRYPTION_KEY` — the only required variable. Generate a Fernet key:
 
 ```bash
-API_KEY=my-local-test-key
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-This is the only required variable. All others have sensible defaults.
+Paste the output into `.env`:
+
+```bash
+KEY_REGISTRY_ENCRYPTION_KEY=<paste-the-generated-key-here>
+```
+
+All other variables have sensible defaults. After `docker compose up -d`, seed a customer and issue a test key:
+
+```bash
+docker compose exec tts-service comadre-keys create-customer \
+  --name "Local Dev" --email dev@localhost --tax-id 11144477735
+docker compose exec tts-service comadre-keys issue-key \
+  --customer <cust_id-from-previous-step> --rpm 1000 --billing-mode complimentary
+# The printed cmdr_live_... plaintext is what you pass in curl.
+```
 
 ## Step 2: Obtain Qwen3 models
 
@@ -174,21 +188,21 @@ If you skipped Qwen3 models, `qwen3.loaded` will be `false` and only Kokoro voic
 ```bash
 # kokoro/pm_santa (male, default)
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test-santa.ogg
 
 # kokoro/pf_dora (female)
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"kokoro/pf_dora"}' \
   --output test-dora.ogg
 
 # kokoro/pm_alex (male)
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"O FGTS foi depositado na sua conta.", "voice":"kokoro/pm_alex"}' \
   --output test-alex.ogg
@@ -199,21 +213,21 @@ curl -k -X POST https://localhost/v1/audio/speech \
 ```bash
 # qwen/female
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen/female"}' \
   --output test-qwen-female.ogg
 
 # qwen/male
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen/male"}' \
   --output test-qwen-male.ogg
 
 # qwen/galvani (uses galvani.wav reference)
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Esta e a voz clonada falando.", "voice":"qwen/galvani"}' \
   --output test-galvani.ogg
@@ -223,7 +237,7 @@ curl -k -X POST https://localhost/v1/audio/speech \
 
 ```bash
 curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer my-local-test-key" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Teste em formato WAV.", "voice":"kokoro/pm_santa", "response_format":"wav"}' \
   --output test.wav
@@ -236,14 +250,14 @@ Stream audio directly to speakers without saving a file. Requires WAV format for
 ```bash
 # Kokoro female voice
 curl -s -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.","voice":"kokoro/pf_dora","response_format":"wav"}' \
   | ffplay -nodisp -autoexit -
 
 # Qwen3 cloned voice
 curl -s -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.","voice":"qwen/female","response_format":"wav"}' \
   | ffplay -nodisp -autoexit -
@@ -266,7 +280,7 @@ Expected 401 response:
   "error": {
     "message": "Missing or malformed Authorization header",
     "type": "authentication_error",
-    "hint": "Check the API_KEY environment variable and ensure your Authorization header uses 'Bearer <key>'."
+    "hint": "Send 'Authorization: Bearer <plaintext>' using a key issued via comadre-keys issue-key."
   }
 }
 ```

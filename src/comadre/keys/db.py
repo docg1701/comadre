@@ -160,6 +160,29 @@ def _chmod_0600(target: Path) -> None:
         target.chmod(0o600)
 
 
+def _touch_auth_cache_sentinel(conn: sqlite3.Connection) -> None:
+    """Advance the sentinel mtime so API processes flush their auth cache.
+
+    The sentinel lives next to the DB file at ``{db_path}.invalidate``.
+    ``AuthCache.get()`` stats it on every read and flushes when mtime
+    advances — this gives synchronous cross-process invalidation after
+    every ``api_key`` mutation (update / rotate / revoke). Called outside
+    the SQLite transaction so it only runs on successful commit.
+
+    ``pragma_database_list`` returns the file path the main database is
+    attached to; an in-memory DB (``:memory:`` / blank file) returns an
+    empty string and we silently skip — no sentinel to maintain.
+    """
+    row = conn.execute(
+        "SELECT file FROM pragma_database_list WHERE name = 'main'"
+    ).fetchone()
+    if row is None or not row[0]:
+        return
+    sentinel = Path(row[0] + ".invalidate")
+    sentinel.touch(exist_ok=True)
+    _chmod_0600(sentinel)
+
+
 def get_connection(path: str | Path) -> sqlite3.Connection:
     """Open a SQLite connection with WAL + foreign_keys enforced.
 
@@ -915,6 +938,8 @@ def update_api_key(
             details={"fields": list(fields_sorted)},
         )
 
+    _touch_auth_cache_sentinel(conn)
+
     refreshed = get_key_detail_by_id(conn, key_id, today=today)
     if refreshed is None:
         raise RuntimeError(f"update_api_key: row vanished after commit for {key_id!r}")
@@ -989,6 +1014,8 @@ def rotate_api_key(
             target_id=key_id,
             details={"key_prefix_old": old_prefix, "key_prefix_new": new_prefix},
         )
+
+    _touch_auth_cache_sentinel(conn)
 
     created_at_dt = datetime.fromisoformat(row["created_at"])
     refreshed = ApiKeyRecord(
@@ -1086,6 +1113,8 @@ def revoke_api_key(
             target_id=key_id,
             details={"reason": reason},
         )
+
+    _touch_auth_cache_sentinel(conn)
 
     refreshed = get_key_detail_by_id(conn, key_id, today=today)
     if refreshed is None:

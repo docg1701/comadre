@@ -101,7 +101,7 @@ Body: [audio bytes]
 |---|---|
 | 400 | `input` empty or exceeds character limit |
 | 400 | Malformed request or voice format |
-| 401 | Invalid or missing API_KEY |
+| 401 | Invalid bearer token, or key suspended/revoked/past-due in the registry |
 | 404 | Voice not found |
 | 405 | Method not allowed |
 | 429 | Rate limit exceeded |
@@ -128,10 +128,10 @@ Body: [audio bytes]
 ### Authentication
 
 ```text
-Authorization: Bearer <API_KEY>
+Authorization: Bearer cmdr_live_<plaintext>
 ```
 
-API_KEY configured via environment variable. Single key per instance.
+Keys are stored in an encrypted SQLite registry and issued via the `comadre-keys` CLI. Each key carries its own `rate_limit_rpm` and billing metadata. The registry is the sole source of truth — there is no single-key environment-variable fallback. See [monetization.md](monetization.md) and [rate-limiting.md](rate-limiting.md).
 
 ## Queue Architecture
 
@@ -319,12 +319,14 @@ services:
           cpus: "4"
           memory: 6G
     environment:
-      - API_KEY=${API_KEY}
+      - KEY_REGISTRY_ENCRYPTION_KEY=${KEY_REGISTRY_ENCRYPTION_KEY}
+      - KEY_REGISTRY_DB_PATH=/var/lib/comadre/registry.db
       - DEFAULT_VOICE=kokoro/pm_santa
       - VOICES_DIR=/voices
       - ESPEAK_DATA_PATH=/usr/local/share/espeak-ng-data
     volumes:
       - comadre-voices:/voices:ro
+      - comadre-registry:/var/lib/comadre:rw
     restart: unless-stopped
 ```
 

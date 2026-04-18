@@ -3003,3 +3003,134 @@ class TestLookupKeyAuth:
             assert "idx_api_key_hash" in plan_text
         finally:
             conn.close()
+
+
+class TestAuthCacheSentinelTouched:
+    """Every ``api_key`` mutation advances the invalidation sentinel mtime.
+
+    The sentinel lives at ``{db_path}.invalidate``. The API process's
+    ``AuthCache.get()`` stats it on every read and flushes the cache when
+    mtime advances — this is the cross-process invalidation contract the
+    running FastAPI app relies on when the CLI revokes / rotates / updates
+    a key. Without these touches a revoked key would stay live in the API's
+    in-process cache for up to the 60-second TTL.
+    """
+
+    @staticmethod
+    def _read_sentinel_mtime_ns(db_path: Path) -> int:
+        sentinel = Path(str(db_path) + ".invalidate")
+        if not sentinel.exists():
+            return 0
+        return sentinel.stat().st_mtime_ns
+
+    @staticmethod
+    def _advance_sentinel_past_now(db_path: Path) -> int:
+        """Set the sentinel mtime to a known-past value so touches register.
+
+        Some filesystems coalesce sub-second mtime updates; if the sentinel
+        was touched within the same clock tick as this test's setup, the
+        subsequent mutation's ``.touch()`` would leave mtime unchanged. We
+        pin mtime to ``now - 2s`` so any touch during the test lands in a
+        strictly later tick.
+        """
+        import os
+        import time
+
+        sentinel = Path(str(db_path) + ".invalidate")
+        sentinel.touch(exist_ok=True)
+        past = time.time() - 2.0
+        os.utime(sentinel, (past, past))
+        return sentinel.stat().st_mtime_ns
+
+    def test_update_api_key_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn)
+            before = self._advance_sentinel_past_now(db_path)
+
+            update_api_key(
+                conn,
+                kid,
+                new_rpm=120,
+                new_price=None,
+                new_notes=None,
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+    def test_rotate_api_key_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn)
+            before = self._advance_sentinel_past_now(db_path)
+
+            rotate_api_key(
+                conn,
+                kid,
+                new_plaintext=generate_api_key_plaintext(),
+                actor="cli:tester",
+            )
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+    def test_revoke_api_key_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn)
+            before = self._advance_sentinel_past_now(db_path)
+
+            revoke_api_key(
+                conn,
+                kid,
+                reason="leaked",
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+    def test_sentinel_chmod_0600(self, tmp_path: Path) -> None:
+        """The sentinel sits next to the registry DB and inherits 0600 mode.
+
+        Readable by anyone with access to ``registry.db`` is the guarantee —
+        no broader disclosure surface than the DB file itself.
+        """
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _cid, kid = _seed_customer_and_key(conn)
+
+            update_api_key(
+                conn,
+                kid,
+                new_rpm=120,
+                new_price=None,
+                new_notes=None,
+                actor="cli:tester",
+                today=_STORY_1_6_TODAY,
+            )
+
+            sentinel = Path(str(db_path) + ".invalidate")
+            assert sentinel.exists()
+            mode = stat.S_IMODE(sentinel.stat().st_mode)
+            assert mode == 0o600
+        finally:
+            conn.close()

@@ -1,13 +1,19 @@
 ---
 # Comadre Bootstrap Playbook
 # Deploys Comadre TTS service on a clean Ubuntu VPS with a single command:
-#   export COMADRE_API_KEY="your-key"
+#   export COMADRE_KEY_REGISTRY_ENCRYPTION_KEY="$(python -c \
+#     'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 #   ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
 #     -e "ansible_become_password=YOUR_SUDO_PASS"
 #
 # Idempotent: safe to run multiple times. Only tasks with actual changes
 # report as "changed".
 # Requires become password for: Docker, UFW installation.
+#
+# Customer API keys are issued after bootstrap with the comadre-keys CLI
+# (issue-key / update-key / rotate-key / revoke-key). The registry lives in
+# the comadre-registry named volume and is bind-mounted into the container
+# at /var/lib/comadre so the CLI and the service share one SQLite file.
 
 - name: Bootstrap Comadre TTS Service
   hosts: comadre_vps
@@ -34,14 +40,18 @@
     - name: "[Prereq] Verify SSH connectivity"
       ansible.builtin.ping:
 
-    - name: "[Prereq] Validate API key is configured"
+    - name: "[Prereq] Validate key registry encryption key is configured"
       ansible.builtin.assert:
         that:
-          - api_key_value | length > 0
+          - key_registry_encryption_key | length > 0
         fail_msg: >-
-          COMADRE_API_KEY environment variable is not set or is empty.
-          Set it before running the playbook: export COMADRE_API_KEY="your-secret-key"
-        success_msg: "API key is configured."
+          COMADRE_KEY_REGISTRY_ENCRYPTION_KEY environment variable is not set
+          or is empty. Generate a fresh Fernet key and export it before running
+          the playbook:
+          export COMADRE_KEY_REGISTRY_ENCRYPTION_KEY="$(python -c
+          'from cryptography.fernet import Fernet;
+          print(Fernet.generate_key().decode())')"
+        success_msg: "Key registry encryption key is configured."
 
     - name: "[Prereq] Validate repository URL is configured"
       ansible.builtin.assert:
@@ -248,11 +258,11 @@
       ansible.builtin.copy:
         dest: "~/comadre/.env"
         content: |
-          API_KEY={{ api_key_value }}
+          KEY_REGISTRY_ENCRYPTION_KEY={{ key_registry_encryption_key }}
+          KEY_REGISTRY_DB_PATH=/var/lib/comadre/registry.db
+          OPERATOR_CONTACT_HINT={{ operator_contact_hint | default('') }}
           DEFAULT_VOICE={{ default_voice }}
           DOMAIN={{ domain }}
-          RATE_LIMIT_SPEECH={{ rate_limit_speech }}
-          RATE_LIMIT_HEALTH={{ rate_limit_health }}
           QWEN3_ENABLED={{ qwen3_enabled | default(true) | string | lower }}
           QWEN3_MODEL_URL={{ qwen3_model_url }}
           QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
@@ -304,8 +314,6 @@
         url: "https://{{ domain | default('localhost') }}/health"
         validate_certs: false
         return_content: true
-        headers:
-          Authorization: "Bearer {{ api_key_value }}"
       register: health_check
       until: >-
         health_check.status == 200
@@ -319,25 +327,28 @@
 
     - name: "[Summary] Report deployment status"
       vars:
-        hc: "{{ health_check.json }}"
+        hc: "{{ health_check.json | default({}) }}"
       ansible.builtin.debug:
         msg: |
           ============================================
           Comadre TTS Service — Bootstrap Complete
           ============================================
 
-          Service Status:  {{ hc.status }}
-          Version:         {{ hc.version | default('N/A') }}
-          Loaded Voices:   {{ hc.voices | join(', ') }}
-          Voice Count:     {{ hc.voices | length }}
-          Kokoro Engine:   {{ 'Loaded' if (hc.engines.kokoro.loaded | default(false)) else 'Not loaded' }}
-          Qwen3 Engine:    {{ 'Loaded' if (hc.engines.qwen3.loaded | default(false)) else 'Not loaded' }}
+          Service Status:  {{ hc.status | default('unknown') }}
+          Loaded Voices:   {{ hc.voices | default([]) | join(', ') }}
+          Voice Count:     {{ hc.voices | default([]) | length }}
           HTTPS URL:       https://{{ ansible_host }}
           UFW:             Active (22, 80, 443)
 
-          Test command (copy-paste ready):
+          Next steps — issue a customer API key from the host:
+            docker compose exec tts-service comadre-keys register-customer \
+              --name "Acme" --tax-id "12345678000199"
+            docker compose exec tts-service comadre-keys issue-key \
+              --customer <customer-id> --rpm 30
+
+          Then test the returned key (shown once at issuance):
           curl -k -X POST \
-            -H "Authorization: Bearer $COMADRE_API_KEY" \
+            -H "Authorization: Bearer <issued-key>" \
             -H "Content-Type: application/json" \
             https://{{ ansible_host }}/v1/audio/speech \
             -d '{"input":"Olá mundo","voice":"kokoro/pm_santa"}' \

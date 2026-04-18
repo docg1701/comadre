@@ -48,10 +48,10 @@ Two production defaults had to be temporarily overridden on the VPS during testi
 
 | Setting | Production default | During test | Why |
 |---------|--------------------|-------------|-----|
-| `RATE_LIMIT_SPEECH` | `30/minute` | `10000/minute` | Stress (50 concurrent) and burst (30 simultaneous) generated thousands of 429 responses, masking real saturation behavior |
+| Test key `rate_limit_rpm` | Typical tier (60) | 10 000 (cap) | Stress (50 concurrent) and burst (30 simultaneous) would trigger thousands of 429 responses on a production-shaped key, masking real saturation behavior. The cap is raised via `comadre-keys issue-key --rpm 10000 --billing-mode complimentary` for the test key and `revoke-key` at the end. |
 | Test scripts TLS verify | Strict | `--insecure` flag added | Self-signed cert from Caddy's internal CA fails strict verification |
 
-The test scripts now accept `--insecure` (commit `955675d`) so future runs against self-signed deployments work without code changes.
+The test scripts now accept `--insecure` (commit `955675d`) so future runs against self-signed deployments work without code changes. Issue a dedicated high-RPM complimentary key for load testing, then revoke it after the run — this keeps production customer keys unaffected.
 
 ## Loadtest Results
 
@@ -177,14 +177,14 @@ The cost per sustainable request is **higher** with 2 replicas because the throu
 
 - **The loadtest's burst scenario inherits queue from the preceding stress scenario.** Both 1r and 2r show 0% success on burst — this is a test ordering artifact, not a scaling defect. The fix is to run burst standalone or insert a queue-drain wait.
 - **Capacity test's lowest tier is sensitive to startup state.** A first run on 1r showed contaminated 2/min results because the loadtest queue hadn't drained. Always restart the service between loadtest and capacity test.
-- **Rate limiting blocks load testing.** The default `RATE_LIMIT_SPEECH=30/minute` causes 429 storms under stress workloads. For testing, raise it to a high value (`10000/minute`) on the VPS via `.env`, recreate the service, and restore afterward.
+- **Rate limiting blocks load testing.** Per-key rate limits will trigger 429 storms under stress workloads when the test key is provisioned at a production-shaped RPM. For testing, issue a dedicated complimentary key at the 10 000 cap (`comadre-keys issue-key --billing-mode complimentary --rpm 10000`), run the load test against it, and revoke it afterward. No service restart or env-var edit is required.
 
 ### Operational caveats for multi-replica deployments
 
 - **All replicas restart simultaneously.** The daily restart cron and `docker compose up -d --no-build` recreate every replica at once. With 2+ replicas, the simultaneous model load at boot can spike memory to `N × 1500 MB` (Kokoro) or `N × 5700 MB` (Kokoro+Qwen3). Mitigation: restart replicas individually (`for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 60; done`).
 - **First deploy must use `replicas: 1`.** Concurrent model downloads from multiple replicas to the same shared volume can corrupt the model files. Always start with 1 replica, let it download and cache models, then scale up.
 - **`depends_on: condition: service_healthy` blocks Caddy on every replica passing healthcheck.** If one replica fails to start (e.g., OOM during simultaneous model load), Caddy never starts and the entire service is unreachable. For multi-replica deployments where partial availability is preferable, change to `condition: service_started`.
-- **Rate limiting is per-instance.** With 2 replicas and `RATE_LIMIT_SPEECH=30/minute`, a single client IP can effectively send 60 req/min (30 per replica) because slowapi is in-memory and not shared across replicas. For strict global rate limiting, an external Redis store would be required.
+- **Rate-limit buckets are per-instance.** Per-key rate limits use `limits` with in-memory storage (`MovingWindowRateLimiter`). With 2 replicas and `rate_limit_rpm=30`, a single key can effectively send 60 req/min (30 per replica) because the buckets are not shared. For strict cluster-wide per-key limits, a shared-storage backend (Redis/SQLite) would be required — this is a documented future story, not a shipped feature. See [rate-limiting.md](rate-limiting.md).
 - **Health endpoint reports per-instance state.** Whichever replica answers the health request reports its own `queue_depth`, `memory_mb`, and `uptime_seconds`. Cluster-wide observability requires querying each replica directly via `docker exec`, or aggregating logs.
 
 ## Recommendations
@@ -221,7 +221,7 @@ for i in $(seq 1 10); do curl -sk https://YOUR_DOMAIN/health | jq .uptime_second
 
 1. **Switch to `lb_policy least_conn` in the Caddyfile.** This would route new requests to whichever replica has the fewest active connections, reducing variance from long-message processing. Expected gain: throughput speedup from ~1.5x to ~1.8x at saturation.
 2. **Reduce per-replica CPU limit to 3 cores.** With `cpus: "3"`, two replicas use 6 of 8 CPUs, leaving 2 for host overhead. This may increase single-request latency (~10–15%) but reduce scheduling jitter and improve consistency at peak.
-3. **Use external rate limiting (Redis-backed slowapi or Caddy-level limits).** Per-instance rate limiting multiplies the effective limit by replica count, which is rarely the desired behavior in production.
+3. **Move rate-limit storage to a shared backend (Redis or a SQLite bucket table).** Per-instance in-memory storage multiplies each key's effective RPM by the replica count. A shared backend would enforce the configured `rate_limit_rpm` cluster-wide. This is a tracked future story — the current deploy ships `replicas: 1`, so the caveat is dormant at defaults.
 4. **Implement startup staggering in the daily restart cron.** Restart one replica, wait for healthy, then restart the next. Avoids the simultaneous model-load memory spike.
 
 ### Per-VPS scaling vs multi-VPS scaling
@@ -270,7 +270,7 @@ This update re-measures everything with a **randomized workload** (24-sentence c
 | **C** | 2 | 4 | **least_conn** | Primary improvement candidate |
 | **D** | 2 | **3** | least_conn | CPU-trade-off candidate |
 
-Same Kokoro voice (`kokoro/pm_santa`), same 8 capacity tiers (2/5/10/20/30/50/75/100 req/min), same `RATE_LIMIT_SPEECH=10000/minute` testing override, same VPS (10.10.10.207). Each run = `loadtest.py --scenario all --seed 42` followed by `capacity_test.py --seed 42`, with `docker compose restart tts-service` between scripts.
+Same Kokoro voice (`kokoro/pm_santa`), same 8 capacity tiers (2/5/10/20/30/50/75/100 req/min), same test key provisioned at the 10 000 RPM cap (`comadre-keys issue-key --rpm 10000 --billing-mode complimentary`, revoked after the session), same VPS (10.10.10.207). Each run = `loadtest.py --scenario all --seed 42` followed by `capacity_test.py --seed 42`, with `docker compose restart tts-service` between scripts.
 
 ### Capacity test results (4-way comparison)
 

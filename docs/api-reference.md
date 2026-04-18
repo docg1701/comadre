@@ -4,13 +4,15 @@ Comadre exposes an OpenAI-compatible TTS endpoint and a health endpoint.
 
 ## Authentication
 
-All requests to `/v1/audio/speech` require a Bearer token in the `Authorization` header. The token must match the `API_KEY` environment variable.
+All requests to `/v1/audio/speech` require a Bearer token in the `Authorization` header. The token must be an active, non-expired API key issued via the `comadre-keys` CLI and stored in the encrypted registry.
 
 ```text
-Authorization: Bearer YOUR_API_KEY
+Authorization: Bearer cmdr_live_<plaintext-issued-once>
 ```
 
-The `/health` endpoint does not require authentication.
+Keys are issued with `comadre-keys issue-key`. The plaintext is displayed once at issuance and never again — the registry stores only a SHA-256 hash and an 8-character display prefix. See [monetization.md](monetization.md) for the full lifecycle.
+
+The `/health` endpoint does not require authentication. When called without a valid bearer, it returns a minimal payload (`status` and `voices`). Passing a valid bearer unlocks the full payload (engines, queue depth, uptime, memory, version).
 
 ## POST /v1/audio/speech
 
@@ -22,7 +24,7 @@ Generate speech audio from text input.
 
 | Header | Required | Value |
 | --- | --- | --- |
-| `Authorization` | Yes | `Bearer YOUR_API_KEY` |
+| `Authorization` | Yes | `Bearer cmdr_live_<plaintext>` |
 | `Content-Type` | Yes | `application/json` |
 
 **Body:**
@@ -118,22 +120,24 @@ Missing or malformed `Authorization` header:
   "error": {
     "message": "Missing or malformed Authorization header",
     "type": "authentication_error",
-    "hint": "Check the API_KEY environment variable and ensure your Authorization header uses 'Bearer <key>'."
+    "hint": "Send 'Authorization: Bearer <plaintext>' using a key issued via comadre-keys issue-key."
   }
 }
 ```
 
-Wrong API key:
+Unknown API key (not present in the registry, or a token that never existed):
 
 ```json
 {
   "error": {
-    "message": "Invalid or missing API key",
+    "message": "Invalid API key",
     "type": "authentication_error",
-    "hint": "Check the API_KEY environment variable and ensure your Authorization header uses 'Bearer <key>'."
+    "hint": "The key was not found in the registry. Contact your Comadre operator for a fresh key."
   }
 }
 ```
+
+A 401 is also returned when a key is suspended, revoked, or past `paid_until`. The `hint` field echoes the operator-contact string configured via `OPERATOR_CONTACT_HINT`.
 
 **404 -- Voice Not Found:**
 
@@ -166,12 +170,12 @@ Wrong API key:
   "error": {
     "message": "Rate limit exceeded",
     "type": "rate_limit_error",
-    "hint": "Too many requests. Try again in 60 seconds."
+    "hint": "Too many requests. Try again in 37 seconds."
   }
 }
 ```
 
-The 429 response includes a `Retry-After` header. Default limits: 30 req/min for speech (per client IP), 60 req/min for health. Configurable via `RATE_LIMIT_SPEECH` and `RATE_LIMIT_HEALTH` environment variables. Client IP is extracted from the `X-Forwarded-For` header injected by Caddy, falling back to `request.client.host` for direct connections. Caddy's `trusted_proxies private_ranges` directive prevents external clients from spoofing this header.
+The 429 response carries a `Retry-After: <N>` header and matching `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers. `Retry-After` (and the matching hint) are derived from `X-RateLimit-Reset - now`, so clients can back off accurately. The same three `X-RateLimit-*` headers are also emitted on allowed responses. Rate-limiting is per API key, not per IP: each key's `rate_limit_rpm` (set at `comadre-keys issue-key --rpm <n>` and adjustable via `update-key --rpm <n>`) determines the budget. The bucket is keyed on the registry's `key_id`, so it survives `comadre-keys rotate-key` and is independent across two keys issued to the same customer. The TTS engine is never invoked when a request hits the rate limit. See [rate-limiting.md](rate-limiting.md) for the algorithm and multi-replica caveat. `/health` has no application-layer rate limit.
 
 **500 -- Server Error:**
 
@@ -263,7 +267,7 @@ Qwen3-TTS voices use reference WAV files for voice cloning. Voices are discovere
 
 ```bash
 curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
   -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
@@ -273,7 +277,7 @@ curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
 
 ```bash
 curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
   -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
   --output test_clone.ogg
@@ -294,7 +298,7 @@ Response (401):
   "error": {
     "message": "Missing or malformed Authorization header",
     "type": "authentication_error",
-    "hint": "Check the API_KEY environment variable and ensure your Authorization header uses 'Bearer <key>'."
+    "hint": "Send 'Authorization: Bearer <plaintext>' using a key issued via comadre-keys issue-key."
   }
 }
 ```

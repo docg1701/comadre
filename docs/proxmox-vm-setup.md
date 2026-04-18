@@ -218,7 +218,7 @@ cd deploy/ansible
 vim inventory/production.yml
 
 # Deploy
-export COMADRE_API_KEY="your-secret-key"
+export KEY_REGISTRY_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 ```
 

@@ -8,9 +8,14 @@ all:
       ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
-    # API authentication key — reads from COMADRE_API_KEY env var (required)
-    # Set it before running any playbook: export COMADRE_API_KEY="your-secret-key"
-    api_key_value: "{{ lookup('env', 'COMADRE_API_KEY') }}"
+    # Fernet key used to encrypt tax IDs at rest in the key registry (REQUIRED).
+    # Reads from COMADRE_KEY_REGISTRY_ENCRYPTION_KEY env var. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # In production, store inside an ansible-vault file rather than plain env.
+    key_registry_encryption_key: "{{ lookup('env', 'COMADRE_KEY_REGISTRY_ENCRYPTION_KEY') }}"
+
+    # Operator contact string shown in CLI error messages (e.g. your ops email).
+    operator_contact_hint: ""
 
     # Optional: local directory containing kokoro/ subdir with voice files
     voices_local_dir: "{{ playbook_dir }}/../../../voices"
@@ -28,10 +33,6 @@ all:
     # Public landing page (true is the default — Oracle hosts are public-facing
     # so the showcase page makes sense here)
     landing_enabled: true
-
-    # Rate limiting (per client IP, behind Caddy via X-Forwarded-For)
-    rate_limit_speech: "30/minute"
-    rate_limit_health: "60/minute"
 
     # Daily restart hour (0-23)
     restart_hour: 3

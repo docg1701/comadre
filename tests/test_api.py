@@ -579,7 +579,7 @@ class TestRegistryAuth:
             response = await client.post(
                 "/v1/audio/speech",
                 json=_SPEECH_BODY,
-                headers={"Authorization": "Bearer cmdr_live_anything_here"},
+                headers={"Authorization": f"Bearer cmdr_live_{'a' * 43}"},
             )
         assert response.status_code == 500
         body = response.json()
@@ -702,10 +702,9 @@ class TestRegistryAuth:
 
 
 class TestPerKeyRateLimit:
-    """Story 2.2 (2026-04-18 rewrite) — ``/v1/audio/speech`` per-key rate limit.
+    """``/v1/audio/speech`` per-key rate limit — end-to-end via ``AsyncClient``.
 
-    Uses the ``limits`` library directly (no slowapi). Each test gets a fresh
-    ``app`` fixture with a fresh ``RateLimiter``.
+    Each test gets a fresh ``app`` fixture with a fresh ``RateLimiter``.
     """
 
     @pytest.fixture(autouse=True)
@@ -724,11 +723,22 @@ class TestPerKeyRateLimit:
             app.state.registry_db, rate_limit_rpm=2
         )
         headers = {"Authorization": f"Bearer {plaintext}"}
+        responses = []
         for _ in range(2):
             response = await client.post(
                 "/v1/audio/speech", json=_SPEECH_BODY, headers=headers
             )
             assert response.status_code == 200, response.json()
+            responses.append(response)
+        # AC13 side-effect — allow path emits X-RateLimit-* headers so
+        # clients see remaining budget without waiting for a 429.
+        first, second = responses
+        assert first.headers["x-ratelimit-limit"] == "2"
+        assert first.headers["x-ratelimit-remaining"] == "1"
+        assert int(first.headers["x-ratelimit-reset"]) > 0
+        assert second.headers["x-ratelimit-limit"] == "2"
+        assert second.headers["x-ratelimit-remaining"] == "0"
+        assert int(second.headers["x-ratelimit-reset"]) > 0
 
     async def test_per_key_limit_trips_on_n_plus_one(
         self, app: Any, client: AsyncClient
@@ -744,15 +754,20 @@ class TestPerKeyRateLimit:
             assert r.status_code == 200
         trip = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
         assert trip.status_code == 429
-        assert trip.headers["retry-after"] == "60"
+        retry_after = int(trip.headers["retry-after"])
+        assert 1 <= retry_after <= 60
         body = trip.json()
         assert body == {
             "error": {
                 "message": "Rate limit exceeded",
                 "type": "rate_limit_error",
-                "hint": "Too many requests. Try again in 60 seconds.",
+                "hint": f"Too many requests. Try again in {retry_after} seconds.",
             }
         }
+        # X-RateLimit-* headers emitted on deny to mirror the allow path.
+        assert trip.headers["x-ratelimit-limit"] == "2"
+        assert trip.headers["x-ratelimit-remaining"] == "0"
+        assert int(trip.headers["x-ratelimit-reset"]) > 0
 
     async def test_tts_engine_not_invoked_on_429(
         self,
@@ -941,7 +956,13 @@ class TestPerKeyRateLimit:
         assert any("429" in rec.getMessage() for rec in records), (
             "no access-log record for the 429 response"
         )
-        hex64 = re.compile(r"[0-9a-f]{64}")
+        # SHA-256 digests are 64 lowercase-hex chars — catch any
+        # accidental leak of a token hash shape even if it's not our
+        # specific test key's hash.
+        sha256_shape = re.compile(r"\b[0-9a-f]{64}\b")
+        # ULIDs are 26 chars of Crockford-base32 — catches any leak of
+        # `key_<ULID>` or `cust_<ULID>` beyond the specific IDs we seeded.
+        ulid_id_shape = re.compile(r"\b(?:key|cust)_[0-9A-HJKMNP-TV-Z]{26}\b")
         for record in records:
             rendered = record.getMessage()
             assert plaintext not in rendered
@@ -949,7 +970,12 @@ class TestPerKeyRateLimit:
             assert "cmdr_live_" not in rendered
             assert "Probe Customer" not in rendered
             assert kid not in rendered
-            assert not hex64.search(rendered)
+            assert not sha256_shape.search(rendered), (
+                f"access log leaked a SHA-256-shaped string: {rendered!r}"
+            )
+            assert not ulid_id_shape.search(rendered), (
+                f"access log leaked a key_/cust_ ULID: {rendered!r}"
+            )
 
 
 class TestMonetizationHealthEndpoint:

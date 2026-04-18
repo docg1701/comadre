@@ -1,20 +1,22 @@
 """Registry-backed API-key authentication.
 
-Sole auth path as of 2026-04-18 (FR27 retired — no dual-mode, no legacy
-single-``API_KEY`` fallback). ``verify_api_key`` is the FastAPI
-dependency wired onto ``POST /v1/audio/speech``. Sets
+``verify_api_key`` is the FastAPI dependency wired onto
+``POST /v1/audio/speech`` — it parses the bearer, shape-checks it
+against the ``cmdr_live_<43-char>`` contract, and delegates to
+``verify_api_key_registry`` which runs the DB + cache lookup. Sets
 ``request.state.auth_payload`` on success; raises a ``ComadreError``
 subclass on any denial outcome.
 
 The module's only runtime I/O is a single indexed SELECT against the key
-registry on cache-miss. Zero external deps — the timing-equalisation dummy
-compare is ``hmac.compare_digest`` from stdlib.
+registry on cache-miss. Zero external deps — the timing-equalisation
+dummy compare is ``hmac.compare_digest`` from stdlib.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
 import hmac
+import re
 import sqlite3
 from datetime import date
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -33,13 +35,22 @@ from comadre.keys.billing import ManualBillingProvider
 from comadre.keys.cache import AuthCache
 from comadre.keys.db import lookup_key_auth
 from comadre.keys.models import ApiKeyRecord, AuthPayload
-from comadre.keys.tokens import hash_api_key
+from comadre.keys.tokens import API_KEY_PREFIX, hash_api_key
 from comadre.logging import get_logger
 
 _logger = get_logger("keys.auth")
 
 # Pre-computed dummy hash for timing-equalisation. Constant per process.
 _DUMMY_HASH = hash_api_key("__dummy_for_timing_equalisation__")
+
+# Valid plaintext shape: ``cmdr_live_`` + 43 URL-safe base64 chars =
+# 53 chars total. Any token outside this shape cannot match a registry
+# row, so ``verify_api_key`` short-circuits to a 401 before touching the
+# DB — this blocks unknown-bearer spray attacks (every probe would
+# otherwise serialize on the single sqlite3 connection). The regex
+# enforces the URL-safe base64 charset on the suffix so Unicode or
+# whitespace-padded tokens are rejected before any cache or DB lookup.
+_VALID_TOKEN_RE = re.compile(rf"\A{re.escape(API_KEY_PREFIX)}[A-Za-z0-9_-]{{43}}\Z")
 
 # Shared billing provider instance. MVP has exactly one implementation.
 _billing = ManualBillingProvider()
@@ -63,15 +74,28 @@ async def verify_api_key(
 ) -> None:
     """FastAPI dependency — registry-mode bearer auth.
 
-    Parses the ``Authorization: Bearer <token>`` header, then delegates
-    to ``verify_api_key_registry`` (which carries the actual DB + cache
+    Parses the ``Authorization: Bearer <token>`` header, shape-checks the
+    token against the ``cmdr_live_<43-char>`` contract, then delegates to
+    ``verify_api_key_registry`` (which carries the actual DB + cache
     logic and is directly callable by tests without HTTP framing).
-    2026-04-18: sole auth path — dual-mode with the retired single-
-    ``API_KEY`` was removed with FR27.
+
+    The shape check short-circuits to ``ApiKeyNotFoundError`` before any
+    DB read when the bearer can't possibly match a stored plaintext. This
+    blocks unknown-bearer spray attacks from serialising on the single
+    sqlite3 connection (critical on ``/health``, which is not
+    rate-limited at the app layer). The ``cmdr_live_`` prefix is public
+    information (documented in ``issue-key`` output), so the timing
+    distinction between "bad shape" and "good shape, unknown" leaks
+    nothing an attacker couldn't already read from the docs.
     """
-    if not authorization.startswith("Bearer "):
+    # RFC 6750 §2.1: the "Bearer" scheme is case-insensitive. Tokens are
+    # not — they must be compared byte-for-byte against the registry hash.
+    scheme_end = authorization.find(" ")
+    if scheme_end != 6 or authorization[:6].lower() != "bearer":
         raise AuthenticationError("Missing or malformed Authorization header")
-    token = authorization.removeprefix("Bearer ")
+    token = authorization[7:]
+    if not _VALID_TOKEN_RE.match(token):
+        raise ApiKeyNotFoundError()
     await verify_api_key_registry(request, token=token)
 
 

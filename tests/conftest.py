@@ -35,11 +35,6 @@ def _clear_settings_cache() -> None:
     get_settings.cache_clear()
 
 
-# 2026-04-18: the slowapi ``_reset_rate_limiter`` autouse fixture is gone.
-# Each test's ``app`` fixture constructs a fresh ``RateLimiter`` with its own
-# in-memory storage, so no cross-test bucket leakage is possible.
-
-
 @pytest.fixture()
 def fernet_key() -> str:
     """Return a freshly generated Fernet key for tests."""
@@ -50,9 +45,8 @@ def fernet_key() -> str:
 def mock_settings(fernet_key: str) -> Settings:
     """Return a Settings instance with test defaults.
 
-    2026-04-18: `api_key` (single shared secret) was removed when FR27 was
-    retired; registry mode is the only auth path. Tests that need a
-    specific encryption key override `key_registry_encryption_key`.
+    Tests that need a specific encryption key override
+    ``key_registry_encryption_key``.
     """
     return Settings(key_registry_encryption_key=SecretStr(fernet_key))
 
@@ -97,12 +91,10 @@ def app(
 ) -> Any:
     """Registry-mode FastAPI app with mocked engine state.
 
-    2026-04-18: the pre-FR27-retirement `app` / `app_monetized` split is
-    collapsed into a single fixture — there is no legacy mode. Opens the
-    registry DB, applies migrations, attaches an ``AuthCache``. Integration
-    tests seed customer/api_key rows via ``app.state.registry_db`` directly.
+    Opens the registry DB, applies migrations, attaches an ``AuthCache``.
+    Integration tests seed customer/api_key rows via ``app.state.registry_db``
+    directly.
     """
-    monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(registry_db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
     monkeypatch.setenv(
@@ -151,10 +143,9 @@ def registry_db(app: Any) -> sqlite3.Connection:
 def auth_headers(app: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Seed a generous active key and return a Bearer-auth header dict.
 
-    2026-04-18: pre-FR27-retirement this fixture returned a legacy
-    ``test-key-12345`` bearer; now it seeds an actual registry row with a
-    high ``rate_limit_rpm`` so any test using ``auth_headers`` can fire
-    dozens of requests without tripping the per-key limit.
+    The seeded key's ``rate_limit_rpm`` is intentionally high so any test
+    using ``auth_headers`` can fire dozens of requests without tripping
+    the per-key limit.
     """
     from datetime import date
 

@@ -143,9 +143,21 @@ class ApiKeyRevokedError(ComadreError):
 
 
 class RateLimitError(ComadreError):
-    """Raised when a client exceeds the rate limit."""
+    """Raised when a client exceeds the rate limit.
 
-    def __init__(self, retry_after: int = 60) -> None:
+    Carries the ``limits`` window snapshot so ``comadre_error_handler`` can
+    emit the ``X-RateLimit-*`` headers on the 429 response — matching the
+    headers emitted on the allowed-request path by ``check_rate_limit``.
+    """
+
+    def __init__(
+        self,
+        retry_after: int,
+        *,
+        limit: int,
+        remaining: int,
+        reset: int,
+    ) -> None:
         super().__init__(
             message="Rate limit exceeded",
             status_code=429,
@@ -153,6 +165,9 @@ class RateLimitError(ComadreError):
             hint=f"Too many requests. Try again in {retry_after} seconds.",
         )
         self.retry_after = retry_after
+        self.limit = limit
+        self.remaining = remaining
+        self.reset = reset
 
 
 class InvalidTaxIdError(ComadreError):
@@ -209,7 +224,12 @@ async def comadre_error_handler(request: Request, exc: ComadreError) -> JSONResp
     """Handle ComadreError subclasses with structured JSON response."""
     headers: dict[str, str] | None = None
     if isinstance(exc, RateLimitError):
-        headers = {"Retry-After": str(exc.retry_after)}
+        headers = {
+            "Retry-After": str(exc.retry_after),
+            "X-RateLimit-Limit": str(exc.limit),
+            "X-RateLimit-Remaining": str(exc.remaining),
+            "X-RateLimit-Reset": str(exc.reset),
+        }
     elif isinstance(exc, ServiceUnavailableError):
         headers = {"Retry-After": str(exc.retry_seconds)}
     return JSONResponse(

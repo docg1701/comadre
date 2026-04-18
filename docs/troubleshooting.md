@@ -4,17 +4,28 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 ## Startup Failures
 
-### API_KEY not set
+### KEY_REGISTRY_ENCRYPTION_KEY not set or malformed
 
-**Symptom:** Container exits immediately on startup.
+**Symptom:** Container exits immediately on startup. Logs mention `pydantic` validation failure on `key_registry_encryption_key` or "must be a valid Fernet key".
 
-**Cause:** `API_KEY` environment variable is missing or empty in `.env`.
+**Cause:** `KEY_REGISTRY_ENCRYPTION_KEY` is missing from `.env`, empty, or not a valid 44-character base64 Fernet key.
 
 **Resolution:**
 
-1. Check `.env` file exists and contains `API_KEY=your-key-here`
-2. Verify Docker Compose reads it: `docker compose config | grep API_KEY`
-3. Restart: `docker compose up -d`
+1. Check `.env` contains a valid key:
+
+   ```bash
+   grep KEY_REGISTRY_ENCRYPTION_KEY ~/comadre/.env
+   ```
+
+2. If missing, generate one and paste it into `.env`:
+
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+3. IMPORTANT: store the key in your password manager. Losing it makes every encrypted tax ID in the registry unrecoverable.
+4. Restart: `docker compose up -d`.
 
 ### Model download fails
 
@@ -72,15 +83,20 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 ### 401 authentication error
 
-**Symptom:** Requests return 401 with `"Invalid or missing API key"`.
+**Symptom:** Requests return 401.
 
-**Cause:** The `Authorization` header is missing, malformed, or the key does not match.
+**Possible causes and resolutions:**
 
-**Resolution:**
+1. **Missing or malformed `Authorization` header.** Verify the request uses `Authorization: Bearer cmdr_live_<plaintext>` (note the space after `Bearer`).
+2. **Key not in the registry.** Confirm the plaintext you are sending matches a key listed in `comadre-keys list-keys`. The 8-character prefix shown there is the first 8 characters after `cmdr_live_`.
 
-1. Verify header format: `Authorization: Bearer YOUR_API_KEY` (note the space after "Bearer")
-2. Check the key matches what is in `.env` on the VPS
-3. Verify the key is loaded (check length, not the value): `docker compose exec tts-service sh -c 'echo API_KEY length: ${#API_KEY}'`
+   ```bash
+   docker compose exec tts-service comadre-keys list-keys
+   ```
+
+3. **Key is suspended or revoked.** `comadre-keys show <prefix>` reveals the status. Use `comadre-keys update-key` or `issue-key` to restore access as appropriate.
+4. **Key is past `paid_until`.** A manual-billing key whose `paid_until` has lapsed authenticates as suspended. Either mark it paid through the billing workflow, extend it, or rotate.
+5. **Cache state unexpectedly stale after a CLI mutation.** `comadre-keys` mutations touch a sentinel file (`{KEY_REGISTRY_DB_PATH}.invalidate`) that the API process stats on every cache read. If you see stale auth after a CLI mutation, confirm the container and the host see the same registry directory: the CLI must be invoked via `docker compose exec tts-service comadre-keys ...` (or the host path must be bind-mounted to the same volume used inside the container). Otherwise the sentinel the CLI writes is in a different filesystem than the one the API is watching and invalidation never fires. `docker compose restart tts-service` is the unconditional fallback.
 
 ### 404 voice not found
 
@@ -96,16 +112,27 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 ### 429 rate limit exceeded
 
-**Symptom:** Requests return 429 with `"Rate limit exceeded"` and a `Retry-After` header.
+**Symptom:** Requests return 429 with `"Rate limit exceeded"` and a `Retry-After: <N>` header alongside `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`.
 
-**Cause:** The client IP has exceeded the configured rate limit (default: 30 req/min for speech, 60 req/min for health).
+**Cause:** The API key used in the request has exceeded its `rate_limit_rpm` within the rolling 1-minute window. The limit is per-key, not per-IP, and the bucket is keyed on the registry's `key_id`.
 
 **Resolution:**
 
-1. Wait for the period indicated by `Retry-After` and retry
-2. If the limit is too low for your use case, increase it in `.env`: `RATE_LIMIT_SPEECH=60/minute`
-3. Restart after changing: `docker compose restart tts-service`
-4. For high-traffic deployments, scale horizontally with multiple instances behind Caddy
+1. Wait for the `Retry-After` window and retry. `Retry-After` is dynamic — it reports the actual seconds until the oldest hit in the window falls off, clamped to a minimum of 1.
+2. To raise this customer's cap permanently, use the `comadre-keys` CLI (no container restart needed):
+
+   ```bash
+   docker compose exec tts-service comadre-keys update-key <key-prefix> --rpm 120
+   ```
+
+   `--rpm` accepts values 1..10 000. Every `comadre-keys` mutation touches the registry invalidation sentinel, so the change takes effect on the very next request — no cache-TTL wait.
+3. Inspect recent rate-limit behaviour for a specific key:
+
+   ```bash
+   docker compose exec tts-service comadre-keys show <key-prefix>
+   ```
+
+4. For deployments that scale beyond `replicas: 1`, remember that rate-limit buckets are per-replica and the effective RPM is `replicas × rate_limit_rpm`. See [rate-limiting.md](rate-limiting.md).
 
 ### Request timeout
 
@@ -173,16 +200,21 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 3. Check Caddy logs: `docker compose logs caddy`
 4. Verify Caddy can reach the TTS service: `docker compose exec caddy wget -qO- http://tts-service:8000/health`
 
-### API key rotation fails
+### `comadre-keys` CLI errors
 
-**Symptom:** `rotate-api-key.sh` reports service not healthy after restart.
+**Symptom:** `comadre-keys` commands exit with "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set" or database errors.
 
 **Resolution:**
 
-1. Check container logs: `docker compose logs --tail=20 tts-service`
-2. Verify `.env` was updated: `grep API_KEY ~/comadre/.env`
-3. Manual restart: `cd ~/comadre && docker compose restart tts-service`
-4. If the service is stuck, full restart: `docker compose down && docker compose up -d`
+1. Confirm you are running the CLI inside the container (or against the same registry volume):
+
+   ```bash
+   docker compose exec tts-service comadre-keys list-customers
+   ```
+
+2. Check that `.env` on the host has `KEY_REGISTRY_ENCRYPTION_KEY` populated (`grep KEY_REGISTRY_ENCRYPTION_KEY ~/comadre/.env`). If the CLI is being run outside the container, the same env var must be exported in the calling shell.
+3. For "Database error" messages, verify the registry path is writable and the volume is mounted: `docker compose exec tts-service ls -la /var/lib/comadre/registry.db`.
+4. The CLI exit codes map to: 0 success, 2 usage error, 3 not found, 5 database error, 6 configuration error (see `comadre-keys --help`).
 
 ### UFW blocking access
 

@@ -60,7 +60,6 @@ def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     key = Fernet.generate_key().decode()
     db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("API_KEY", "test-api-key")
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
     return {"db_path": str(db_path), "key": key}
@@ -315,7 +314,6 @@ class TestMissingEncryptionKey:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-api-key")
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
         # Ensure pydantic-settings won't accidentally load a project .env
@@ -343,8 +341,6 @@ class TestMissingEncryptionKey:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         malformed = "not-a-valid-fernet-key"
-        monkeypatch.setenv("API_KEY", "test-api-key")
-        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
         monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", malformed)
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
         monkeypatch.chdir(tmp_path)

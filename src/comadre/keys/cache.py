@@ -1,4 +1,4 @@
-"""In-memory TTL cache for auth payloads.
+"""In-memory TTL cache for auth payloads with cross-process invalidation.
 
 Wraps ``cachetools.TTLCache`` so downstream code depends on this module
 (and this module alone) for cache behaviour. A future swap (LRU, ARC,
@@ -7,10 +7,18 @@ per-replica vs shared) touches this file only.
 The cache stores ``AuthPayload`` keyed by SHA-256 hex digest of the bearer
 token — the same hash used for the DB lookup. No plaintext, no personal
 data ever enters the cache.
+
+Cross-process invalidation via a filesystem sentinel — the CLI process
+(``comadre-keys update-key``, ``rotate-key``, ``revoke-key``) touches
+``{registry_db_path}.invalidate`` on every mutation. The API checks the
+sentinel's mtime on every cache read; if it advanced since the last
+check, the whole cache is flushed. A revoked key stops authenticating on
+the very next request — no 60-second TTL window.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 from cachetools import TTLCache
@@ -38,6 +46,7 @@ class AuthCache:
         *,
         maxsize: int = AUTH_CACHE_DEFAULT_MAXSIZE,
         ttl: int = AUTH_CACHE_DEFAULT_TTL_SECONDS,
+        invalidation_sentinel: Path | None = None,
         timer: Any = None,
     ) -> None:
         if timer is None:
@@ -48,8 +57,35 @@ class AuthCache:
         self._misses = 0
         self.maxsize = maxsize
         self.ttl = ttl
+        self._sentinel = invalidation_sentinel
+        self._sentinel_mtime_ns = self._read_sentinel_mtime()
+
+    def _read_sentinel_mtime(self) -> int:
+        """Return the sentinel file's mtime in ns, or 0 if absent."""
+        if self._sentinel is None:
+            return 0
+        try:
+            return self._sentinel.stat().st_mtime_ns
+        except FileNotFoundError:
+            return 0
+
+    def _flush_if_invalidated(self) -> None:
+        """Flush the cache if a CLI mutation advanced the sentinel mtime.
+
+        Uses ``>`` rather than ``!=`` so clock-rollback (NTP step-back,
+        container clock drift) doesn't trigger spurious cache flushes.
+        Same-tick collisions on coarse-mtime filesystems (FAT32, some
+        overlay FS) are a known limitation tracked in deferred-work.
+        """
+        if self._sentinel is None:
+            return
+        current = self._read_sentinel_mtime()
+        if current > self._sentinel_mtime_ns:
+            self._cache.clear()
+            self._sentinel_mtime_ns = current
 
     def get(self, key_hash: str) -> AuthPayload | None:
+        self._flush_if_invalidated()
         payload = cast("AuthPayload | None", self._cache.get(key_hash))
         if payload is None:
             self._misses += 1
@@ -67,7 +103,6 @@ class AuthCache:
         """Return a read-only snapshot for telemetry.
 
         Story 2.3 reads this via ``comadre-keys cache-status --format json``.
-        Story 2.1 exposes the fields but does not wire the CLI.
         """
         return {
             "entries": len(self._cache),

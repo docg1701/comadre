@@ -175,7 +175,6 @@
 
           No restart needed — voices are available immediately.
           Verify with:
-            curl -sk -H "Authorization: Bearer $COMADRE_API_KEY" \
-              https://{{ domain | default('localhost') }}/health | jq '.voices'
+            curl -sk https://{{ domain | default('localhost') }}/health | jq '.voices'
 
           ============================================
