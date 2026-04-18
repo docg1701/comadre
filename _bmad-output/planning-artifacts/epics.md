@@ -2,6 +2,11 @@
 stepsCompleted: [1, 2, 3, 4]
 status: 'complete'
 completedAt: '2026-04-16'
+lastEdited: '2026-04-18'
+editHistory:
+  - date: '2026-04-18'
+    changes: |
+      Retired FR25 (per-IP rate-limit in app) and FR27 (legacy single-API_KEY). Epic 2 overview, Story 2.1 scope, and Story 2.2 ACs revised. Epic 2 now covers FR21–FR24, FR26, FR28, FR29, FR33, FR45. Story 2.2 rewritten to drop `slowapi` in favour of `limits` directly; per-key is the only rate-limit in the application. See PRD revision note (2026-04-18).
 inputDocuments:
   - _bmad-output/planning-artifacts/prd.md
   - _bmad-output/planning-artifacts/architecture.md
@@ -54,9 +59,9 @@ This document provides the complete epic and story breakdown for Comadre 2.0.0, 
 - FR22: System validates an incoming Bearer key against an immutably-hashed copy stored in the registry, never storing or comparing the plaintext.
 - FR23: System caches valid authorizations to satisfy the NFR1 auth-path latency target for repeat requests from the same key.
 - FR24: System enforces a per-key rate limit derived at request time from the specific key's configured limit.
-- FR25: System enforces a per-IP rate limit applied independently of auth outcome, so failed auth attempts are bounded.
+- FR25: ~~System enforces a per-IP rate limit applied independently of auth outcome, so failed auth attempts are bounded.~~ **RETIRED 2026-04-18** — removed from the application layer. See PRD revision note for rationale.
 - FR26: System equalizes the timing of key-lookup operations so that an attacker cannot distinguish a hash hit from a miss by wall-clock observation.
-- FR27: System can operate in a legacy single-API-key mode when the monetization toggle is disabled, preserving compatibility with pre-2.0.0 deployments.
+- FR27: ~~System can operate in a legacy single-API-key mode when the monetization toggle is disabled, preserving compatibility with pre-2.0.0 deployments.~~ **RETIRED 2026-04-18** — Comadre 2.0.0 is registry-only; single-`API_KEY` env var and `monetization_enabled` toggle both removed. See PRD revision note.
 - FR28: System returns a distinct 401 error envelope for suspended and revoked keys that directs the customer to their operator's billing contact.
 - FR29: System preserves the request and response contract of `/v1/audio/speech` and `/health` identically to Comadre 1.6.2, so existing customer integrations continue to function without modification.
 
@@ -141,7 +146,7 @@ This document provides the complete epic and story breakdown for Comadre 2.0.0, 
 **Compatibility (NFR30–NFR33)**
 
 - NFR30: The public `/v1/audio/speech` and `/health` request/response contracts must remain byte-identical to Comadre 1.6.2.
-- NFR31: The legacy single-API_KEY auth mode must preserve every behavior of 1.6.2 exactly.
+- NFR31: ~~The legacy single-API_KEY auth mode must preserve every behavior of 1.6.2 exactly.~~ **RETIRED 2026-04-18** — legacy mode removed; see PRD revision note.
 - NFR32: Ansible playbooks must remain idempotent.
 - NFR33: The `comadre-keys` CLI must be backward-compatible within a major version.
 
@@ -166,12 +171,12 @@ This document provides the complete epic and story breakdown for Comadre 2.0.0, 
 - SQLite file location: bind mount `./data/keys:/keys:rw` (Gap 2 resolution — not a named Docker volume). Host path `~/comadre/data/keys/registry.db`.
 - ID generation: ULID with typed prefix (`cust_` + ULID, `key_` + ULID) via `python-ulid`.
 - API key format: `cmdr_live_` + `secrets.token_urlsafe(32)`. Stored prefix: first 8 chars after `cmdr_live_`.
-- Dual-mode auth: conditional inside `verify_api_key()` gated by `monetization_enabled` boolean.
+- ~~Dual-mode auth: conditional inside `verify_api_key()` gated by `monetization_enabled` boolean.~~ **REVISED 2026-04-18:** single-mode registry auth. `verify_api_key` always goes through the registry lookup path; no toggle, no fallback.
 - Cache invalidation model: no mutation in MVP. `cache-status` CLI (renamed from `cache-flush`) reports the 60-second auth-cache TTL propagation bound and cache-health telemetry; it does not force invalidation. Operators needing faster propagation restart the affected replica(s).
 - BillingProvider ABC with 3 methods (`is_payment_current`, `on_key_issued`, `on_key_revoked`). Only `ManualBillingProvider` in MVP.
 - Import graph downward-only: `config/logging` → `exceptions/schemas` → `keys/models` → `keys/crypto` → `keys/db` → `keys/audit` → `keys/billing` → `keys/cache` → `keys/auth` → `rate_limit` → `api/health` → `main`. CLI has its own entry point.
 - New ComadreError subclasses: `ApiKeyNotFoundError`, `ApiKeySuspendedError`, `ApiKeyRevokedError`, `InvalidTaxIdError`, `KeyRegistryError`.
-- New settings fields in `config.py`: `monetization_enabled`, `key_registry_db_path`, `key_registry_encryption_key` (SecretStr), `operator_contact_hint`, `billing_day`, `billing_timezone`.
+- New settings fields in `config.py`: `key_registry_db_path`, `key_registry_encryption_key` (SecretStr, **required** as of 2026-04-18), `operator_contact_hint`, `billing_day`, `billing_timezone`. The `monetization_enabled` setting and the `api_key` (single-secret) setting are **removed** in 2.0.0 per FR27/NFR31 retirement.
 - CLI entry point: `pyproject.toml` → `[project.scripts]` → `comadre-keys = "comadre.keys.cli.app:main"`. Installed system-wide via `uv tool install`.
 - All naming conventions (DB tables, IDs, audit actions, CLI commands) defined in architecture patterns section.
 - Implementation sequence: models+crypto → db+audit+migrations → cache → billing → auth → config+exceptions extensions → rate_limit extension → main extension → cli → ansible+cron+docs.
@@ -225,9 +230,9 @@ This document provides the complete epic and story breakdown for Comadre 2.0.0, 
 | FR22 | 2 | Validate key against SHA-256 hash |
 | FR23 | 2 | Cache valid authorizations (TTLCache) |
 | FR24 | 2 | Per-key dynamic rate limit |
-| FR25 | 2 | Per-IP rate limit on failed auth |
+| FR25 | — | ~~Per-IP rate limit on failed auth~~ — **RETIRED 2026-04-18** |
 | FR26 | 2 | Timing-equalized key lookup |
-| FR27 | 2 | Legacy single-API_KEY mode toggle |
+| FR27 | — | ~~Legacy single-API_KEY mode toggle~~ — **RETIRED 2026-04-18**, 2.0.0 is registry-only |
 | FR28 | 2 | Distinct 401 for suspended/revoked with operator hint |
 | FR29 | 2 | Preserve /v1/audio/speech and /health contracts |
 | FR30 | 1 | Append-only audit log for all mutations |
@@ -261,8 +266,8 @@ The operator can register customers (with validated, encrypted CPF/CNPJ), issue 
 **FRs covered:** FR1–FR4, FR7–FR14, FR30, FR32, FR35, FR37
 
 ### Epic 2: API Authentication & Dynamic Rate Limiting
-Customers authenticate HTTP requests with their per-customer API keys. Each key enforces its own rate limit. Legacy single-key mode is preserved when monetization is disabled. Suspended/revoked keys get clear error envelopes directing the customer to their operator. Enables Journey 4 (Customer API Integration) and Journey 5 (Debug Session).
-**FRs covered:** FR21–FR29, FR33, FR45
+Customers authenticate HTTP requests with their per-customer API keys. Each key enforces its own rate limit from the registry. Suspended/revoked keys get clear error envelopes directing the customer to their operator. Enables Journey 4 (Customer API Integration) and Journey 5 (Debug Session). **2026-04-18 revision:** no legacy single-key mode; registry-only from the first byte (FR27 retired).
+**FRs covered:** FR21–FR24, FR26, FR28, FR29, FR33, FR45 (FR25 and FR27 retired 2026-04-18 — see PRD revision note)
 **Depends on:** Epic 1
 
 ### Epic 3: Billing & Revenue Operations
@@ -490,7 +495,9 @@ So that I can manage the full key lifecycle without creating new records.
 
 ## Epic 2: API Authentication & Dynamic Rate Limiting
 
-Customers authenticate HTTP requests with their per-customer API keys. Each key enforces its own rate limit. Legacy single-key mode is preserved when monetization is disabled. Suspended/revoked keys get clear error envelopes directing the customer to their operator.
+> **2026-04-18 revision:** FR27 (legacy single-API_KEY mode) and NFR31 (1.6.2 byte-identity) retired. Comadre 2.0.0 is registry-only from the first byte. Dual-mode dispatch, `monetization_enabled` toggle, and the single-`API_KEY` env var are all removed. Story 2.2 is being rewritten to drop `slowapi` in favour of `limits` directly; rate-limit is pure per-key via FastAPI `Depends`. No per-IP bucket anywhere — per-key caps + well-dimensioned key sales protect the TTS compute surface. Acceptance criteria below are rewritten to reflect registry-only semantics.
+
+Customers authenticate HTTP requests with their per-customer API keys. Each key enforces its own rate limit from its `rate_limit_rpm` registry row. Suspended/revoked keys get clear error envelopes directing the customer to their operator.
 
 ### Story 2.1: Registry-Based API Authentication
 
@@ -498,26 +505,22 @@ As a customer (API consumer),
 I want to authenticate with my per-customer API key,
 So that my requests are validated against the key registry with minimal latency.
 
-**Covers:** FR21, FR22, FR23, FR26, FR27, FR28, FR29
+**Covers:** FR21, FR22, FR23, FR26, FR28, FR29
 **NFRs:** NFR1, NFR2, NFR7, NFR11, NFR12
+**Not covered (retired):** ~~FR27~~
 
-**Scope:** Adds `cachetools` dependency. Creates `keys/cache.py` (TTLCache wrapper), `keys/auth.py` (verify_api_key_registry). Modifies `api.py` (dual-mode `verify_api_key`), `main.py` (lifespan: DB init, cache init, migration check). The auth cache stores `AuthPayload` dataclass keyed by SHA-256 hash. Dual-mode switching gated by `monetization_enabled`.
+**Scope (revised 2026-04-18):** Adds `cachetools` dependency. Creates `keys/cache.py` (TTLCache wrapper), `keys/auth.py` (`verify_api_key_registry`, renamed to `verify_api_key` after dual-mode removal). Modifies `api.py` (`verify_api_key` goes straight to the registry path — no dual-mode), `main.py` (lifespan: DB init, cache init, migration check; always active, not gated on a toggle). The auth cache stores `AuthPayload` dataclass keyed by SHA-256 hash. No `monetization_enabled` gate anywhere.
 
 **Acceptance Criteria:**
 
-**Given** `monetization_enabled=true` and a valid active key exists in the registry
+**Given** a valid active key exists in the registry
 **When** a customer sends `POST /v1/audio/speech` with `Authorization: Bearer cmdr_live_KQjP...`
 **Then** the system hashes the token with SHA-256, checks the TTLCache (maxsize=4096, ttl=60), on miss queries SQLite by `key_hash`, caches the `AuthPayload`, validates `status=active` and `paid_until >= today` (for manual billing), and allows the request
-**And** the response is byte-identical to Comadre 1.6.2 (FR29)
+**And** the response envelope preserves the NFR30 contract (`/v1/audio/speech` request/response shape unchanged vs. 1.6.2)
 
 **Given** the same key is used again within 60 seconds
 **When** the second request arrives
 **Then** the cache-hit path resolves the auth in under 5ms p99 (NFR1) without touching SQLite
-
-**Given** `monetization_enabled=false` (default)
-**When** a request arrives with `Authorization: Bearer <token>`
-**Then** the legacy single-API_KEY `hmac.compare_digest` path executes exactly as in 1.6.2 (FR27)
-**And** no SQLite lookup occurs, no cache is consulted
 
 **Given** a key is suspended (`status=suspended`)
 **When** a request arrives with that key
@@ -533,8 +536,7 @@ So that my requests are validated against the key registry with minimal latency.
 **Then** the system raises `KeyRegistryError(500)`, logs at ERROR level, and fails closed (denies access)
 
 **Given** `/health` is called with a valid customer key
-**When** `monetization_enabled=true`
-**Then** authenticated detail is returned (same contract as 1.6.2, FR29)
+**Then** authenticated detail is returned (NFR30 shape preserved)
 
 ### Story 2.2: Dynamic Per-Key Rate Limiting
 
@@ -542,28 +544,30 @@ As an operator,
 I want each API key to enforce its own rate limit,
 So that customers who pay for higher throughput get it, and the VPS capacity is distributed fairly.
 
-**Covers:** FR24, FR25
+**Covers:** FR24
 **NFRs:** NFR7
+**Not covered (retired):** ~~FR25~~ (removed from app layer, 2026-04-18)
+
+**Scope (revised 2026-04-18):** The speech endpoint gains `Depends(check_rate_limit)` backed by `limits.aio.strategies.MovingWindowRateLimiter`. `slowapi` is **removed** as a dependency. Bucket key is `key:<key_id>`; limit is `f"{auth_payload.rate_limit_rpm}/minute"`. No per-IP bucket in the application. Legacy-mode tests removed; `app_legacy` / `client_legacy` fixtures deleted; remaining fixtures renamed (`app_monetized` → `app`).
 
 **Acceptance Criteria:**
 
-**Given** `monetization_enabled=true` and a key has `rate_limit_rpm=60`
+**Given** a key has `rate_limit_rpm=60`
 **When** the customer sends 61 requests in a rolling 1-minute window
-**Then** the 61st request receives 429 with `Retry-After` header
-**And** the rate limit is keyed by the API key hash (not by IP)
+**Then** the 61st request receives 429 with `Retry-After: 60` and the standard error envelope
+**And** the rate limit is keyed by `key_id` (stable across `rotate-key`), not by IP
 
-**Given** `monetization_enabled=true` and a key has `rate_limit_rpm=120`
+**Given** a key has `rate_limit_rpm=120`
 **When** the same customer sends 120 requests in a minute
 **Then** all 120 succeed; the 121st is throttled
 
-**Given** an auth attempt fails (invalid key)
-**When** the request is rate-limited
-**Then** the per-IP rate limit applies (existing `RATE_LIMIT_SPEECH` default 30/min), since no key was resolved
-**And** the per-IP limit is independent of per-key limits (FR25)
+**Given** two different keys (different customers or same customer)
+**When** both are exercised concurrently
+**Then** each has an independent bucket; one hitting its cap does not affect the other
 
-**Given** `monetization_enabled=false`
-**When** rate limiting is evaluated
-**Then** slowapi uses the existing per-IP static limit from `RATE_LIMIT_SPEECH` (1.6.2 behavior)
+**Given** the same key is used from two different client IPs
+**When** both fire concurrently
+**Then** the requests share a single bucket (per-key, not per-IP)
 
 **Given** the monetization code paths are active
 **When** measured at p99

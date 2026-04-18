@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -272,11 +273,9 @@ class TestHealthHTTPEndpoint:
         assert set(body.keys()) == {"status", "voices"}
 
     async def test_health_returns_503_when_not_ready(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
-        monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         get_settings.cache_clear()
         app = create_app()
         app.state.settings = get_settings()
@@ -349,12 +348,32 @@ class TestHealthAuthenticatedEndpoint:
         ]
 
     async def test_authenticated_warming_up_returns_full_response(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fernet_key: str,
+        tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
-        monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
+        """Warming-up /health with a valid bearer returns the full detail shape.
+
+        2026-04-18: registry-only — seed a customer + key so the bearer is
+        real (the retired legacy-API_KEY bearer path no longer exists).
+        """
+        from datetime import date
+
+        from comadre.keys import auth as auth_module
+        from comadre.keys.cache import AuthCache
+        from comadre.keys.db import _apply_migrations, get_connection
+        from comadre.rate_limit import RateLimiter
+        from tests._keys_fixtures import seed_customer_and_key
+
+        db_path = tmp_path / "registry.db"
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
+        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
+        monkeypatch.setattr(
+            auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
+        )
         get_settings.cache_clear()
+
         app = create_app()
         app.state.settings = get_settings()
         app.state.ready = False
@@ -362,14 +381,25 @@ class TestHealthAuthenticatedEndpoint:
         app.state.queue_lock = asyncio.Lock()
         app.state.queue_depth = 0
         app.state.start_time = time.monotonic()
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as c:
-            response = await c.get(
-                "/health",
-                headers={"Authorization": "Bearer test-key"},
-            )
+
+        conn = get_connection(db_path)
+        _apply_migrations(conn)
+        app.state.registry_db = conn
+        app.state.auth_cache = AuthCache()
+        app.state.rate_limiter = RateLimiter.build()
+
+        plaintext, _kid, _cid = seed_customer_and_key(conn)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as c:
+                response = await c.get(
+                    "/health",
+                    headers={"Authorization": f"Bearer {plaintext}"},
+                )
+        finally:
+            conn.close()
         assert response.status_code == 503
         body = response.json()
         assert body["status"] == "warming_up"

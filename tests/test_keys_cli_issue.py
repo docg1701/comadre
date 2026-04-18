@@ -384,7 +384,7 @@ class TestIssueKeyUsageErrors:
         )
         _stdout, stderr = _buffers()
         assert result.exit_code == 2
-        assert "--rpm must be positive" in stderr
+        assert "--rpm must be between 1 and 10000" in stderr
 
     def test_rejects_nonpositive_rpm_negative(self, env: dict[str, str]) -> None:
         customer_id = _seed_customer(env)
@@ -402,7 +402,68 @@ class TestIssueKeyUsageErrors:
         )
         _stdout, stderr = _buffers()
         assert result.exit_code == 2
-        assert "--rpm must be positive" in stderr
+        assert "--rpm must be between 1 and 10000" in stderr
+
+    def test_rpm_above_cap_rejected_usage_error(self, env: dict[str, str]) -> None:
+        """Story 2.2 — mirror update-key's 1..10_000 cap on issue-key."""
+        customer_id = _seed_customer(env)
+        conn = sqlite3.connect(env["db_path"])
+        try:
+            before = conn.execute("SELECT COUNT(*) FROM api_key").fetchone()[0]
+        finally:
+            conn.close()
+        result = runner.invoke(
+            app,
+            [
+                "issue-key",
+                "--customer",
+                customer_id,
+                "--rpm",
+                "10001",
+                "--price",
+                "149",
+            ],
+        )
+        _stdout, stderr = _buffers()
+        assert result.exit_code == 2
+        assert "Usage error: --rpm must be between 1 and 10000" in stderr
+        assert "VPS-tier-aware" in stderr
+        conn = sqlite3.connect(env["db_path"])
+        try:
+            after = conn.execute("SELECT COUNT(*) FROM api_key").fetchone()[0]
+        finally:
+            conn.close()
+        assert after == before == 0
+
+    def test_rpm_at_cap_accepted(
+        self,
+        env: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Boundary: --rpm 10000 is inclusive (AC13)."""
+        _freeze_today(monkeypatch, date(2026, 4, 13))
+        customer_id = _seed_customer(env)
+        result = runner.invoke(
+            app,
+            [
+                "issue-key",
+                "--customer",
+                customer_id,
+                "--rpm",
+                "10000",
+                "--price",
+                "999",
+            ],
+        )
+        _stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+        conn = sqlite3.connect(env["db_path"])
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT rate_limit_rpm FROM api_key").fetchone()
+            assert row["rate_limit_rpm"] == 10000
+        finally:
+            conn.close()
 
 
 class TestCustomerNotFound:
@@ -592,33 +653,6 @@ class TestFirstChargeCalculation:
         assert "first charge: 2026-06-05" in stdout
 
 
-class TestMonetizationDisabledStillSucceeds:
-    """AC7."""
-
-    def test_monetization_disabled(
-        self,
-        env: dict[str, str],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("MONETIZATION_ENABLED", "false")
-        _freeze_today(monkeypatch, date(2026, 4, 13))
-        customer_id = _seed_customer(env)
-        result = runner.invoke(
-            app,
-            [
-                "issue-key",
-                "--customer",
-                customer_id,
-                "--rpm",
-                "60",
-                "--price",
-                "149",
-            ],
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 0, stderr
-
-
 class TestHelpSurface:
     """AC9."""
 
@@ -639,7 +673,7 @@ class TestHelpSurface:
         ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
         help_text = re.sub(r"\s+", " ", ansi.sub("", result.stdout))
         assert "cust_01j" in help_text
-        assert "Example: 60" in help_text
+        assert "Example: --rpm 60" in help_text
         assert "--price 149" in help_text
         # English example (project language policy: code/help text in English).
         assert "bundled into infra package" in help_text

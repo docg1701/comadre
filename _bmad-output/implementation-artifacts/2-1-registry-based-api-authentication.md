@@ -2,6 +2,8 @@
 
 Status: done
 
+> **2026-04-18 revision (post-dev cycle):** FR27 (legacy single-`API_KEY` mode) and NFR31 (1.6.2 byte-identical auth behaviour) retired across the 2.0.0 cycle. Story 2.1's dual-mode dispatch (the `if not settings.monetization_enabled: hmac.compare_digest(...)` branch in `api.py::verify_api_key`) was removed during Story 2.2 replan. `verify_api_key_registry` is now the sole auth path, wired through a thin Bearer-parsing wrapper named `verify_api_key` that lives in `src/comadre/keys/auth.py`. Story 2.1's ACs that reference `MONETIZATION_ENABLED=false` and "byte-identical to legacy envelope" are history-only markers of the design that shipped and was then simplified. NFR30 (public `/v1/audio/speech` + `/health` request/response shape byte-identical to 1.6.2) still stands. The `api_key` SecretStr, `monetization_enabled` bool, and `_validate_encryption_key_when_monetization_enabled` model validator are all deleted from `config.py`; `key_registry_encryption_key` is now a required field. See `_bmad-output/planning-artifacts/prd.md` revision note dated 2026-04-18 for the full rationale.
+
 <!-- Validation optional. Run validate-create-story for quality check before dev-story. -->
 
 ## Story

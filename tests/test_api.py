@@ -361,14 +361,11 @@ _SPEECH_BODY: dict[str, str] = {
 }
 
 
-class TestMonetizationEnabledAuth:
-    """End-to-end auth contract with ``MONETIZATION_ENABLED=true``.
+class TestRegistryAuth:
+    """End-to-end registry-backed auth contract (2026-04-18: sole auth path).
 
     These tests exercise the registry-backed auth path through a real
     ``httpx.AsyncClient`` + ``AsyncTransport`` wrapping the FastAPI app.
-    The matching legacy-mode tests continue to live in
-    ``TestSpeechSuccess`` / ``TestAuthentication`` and stay unmodified
-    (AC11 regression-gate).
     """
 
     @pytest.fixture(autouse=True)
@@ -381,10 +378,10 @@ class TestMonetizationEnabledAuth:
         )
 
     async def test_valid_active_key_returns_200(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
-        plaintext, _kid, _cid = seed_customer_and_key(app_monetized.state.registry_db)
-        response = await client_monetized.post(
+        plaintext, _kid, _cid = seed_customer_and_key(app.state.registry_db)
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
@@ -394,12 +391,12 @@ class TestMonetizationEnabledAuth:
         assert response.content == b"fake-audio-bytes"
 
     async def test_suspended_key_returns_401_with_operator_hint(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
         plaintext, _kid, _cid = seed_customer_and_key(
-            app_monetized.state.registry_db, status="suspended"
+            app.state.registry_db, status="suspended"
         )
-        response = await client_monetized.post(
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
@@ -411,12 +408,12 @@ class TestMonetizationEnabledAuth:
         assert "Contact Ana" in body["error"]["hint"]
 
     async def test_revoked_key_returns_401_with_operator_hint(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
         plaintext, _kid, _cid = seed_customer_and_key(
-            app_monetized.state.registry_db, status="revoked"
+            app.state.registry_db, status="revoked"
         )
-        response = await client_monetized.post(
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
@@ -426,10 +423,8 @@ class TestMonetizationEnabledAuth:
         assert body["error"]["message"] == "Your API key has been revoked"
         assert "Contact Ana" in body["error"]["hint"]
 
-    async def test_unknown_key_returns_401_legacy_envelope(
-        self, client_monetized: AsyncClient
-    ) -> None:
-        response = await client_monetized.post(
+    async def test_unknown_key_returns_401_envelope(self, client: AsyncClient) -> None:
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": "Bearer cmdr_live_nonexistent_token"},
@@ -440,11 +435,11 @@ class TestMonetizationEnabledAuth:
         assert body["error"]["type"] == "authentication_error"
         assert "Bearer" in body["error"]["hint"]
 
-    async def test_malformed_authorization_returns_401_legacy_envelope(
-        self, client_monetized: AsyncClient
+    async def test_malformed_authorization_returns_401_envelope(
+        self, client: AsyncClient
     ) -> None:
         for header in ("", "Basic xyz", "Bearer", "BearerXYZ"):
-            response = await client_monetized.post(
+            response = await client.post(
                 "/v1/audio/speech",
                 json=_SPEECH_BODY,
                 headers={"Authorization": header} if header else {},
@@ -457,12 +452,12 @@ class TestMonetizationEnabledAuth:
             )
 
     async def test_expired_manual_paid_until_returns_401_suspended(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
         plaintext, _kid, _cid = seed_customer_and_key(
-            app_monetized.state.registry_db, paid_until="2020-01-01"
+            app.state.registry_db, paid_until="2020-01-01"
         )
-        response = await client_monetized.post(
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
@@ -472,80 +467,24 @@ class TestMonetizationEnabledAuth:
         assert body["error"]["message"] == "Your API key has been suspended"
 
     async def test_complimentary_null_paid_until_returns_200(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
         plaintext, _kid, _cid = seed_customer_and_key(
-            app_monetized.state.registry_db,
+            app.state.registry_db,
             billing_mode="complimentary",
             paid_until=None,
         )
-        response = await client_monetized.post(
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
         )
         assert response.status_code == 200
 
-    async def test_response_headers_match_legacy_mode(
-        self,
-        app_monetized: Any,
-        client_monetized: AsyncClient,
-    ) -> None:
-        """AC18: registry-mode and legacy-mode responses carry the same
-        set of HTTP headers for a successful /v1/audio/speech.
-
-        Legacy-mode comparison rebuilds a standalone app in-place rather
-        than pulling the ``client`` fixture, because the ``app_monetized``
-        fixture's ``monkeypatch.setenv("MONETIZATION_ENABLED", "true")``
-        pollutes the ``mock_settings``-derived ``client`` fixture when
-        both are requested in the same test.
-        """
-        import asyncio as _asyncio
-        import time as _time
-
-        from httpx import ASGITransport as _ASGITransport
-        from httpx import AsyncClient as _AsyncClient
-        from pydantic import SecretStr as _SecretStr
-
-        from comadre.config import Settings as _Settings
-        from comadre.main import create_app as _create_app
-
-        legacy_settings = _Settings(
-            api_key=_SecretStr("test-key-12345"),
-            monetization_enabled=False,
-        )
-        legacy_app = _create_app()
-        legacy_app.state.settings = legacy_settings
-        legacy_app.state.router = app_monetized.state.router
-        legacy_app.state.ready = True
-        legacy_app.state.queue_lock = _asyncio.Lock()
-        legacy_app.state.queue_depth = 0
-        legacy_app.state.start_time = _time.monotonic()
-
-        plaintext, _kid, _cid = seed_customer_and_key(app_monetized.state.registry_db)
-        async with _AsyncClient(
-            transport=_ASGITransport(app=legacy_app),
-            base_url="http://test",
-        ) as legacy_client:
-            legacy = await legacy_client.post(
-                "/v1/audio/speech",
-                json=_SPEECH_BODY,
-                headers={"Authorization": "Bearer test-key-12345"},
-            )
-        registry = await client_monetized.post(
-            "/v1/audio/speech",
-            json=_SPEECH_BODY,
-            headers={"Authorization": f"Bearer {plaintext}"},
-        )
-        assert legacy.status_code == 200, legacy.json()
-        assert registry.status_code == 200
-        assert sorted(legacy.headers.items()) == sorted(registry.headers.items())
-        assert legacy.content == registry.content
-
     async def test_no_audit_log_row_on_any_auth_outcome(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
-        conn: sqlite3.Connection = app_monetized.state.registry_db
+        conn: sqlite3.Connection = app.state.registry_db
         plaintext_ok, _kid, _cid = seed_customer_and_key(conn)
         plaintext_susp, _, _ = seed_customer_and_key(
             conn, customer_email="x@y.com", status="suspended"
@@ -553,17 +492,17 @@ class TestMonetizationEnabledAuth:
 
         before = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
 
-        await client_monetized.post(
+        await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext_ok}"},
         )
-        await client_monetized.post(
+        await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext_susp}"},
         )
-        await client_monetized.post(
+        await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": "Bearer unknown-token"},
@@ -573,15 +512,15 @@ class TestMonetizationEnabledAuth:
         assert after == before
 
     async def test_last_used_at_not_written_on_success(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
-        conn: sqlite3.Connection = app_monetized.state.registry_db
+        conn: sqlite3.Connection = app.state.registry_db
         plaintext, kid, _cid = seed_customer_and_key(conn)
         before = conn.execute(
             "SELECT last_used_at FROM api_key WHERE id = ?", (kid,)
         ).fetchone()["last_used_at"]
 
-        response = await client_monetized.post(
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
@@ -594,13 +533,13 @@ class TestMonetizationEnabledAuth:
         assert after == before  # both None
 
     async def test_cache_hit_on_repeat_request_avoids_sql(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
-        conn: sqlite3.Connection = app_monetized.state.registry_db
+        conn: sqlite3.Connection = app.state.registry_db
         plaintext, _kid, _cid = seed_customer_and_key(conn)
 
         # Warm the cache.
-        r1 = await client_monetized.post(
+        r1 = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext}"},
@@ -610,7 +549,7 @@ class TestMonetizationEnabledAuth:
         statements: list[str] = []
         conn.set_trace_callback(statements.append)
         try:
-            r2 = await client_monetized.post(
+            r2 = await client.post(
                 "/v1/audio/speech",
                 json=_SPEECH_BODY,
                 headers={"Authorization": f"Bearer {plaintext}"},
@@ -622,7 +561,7 @@ class TestMonetizationEnabledAuth:
 
     async def test_db_error_returns_500_envelope(
         self,
-        app_monetized: Any,
+        app: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """AC9: sqlite3 error in lookup path yields 500 KeyRegistryError envelope."""
@@ -634,7 +573,7 @@ class TestMonetizationEnabledAuth:
         monkeypatch.setattr(auth_module, "lookup_key_auth", _boom)
 
         async with AsyncClient(
-            transport=ASGITransport(app=app_monetized, raise_app_exceptions=False),
+            transport=ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://test",
         ) as client:
             response = await client.post(
@@ -651,13 +590,13 @@ class TestMonetizationEnabledAuth:
         assert "KEY_REGISTRY_DB_PATH" in body["error"]["hint"]
 
         # Cache must not retain the failed lookup.
-        snapshot = app_monetized.state.auth_cache.snapshot()
+        snapshot = app.state.auth_cache.snapshot()
         assert snapshot["entries"] == 0
 
     async def test_access_log_does_not_leak_secrets(
         self,
-        app_monetized: Any,
-        client_monetized: AsyncClient,
+        app: Any,
+        client: AsyncClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """AC1: access-log line on the registry-mode hot path must NOT contain
@@ -671,7 +610,7 @@ class TestMonetizationEnabledAuth:
         from comadre.keys.tokens import hash_api_key
 
         plaintext, _kid, _cid = seed_customer_and_key(
-            app_monetized.state.registry_db, customer_name="Helena Probe Sentinel"
+            app.state.registry_db, customer_name="Helena Probe Sentinel"
         )
         token_hash = hash_api_key(plaintext)
 
@@ -685,7 +624,7 @@ class TestMonetizationEnabledAuth:
         handler = _Capture(level=logging.DEBUG)
         access_logger.addHandler(handler)
         try:
-            response = await client_monetized.post(
+            response = await client.post(
                 "/v1/audio/speech",
                 json=_SPEECH_BODY,
                 headers={"Authorization": f"Bearer {plaintext}"},
@@ -705,7 +644,7 @@ class TestMonetizationEnabledAuth:
             assert not hex64.search(rendered)
 
     async def test_anti_enumeration_envelopes_diverge(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
         """AC14: not-found and suspended 401 envelopes diverge for callers
         who already proved possession of a real key (suspended branch). An
@@ -714,15 +653,15 @@ class TestMonetizationEnabledAuth:
         envelope (covered by the unknown-key test above).
         """
         plaintext_susp, _kid, _cid = seed_customer_and_key(
-            app_monetized.state.registry_db, status="suspended"
+            app.state.registry_db, status="suspended"
         )
 
-        unknown = await client_monetized.post(
+        unknown = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": "Bearer cmdr_live_definitely_unknown"},
         )
-        suspended = await client_monetized.post(
+        suspended = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": f"Bearer {plaintext_susp}"},
@@ -738,7 +677,7 @@ class TestMonetizationEnabledAuth:
         assert "suspended" not in unknown_body["hint"].lower()
 
     async def test_non_ascii_bearer_token_returns_401(
-        self, client_monetized: AsyncClient
+        self, client: AsyncClient
     ) -> None:
         """Non-ASCII tokens cannot match any stored hash and must yield the
         enumeration-resistant 401 envelope, NOT a 500. Regression for the
@@ -749,7 +688,7 @@ class TestMonetizationEnabledAuth:
         as latin-1. Pass the header as ``bytes`` to bypass httpx's encoding
         check and reproduce what a hostile client would send on the wire.
         """
-        response = await client_monetized.post(
+        response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={
@@ -760,6 +699,257 @@ class TestMonetizationEnabledAuth:
         body = response.json()
         assert body["error"]["message"] == "Invalid or missing API key"
         assert body["error"]["type"] == "authentication_error"
+
+
+class TestPerKeyRateLimit:
+    """Story 2.2 (2026-04-18 rewrite) — ``/v1/audio/speech`` per-key rate limit.
+
+    Uses the ``limits`` library directly (no slowapi). Each test gets a fresh
+    ``app`` fixture with a fresh ``RateLimiter``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _freeze_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pin today so ``paid_until=2099-12-31`` seed rows stay active."""
+        from comadre.keys import auth as auth_module
+
+        monkeypatch.setattr(
+            auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
+        )
+
+    async def test_per_key_limit_allows_exactly_rpm_requests(
+        self, app: Any, client: AsyncClient
+    ) -> None:
+        plaintext, _kid, _cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=2
+        )
+        headers = {"Authorization": f"Bearer {plaintext}"}
+        for _ in range(2):
+            response = await client.post(
+                "/v1/audio/speech", json=_SPEECH_BODY, headers=headers
+            )
+            assert response.status_code == 200, response.json()
+
+    async def test_per_key_limit_trips_on_n_plus_one(
+        self, app: Any, client: AsyncClient
+    ) -> None:
+        plaintext, _kid, _cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=2
+        )
+        headers = {"Authorization": f"Bearer {plaintext}"}
+        for _ in range(2):
+            r = await client.post(
+                "/v1/audio/speech", json=_SPEECH_BODY, headers=headers
+            )
+            assert r.status_code == 200
+        trip = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+        assert trip.status_code == 429
+        assert trip.headers["retry-after"] == "60"
+        body = trip.json()
+        assert body == {
+            "error": {
+                "message": "Rate limit exceeded",
+                "type": "rate_limit_error",
+                "hint": "Too many requests. Try again in 60 seconds.",
+            }
+        }
+
+    async def test_tts_engine_not_invoked_on_429(
+        self,
+        app: Any,
+        client: AsyncClient,
+        mock_router: MagicMock,
+    ) -> None:
+        plaintext, _kid, _cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=2
+        )
+        headers = {"Authorization": f"Bearer {plaintext}"}
+        mock_router.generate_speech.reset_mock()
+        for _ in range(3):
+            await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+        # rpm=2, third request 429s → engine invoked exactly rpm times.
+        assert mock_router.generate_speech.call_count == 2
+
+    async def test_independent_buckets_per_key_same_customer(
+        self, app: Any, client: AsyncClient
+    ) -> None:
+        """Two keys for the same customer bucket independently on key_id."""
+        conn = app.state.registry_db
+        plaintext_c1, _k1, cid = seed_customer_and_key(
+            conn, customer_name="Carla Mendes", rate_limit_rpm=2
+        )
+        # Second key for the same customer — build an ApiKeyRecord and use the
+        # DB-layer `insert_api_key` helper so the test stays schema-aware if
+        # the api_key row ever grows a column.
+        from datetime import UTC, datetime
+
+        from comadre.keys.db import generate_key_id, insert_api_key
+        from comadre.keys.models import ApiKeyRecord
+        from comadre.keys.tokens import generate_api_key_plaintext, hash_api_key
+
+        plaintext_c2 = generate_api_key_plaintext()
+        record_c2 = ApiKeyRecord(
+            id=generate_key_id(),
+            customer_id=cid,
+            key_hash=hash_api_key(plaintext_c2),
+            key_prefix=plaintext_c2[len("cmdr_live_") : len("cmdr_live_") + 8],
+            rate_limit_rpm=2,
+            status="active",
+            billing_mode="manual",
+            price_monthly=149.0,
+            paid_until="2099-12-31",
+            created_at=datetime(2026, 4, 16, 12, 0, tzinfo=UTC),
+            last_used_at=None,
+            notes="",
+        )
+        insert_api_key(conn, record_c2, actor="cli:test")
+
+        # K_C1 exhausts its bucket.
+        for _ in range(2):
+            r = await client.post(
+                "/v1/audio/speech",
+                json=_SPEECH_BODY,
+                headers={"Authorization": f"Bearer {plaintext_c1}"},
+            )
+            assert r.status_code == 200
+        trip = await client.post(
+            "/v1/audio/speech",
+            json=_SPEECH_BODY,
+            headers={"Authorization": f"Bearer {plaintext_c1}"},
+        )
+        assert trip.status_code == 429
+
+        # K_C2 still has full budget — different key_id.
+        for _ in range(2):
+            r = await client.post(
+                "/v1/audio/speech",
+                json=_SPEECH_BODY,
+                headers={"Authorization": f"Bearer {plaintext_c2}"},
+            )
+            assert r.status_code == 200, r.json()
+
+    async def test_independent_buckets_across_customers(
+        self, app: Any, client: AsyncClient
+    ) -> None:
+        """Two customers' keys bucket independently."""
+        conn = app.state.registry_db
+        plaintext_alice, _ka, _ca = seed_customer_and_key(
+            conn,
+            customer_name="Alice",
+            customer_email="alice@example.com",
+            rate_limit_rpm=2,
+        )
+        plaintext_bob, _kb, _cb = seed_customer_and_key(
+            conn,
+            customer_name="Bob",
+            customer_email="bob@example.com",
+            rate_limit_rpm=5,
+        )
+        # Alice to ceiling (2), Bob to ceiling (5) — all 7 allowed.
+        for _ in range(2):
+            r = await client.post(
+                "/v1/audio/speech",
+                json=_SPEECH_BODY,
+                headers={"Authorization": f"Bearer {plaintext_alice}"},
+            )
+            assert r.status_code == 200
+        for _ in range(5):
+            r = await client.post(
+                "/v1/audio/speech",
+                json=_SPEECH_BODY,
+                headers={"Authorization": f"Bearer {plaintext_bob}"},
+            )
+            assert r.status_code == 200, r.json()
+
+        # Alice's 3rd trips; Bob's 6th trips; neither affects the other.
+        alice_trip = await client.post(
+            "/v1/audio/speech",
+            json=_SPEECH_BODY,
+            headers={"Authorization": f"Bearer {plaintext_alice}"},
+        )
+        assert alice_trip.status_code == 429
+        bob_trip = await client.post(
+            "/v1/audio/speech",
+            json=_SPEECH_BODY,
+            headers={"Authorization": f"Bearer {plaintext_bob}"},
+        )
+        assert bob_trip.status_code == 429
+
+    async def test_same_key_two_ips_shares_bucket(
+        self, app: Any, client: AsyncClient
+    ) -> None:
+        """Per-key bucket is global across IPs (bucket keyed by key_id, not IP)."""
+        plaintext, _kid, _cid = seed_customer_and_key(
+            app.state.registry_db, rate_limit_rpm=2
+        )
+        auth = {"Authorization": f"Bearer {plaintext}"}
+        # IP-1 exhausts the key's bucket.
+        for _ in range(2):
+            r = await client.post(
+                "/v1/audio/speech",
+                json=_SPEECH_BODY,
+                headers={**auth, "X-Forwarded-For": "203.0.113.10"},
+            )
+            assert r.status_code == 200
+        # IP-2 hits the SAME bucket — trips.
+        trip = await client.post(
+            "/v1/audio/speech",
+            json=_SPEECH_BODY,
+            headers={**auth, "X-Forwarded-For": "203.0.113.11"},
+        )
+        assert trip.status_code == 429
+
+    async def test_access_log_clean_on_429(
+        self,
+        app: Any,
+        client: AsyncClient,
+    ) -> None:
+        """429 access log must not leak plaintext / hash / key_id / name."""
+        import logging
+        import re
+
+        from comadre.keys.tokens import hash_api_key
+
+        plaintext, kid, _cid = seed_customer_and_key(
+            app.state.registry_db,
+            customer_name="Probe Customer",
+            rate_limit_rpm=1,
+        )
+        token_hash = hash_api_key(plaintext)
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        access_logger = logging.getLogger("access")
+        handler = _Capture(level=logging.DEBUG)
+        access_logger.addHandler(handler)
+        try:
+            auth = {"Authorization": f"Bearer {plaintext}"}
+            ok = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=auth)
+            assert ok.status_code == 200
+            trip = await client.post(
+                "/v1/audio/speech", json=_SPEECH_BODY, headers=auth
+            )
+            assert trip.status_code == 429
+        finally:
+            access_logger.removeHandler(handler)
+
+        assert records, "access logger emitted no record"
+        # At least one record must correspond to the 429 response.
+        assert any("429" in rec.getMessage() for rec in records), (
+            "no access-log record for the 429 response"
+        )
+        hex64 = re.compile(r"[0-9a-f]{64}")
+        for record in records:
+            rendered = record.getMessage()
+            assert plaintext not in rendered
+            assert token_hash not in rendered
+            assert "cmdr_live_" not in rendered
+            assert "Probe Customer" not in rendered
+            assert kid not in rendered
+            assert not hex64.search(rendered)
 
 
 class TestMonetizationHealthEndpoint:
@@ -774,10 +964,10 @@ class TestMonetizationHealthEndpoint:
         )
 
     async def test_authenticated_health_has_full_detail(
-        self, app_monetized: Any, client_monetized: AsyncClient
+        self, app: Any, client: AsyncClient
     ) -> None:
-        plaintext, _kid, _cid = seed_customer_and_key(app_monetized.state.registry_db)
-        response = await client_monetized.get(
+        plaintext, _kid, _cid = seed_customer_and_key(app.state.registry_db)
+        response = await client.get(
             "/health", headers={"Authorization": f"Bearer {plaintext}"}
         )
         assert response.status_code == 200
@@ -786,9 +976,9 @@ class TestMonetizationHealthEndpoint:
             assert key in body
 
     async def test_unknown_key_returns_minimal_health(
-        self, client_monetized: AsyncClient
+        self, client: AsyncClient
     ) -> None:
-        response = await client_monetized.get(
+        response = await client.get(
             "/health", headers={"Authorization": "Bearer unknown"}
         )
         assert response.status_code == 200

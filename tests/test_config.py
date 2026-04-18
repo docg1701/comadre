@@ -1,7 +1,6 @@
 """Tests for the configuration module."""
 
 import pytest
-from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from comadre.config import Settings, get_settings
@@ -13,67 +12,59 @@ def _clear_settings_cache() -> None:
     get_settings.cache_clear()
 
 
-class TestSettings:
-    """Tests for the Settings class."""
+@pytest.fixture(autouse=True)
+def _default_encryption_key(monkeypatch: pytest.MonkeyPatch, fernet_key: str) -> None:
+    """Provide a valid ``KEY_REGISTRY_ENCRYPTION_KEY`` by default.
 
-    def test_loads_from_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key-123")
+    2026-04-18: registry-only after FR27 retirement — every ``Settings()``
+    construction requires the field. Tests that want to exercise the
+    "missing" branch override this via ``monkeypatch.delenv`` inside the
+    test body.
+    """
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
+
+
+class TestSettings:
+    """Tests for the Settings class.
+
+    2026-04-18: ``api_key`` field removed when FR27 was retired. Tests now
+    exercise ``default_voice``, ``port``, and other non-auth TTS settings.
+    """
+
+    def test_loads_from_environment(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         monkeypatch.setenv("DEFAULT_VOICE", "kokoro/pf_dora")
         monkeypatch.setenv("PORT", "9000")
 
         settings = Settings()
 
-        assert settings.api_key.get_secret_value() == "test-key-123"
         assert settings.default_voice == "kokoro/pf_dora"
         assert settings.port == 9000
 
-    def test_missing_api_key_raises_validation_error(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_default_values(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.delenv("API_KEY", raising=False)
-        with pytest.raises(ValidationError) as exc_info:
-            Settings()
-        errors = exc_info.value.errors()
-        assert any(e["type"] == "missing" for e in errors)
-
-    def test_default_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
 
         settings = Settings()
 
         assert settings.default_voice == "kokoro/pm_santa"
         assert settings.port == 8000
 
-    def test_case_insensitive_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("api_key", "lower-case-key")
-
-        settings = Settings()
-
-        assert settings.api_key.get_secret_value() == "lower-case-key"
-
-    def test_api_key_masked_in_repr(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "super-secret-key")
-
-        settings = Settings()
-
-        assert "super-secret-key" not in repr(settings)
-        assert "super-secret-key" not in str(settings)
-
-    def test_empty_api_key_raises_validation_error(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_port_rejects_zero(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "")
-        with pytest.raises(ValidationError):
-            Settings()
-
-    def test_port_rejects_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         monkeypatch.setenv("PORT", "0")
         with pytest.raises(ValidationError):
             Settings()
 
-    def test_port_rejects_above_65535(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+    def test_port_rejects_above_65535(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         monkeypatch.setenv("PORT", "65536")
         with pytest.raises(ValidationError):
             Settings()
@@ -264,139 +255,107 @@ class TestSettings:
         assert settings.qwen3_model_url == ""
 
 
-class TestMonetizationSettings:
-    """Tests for the monetization/key-registry fields and validator."""
-
-    def test_monetization_enabled_default_false(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.delenv("MONETIZATION_ENABLED", raising=False)
-        settings = Settings()
-        assert settings.monetization_enabled is False
+class TestRegistrySettings:
+    """Tests for the key-registry fields and validator (2026-04-18: registry-only)."""
 
     def test_key_registry_db_path_default(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         settings = Settings()
         assert settings.key_registry_db_path == "./data/keys/registry.db"
 
     def test_key_registry_db_path_from_env(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         monkeypatch.setenv("KEY_REGISTRY_DB_PATH", "/srv/keys/r.db")
         settings = Settings()
         assert settings.key_registry_db_path == "/srv/keys/r.db"
 
-    def test_key_registry_encryption_key_default_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
-        settings = Settings()
-        assert settings.key_registry_encryption_key is None
-
     def test_operator_contact_hint_default(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         settings = Settings()
         assert "operator" in settings.operator_contact_hint.lower()
 
-    def test_billing_day_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+    def test_billing_day_default(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         settings = Settings()
         assert settings.billing_day == 5
 
-    def test_billing_day_rejects_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+    def test_billing_day_rejects_zero(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         monkeypatch.setenv("BILLING_DAY", "0")
         with pytest.raises(ValidationError):
             Settings()
 
     def test_billing_day_rejects_above_28(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         monkeypatch.setenv("BILLING_DAY", "29")
         with pytest.raises(ValidationError):
             Settings()
 
-    def test_billing_timezone_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
+    def test_billing_timezone_default(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         settings = Settings()
         assert settings.billing_timezone == "America/Sao_Paulo"
 
-    def test_monetization_enabled_requires_encryption_key(
+    def test_encryption_key_missing_rejected(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
+        """2.0.0: KEY_REGISTRY_ENCRYPTION_KEY is required (no default)."""
         monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
         with pytest.raises(ValidationError) as exc_info:
             Settings()
-        assert "KEY_REGISTRY_ENCRYPTION_KEY" in str(exc_info.value)
+        assert "key_registry_encryption_key" in str(exc_info.value).lower()
 
-    def test_monetization_enabled_rejects_malformed_key(
+    def test_encryption_key_rejects_malformed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
         monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", "not-a-fernet-key")
         with pytest.raises(ValidationError) as exc_info:
             Settings()
         errors = exc_info.value.errors()
-        # Authored message identifies the field and does NOT echo the value.
         assert any(
             "KEY_REGISTRY_ENCRYPTION_KEY" in err.get("msg", "") for err in errors
         )
         for err in errors:
             assert "not-a-fernet-key" not in err.get("msg", "")
-        # Pydantic-core always embeds the raw `input_value` in its error
-        # repr, even for SecretStr-typed fields, and there is no first-party
-        # way to suppress it. The AC5/NFR16 "never echoed" invariant is
-        # therefore enforced at the CLI boundary: `get_settings()` callers
-        # render `render_error(title, hint)` with static strings and never
-        # forward `str(exc)` to the user — covered by
-        # `test_malformed_key_not_echoed` in `test_keys_cli.py`.
 
-    def test_monetization_enabled_accepts_valid_fernet_key(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_encryption_key_accepts_valid(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
     ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("MONETIZATION_ENABLED", "true")
-        monkeypatch.setenv(
-            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
-        )
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         settings = Settings()
-        assert settings.monetization_enabled is True
         assert settings.key_registry_encryption_key is not None
-
-    def test_monetization_disabled_ignores_missing_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key")
-        monkeypatch.setenv("MONETIZATION_ENABLED", "false")
-        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
-        settings = Settings()
-        assert settings.monetization_enabled is False
 
 
 class TestGetSettings:
     """Tests for the get_settings cached function."""
 
-    def test_returns_settings_instance(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "cached-key")
+    def test_returns_settings_instance(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
 
         result = get_settings()
 
         assert isinstance(result, Settings)
-        assert result.api_key.get_secret_value() == "cached-key"
 
-    def test_returns_cached_instance(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("API_KEY", "cached-key")
+    def test_returns_cached_instance(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
 
         first = get_settings()
         second = get_settings()

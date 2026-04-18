@@ -651,9 +651,9 @@ def lookup_key_auth(
 ) -> AuthPayload | None:
     """Return the minimal auth payload for ``key_hash``, or None on miss.
 
-    Used by ``verify_api_key_registry``. Never writes (auth path is
-    read-only). Uses the existing ``idx_api_key_hash`` UNIQUE index — the
-    SELECT is O(1).
+    Used by ``verify_api_key`` (in ``comadre.keys.auth``). Never writes
+    (auth path is read-only). Uses the existing ``idx_api_key_hash``
+    UNIQUE index — the SELECT is O(1).
     """
     row = conn.execute(
         "SELECT id, customer_id, status, billing_mode, rate_limit_rpm, "

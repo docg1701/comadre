@@ -69,11 +69,13 @@ def _stub_engine_init(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def monetization_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set env vars so ``get_settings()`` builds a monetization-on Settings."""
+def registry_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Set env vars so ``get_settings()`` builds a registry-mode Settings.
+
+    2026-04-18: legacy single-API_KEY mode retired (FR27). Registry is the
+    sole auth path; this is the default — no toggle to flip on.
+    """
     db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("API_KEY", "sentinel-never-used")
-    monkeypatch.setenv("MONETIZATION_ENABLED", "true")
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("QWEN3_ENABLED", "false")
@@ -83,18 +85,18 @@ def monetization_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return db_path
 
 
-class TestMonetizationOnBootstrap:
+class TestRegistryBootstrap:
     async def test_opens_registry_and_runs_migrations(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        monetization_env: Path,
+        registry_env: Path,
     ) -> None:
         _stub_engine_init(monkeypatch)
         app = FastAPI()
         await _run_lifespan(app)
         # After lifespan exits the connection is closed — check the file
         # state before/after lifespan cycle for migration application.
-        conn = sqlite3.connect(monetization_env)
+        conn = sqlite3.connect(registry_env)
         try:
             version_row = conn.execute(
                 "SELECT MAX(version) FROM schema_version"
@@ -106,7 +108,7 @@ class TestMonetizationOnBootstrap:
     async def test_auth_cache_initialised(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        monetization_env: Path,
+        registry_env: Path,
     ) -> None:
         _stub_engine_init(monkeypatch)
         app = FastAPI()
@@ -123,7 +125,7 @@ class TestMonetizationOnBootstrap:
     async def test_shutdown_closes_db_connection(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        monetization_env: Path,
+        registry_env: Path,
     ) -> None:
         _stub_engine_init(monkeypatch)
         opened: list[sqlite3.Connection] = []
@@ -146,45 +148,3 @@ class TestMonetizationOnBootstrap:
         # Post-shutdown the connection must be closed.
         with pytest.raises(sqlite3.ProgrammingError):
             opened[0].execute("SELECT 1").fetchone()
-
-
-class TestMonetizationOffBootstrap:
-    async def test_skips_registry_bootstrap(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        monkeypatch.setenv("API_KEY", "test-key-12345")
-        monkeypatch.delenv("MONETIZATION_ENABLED", raising=False)
-        monkeypatch.setenv("QWEN3_ENABLED", "false")
-        monkeypatch.setenv("VOICES_DIR", str(tmp_path))
-        monkeypatch.setenv("NOISE_DIR", str(tmp_path))
-        get_settings.cache_clear()
-        _stub_engine_init(monkeypatch)
-
-        migrations_calls: list[None] = []
-
-        import comadre.main as main_module
-
-        original_apply = main_module._apply_migrations
-
-        def spy_apply(conn: sqlite3.Connection) -> None:
-            migrations_calls.append(None)
-            original_apply(conn)
-
-        monkeypatch.setattr(main_module, "_apply_migrations", spy_apply)
-
-        db_path = tmp_path / "registry.db"
-        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
-
-        app = FastAPI()
-        cm = lifespan(app)
-        await cm.__aenter__()
-        try:
-            assert not hasattr(app.state, "registry_db")
-            assert not hasattr(app.state, "auth_cache")
-        finally:
-            await cm.__aexit__(None, None, None)
-
-        assert migrations_calls == []
-        assert not db_path.exists()

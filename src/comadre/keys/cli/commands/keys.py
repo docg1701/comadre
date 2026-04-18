@@ -102,7 +102,8 @@ _UPDATE_KEY_NOTES_OVERSIZE_HINT = (
     "or split across multiple update-key calls."
 )
 _UPDATE_KEY_RPM_RANGE_HINT = (
-    "Provide --rpm in the range 1..10000. Story 2.2 will tighten this cap per VPS tier."
+    "Provide --rpm in the range 1..10000. "
+    "Story 2.2 set this cap; revisit when VPS-tier-aware caps land."
 )
 _UPDATE_KEY_COMPLIMENTARY_HINT = (
     "Complimentary keys are bundled externally; omit --price or rotate "
@@ -172,7 +173,7 @@ def issue_key(
     rpm: int = typer.Option(
         ...,
         "--rpm",
-        help="Per-key requests-per-minute limit. Example: 60.",
+        help="Per-key requests-per-minute limit (1..10000). Example: --rpm 60.",
     ),
     billing_mode: str = typer.Option(
         "manual",
@@ -242,11 +243,13 @@ def issue_key(
         0.0 if billing_mode == "complimentary" else float(cast(float, price))
     )
 
-    # 3. rpm > 0 (Typer coerces to int but doesn't enforce positivity).
-    if rpm <= 0:
+    # 3. rpm bounds (1..10_000 inclusive) — mirrors update-key's _KEY_RPM_MAX
+    # cap so the --rpm surface is consistent across commands. Closes the
+    # Story 1.2 / 1.6 deferred-work item "issue-key --rpm upper bound".
+    if not 1 <= rpm <= _KEY_RPM_MAX:
         render_error(
-            "Usage error: --rpm must be positive",
-            "Specify --rpm <positive integer>.",
+            f"Usage error: --rpm must be between 1 and {_KEY_RPM_MAX}",
+            _UPDATE_KEY_RPM_RANGE_HINT,
         )
         raise typer.Exit(code=2)
 

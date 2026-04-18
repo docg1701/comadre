@@ -2,6 +2,11 @@
 stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8]
 status: 'complete'
 completedAt: '2026-04-16'
+lastEdited: '2026-04-18'
+editHistory:
+  - date: '2026-04-18'
+    changes: |
+      Retired FR27 (legacy single-API_KEY mode) and NFR31 (byte-identical 1.6.2 auth behaviour). Comadre 2.0.0 is registry-only; dual-mode dispatch, `monetization_enabled` toggle, and single-`API_KEY` env var removed. Rate-limit refactored: `slowapi` dropped in favour of `limits` directly, per-key only (bucket = `key:<key_id>`). Per-IP rate-limit removed from the application layer entirely. Driven by Story 2.2 code-review triage and operator-driven re-scope.
 inputDocuments:
   - _bmad-output/planning-artifacts/prd.md
   - _bmad-output/planning-artifacts/prd-validation-report.md
@@ -43,7 +48,7 @@ Both epics must ship together. Epic 1 without Epic 2 exposes LGPD risk and break
 - **Security (NFR8–NFR17):** One-shot key display, SHA-256 hashing, Fernet encryption, timing-safe comparison with dummy-on-miss, 0600 file permissions, no personal data in logs. These define the storage and comparison layer completely.
 - **Reliability (NFR18–NFR24):** Zero external dependencies at request time, unclean-shutdown tolerance, 24h RPO via nightly backups, cron must not block auth reads, no warm-up extension.
 - **Scalability (NFR25–NFR29):** Single shard supports 1K customers / 2K keys, <50MB memory overhead, <50MB disk growth over 6 months. Multi-replica safety via independent auth caches + shared SQLite WAL.
-- **Compatibility (NFR30–NFR33):** Public API contract byte-identical to 1.6.2. Legacy single-API_KEY mode preserved when monetization disabled. Ansible idempotency. CLI backward-compatible within 2.x.
+- **Compatibility (NFR30–NFR33):** Public `/v1/audio/speech` and `/health` request/response contract byte-identical to 1.6.2 (NFR30). Ansible idempotency. CLI backward-compatible within 2.x. **2026-04-18 revision:** NFR31 retired — no legacy single-`API_KEY` mode; 2.0.0 is registry-only.
 - **Compliance (NFR34–NFR37):** LGPD access/deletion within 15 days, breach-notification runbook, CDC proportionality (suspended-not-deleted).
 
 **Scale & Complexity:**
@@ -76,10 +81,10 @@ Both epics must ship together. Epic 1 without Epic 2 exposes LGPD risk and break
 
 ### Cross-Cutting Concerns Identified
 
-1. **Authentication middleware** — touches every `/v1/audio/speech` request. Must support both legacy (single API_KEY) and new (SQLite registry) paths gated by `monetization_enabled`. The cache layer sits between the middleware and the DB.
+1. **Authentication middleware** — touches every `/v1/audio/speech` request. Registry-only path: SHA-256 hash → TTLCache check → SQLite lookup on miss → `AuthPayload` on `request.state`. **2026-04-18 revision:** no dual-mode; legacy single-`API_KEY` path removed with FR27.
 2. **Audit logging** — touches every CLI mutation and every cron event. Append-only `audit_log` table. Actor identification (`cli:<shell-user>`, `cron:suspension-sweep`, `auth:cache-miss`).
 3. **Encryption** — touches every tax-ID write and read. Fernet encrypt on store, decrypt on display. Key rotation requires atomic re-encryption of all rows.
-4. **Backward compatibility** — the `monetization_enabled` boolean gates the auth path, the rate-limit key function, and the error envelope for suspended keys. Every new code path must have a legacy fallback.
+4. **Backward compatibility** — **2026-04-18 revision:** retired. 2.0.0 is a breaking release; no `monetization_enabled` gate, no legacy fallbacks. The NFR30 contract on `/v1/audio/speech` and `/health` request/response shape is preserved; the auth mechanism changes (single bearer → registry-backed bearer) and is a documented breaking change.
 5. **Non-regression contract** — 40+ controls from prior pentests that must remain green. FR46–FR52 codify CI verification. Every PR in this cycle runs the full regression suite.
 6. **CLI/runtime boundary** — the CLI and the FastAPI app share config and DB access but must never share import paths. The CLI entry point is `comadre-keys` (Typer); the app entry point is `uvicorn`. SQLite WAL provides the concurrency model.
 
@@ -113,7 +118,7 @@ The existing stack covers every concern a starter template would provide (build 
 Python 3.12+, strict mypy with pydantic plugin, all type annotations required. No change.
 
 **Configuration:**
-pydantic-settings BaseSettings via `get_settings()` (LRU-cached). New settings fields added to existing `Settings` class: `monetization_enabled`, `key_registry_db_path`, `key_registry_encryption_key` (SecretStr), `operator_contact_hint`, `billing_day`, `billing_timezone`.
+pydantic-settings BaseSettings via `get_settings()` (LRU-cached). New settings fields added to existing `Settings` class: `key_registry_db_path`, `key_registry_encryption_key` (SecretStr, **required** as of 2026-04-18), `operator_contact_hint`, `billing_day`, `billing_timezone`. **Removed in 2.0.0:** `api_key` (single shared secret) and `monetization_enabled` (toggle) — see PRD revision note for FR27/NFR31 retirement.
 
 **Testing Framework:**
 pytest with asyncio_mode=auto, mocked by default. New test files: `test_keys_db.py`, `test_keys_auth.py`, `test_keys_cache.py`, `test_keys_billing.py`, `test_keys_crypto.py`, `test_keys_cli.py`. Minimum 90% coverage on new modules.
@@ -184,12 +189,11 @@ New `keys/` subpackage under `src/comadre/`, CLI entry point registered in `pypr
 
 ### Authentication & Security
 
-**Dual-Mode Auth: Conditional Inside verify_api_key()**
-- The existing `verify_api_key()` FastAPI dependency function gains a branch at the top:
-  - If `settings.monetization_enabled` is False: execute the current single-API_KEY hmac.compare_digest check (unchanged 1.6.2 behavior).
-  - If True: hash the inbound token, check the TTLCache, on miss query SQLite, validate status + paid_until + billing_mode, cache the result, return the auth payload.
-- The function signature changes to return an `AuthPayload | None` (None for legacy mode, payload for registry mode). Downstream rate-limit resolver reads the payload.
-- Rationale: minimal code change; the legacy path is literally the current code; no middleware swap or route reconfiguration needed; the boolean gate is checked once per request.
+**Registry-Only Auth (2026-04-18 revision)**
+- `verify_api_key()` FastAPI dependency has a single path: hash the inbound token, check the TTLCache, on miss query SQLite, validate status + paid_until + billing_mode, cache the result, set `request.state.auth_payload` on success.
+- Return type is `None`; side-effect is `request.state.auth_payload` (an `AuthPayload` on success; attribute absent on any failure path before the raise).
+- Dual-mode conditional, `settings.monetization_enabled` gate, and the single-`API_KEY` `hmac.compare_digest` legacy path are **removed** per FR27 retirement.
+- Rationale: dual-mode was cheap in principle but expensive in practice — AC shape, test matrix, and library interactions (slowapi limit-provider signature) all had to handle both. Single-mode removes that tax.
 
 **Cache Invalidation: Accept 60s TTL, Expose `cache-status` for Observability**
 - The `comadre-keys cache-status` command (FR45, renamed from the earlier `cache-status` name) reports the cache-TTL propagation bound and, when practical, cache-health telemetry (hit rate, entry count). It performs no cache mutation.
@@ -212,10 +216,12 @@ New `keys/` subpackage under `src/comadre/`, CLI entry point registered in `pypr
 - Error envelope `{error: {message, type, hint}}` unchanged; new error types use existing shape.
 - No new HTTP endpoints in MVP. No REST surface for operator data.
 
-**Rate Limiting: Dynamic Per-Key Resolution**
-- When `monetization_enabled=true`: slowapi `key_func` switches from `get_client_ip` to a function that extracts the API key hash from the auth payload. The `limit` function reads `AuthPayload.rate_limit_rpm` from the cached record.
-- When `monetization_enabled=false`: slowapi uses the existing per-IP static limit from `RATE_LIMIT_SPEECH`.
-- Per-IP rate limiting remains active on failed auth attempts (before key resolution), bounded by the existing 30/min default.
+**Rate Limiting: Per-Key Only via `limits` Library (2026-04-18 revision)**
+- `slowapi` is **removed** as a dependency. The `/v1/audio/speech` endpoint uses FastAPI `Depends(check_rate_limit)`, which reads `request.state.auth_payload.rate_limit_rpm` (populated by `verify_api_key`) and enforces it via `limits.aio.strategies.MovingWindowRateLimiter` with in-memory storage.
+- Bucket key: `f"key:{auth_payload.key_id}"`. Stable across `rotate-key` (same `key_id`, new plaintext).
+- Limit string: `f"{auth_payload.rate_limit_rpm}/minute"`. Read from the `AuthCache`-backed payload; no settings fallback in code because the DB schema's `CHECK (rate_limit_rpm > 0)` guarantees every row has a valid value.
+- No per-IP bucket in the application and no per-IP replacement at the reverse-proxy layer either. Enumeration is cryptographically bounded by key entropy (128 bits of `cmdr_live_` + 32 hex chars); per-key caps bound TTS compute regardless of origin IP, so per-IP would be a redundant layer fighting the per-key limit.
+- Rationale: slowapi 0.1.9's limit-provider callable cannot receive the `Request` object, forcing ugly string-smuggling workarounds under a dual-mode contract. `limits` directly (which is what slowapi wraps) gives full control: bucket, limit, and identifier passed explicitly, no dispatch-on-type. Per-IP logic at the app layer was only coherent under the single-shared-`API_KEY` world (multiple callers per key); with per-customer keys, IP-level concerns are proxy-layer concerns.
 
 **Error Envelope Extensions:**
 - `ApiKeyNotFoundError(401)`: same envelope as current invalid-key 401. Indistinguishable from current behavior (enumeration resistance).
@@ -254,12 +260,15 @@ Not applicable — Comadre 2.0.0 has no frontend. The operator interface is CLI-
 
 | Variable | Default | Type | Description |
 |---|---|---|---|
-| `MONETIZATION_ENABLED` | `false` | bool | Gates the auth path between legacy and registry mode |
 | `KEY_REGISTRY_DB_PATH` | `/keys/registry.db` | str | Path to SQLite key registry |
-| `KEY_REGISTRY_ENCRYPTION_KEY` | *(required when monetization enabled)* | SecretStr | Fernet key for CPF/CNPJ encryption |
+| `KEY_REGISTRY_ENCRYPTION_KEY` | *(required — 2.0.0 is registry-only)* | SecretStr | Fernet key for CPF/CNPJ encryption |
 | `OPERATOR_CONTACT_HINT` | `"Contact your Comadre operator."` | str | Displayed in 401 hints for suspended keys |
 | `BILLING_DAY` | `5` | int | Day of month for billing cycle |
 | `BILLING_TIMEZONE` | `America/Sao_Paulo` | str | IANA timezone for cron and billing logic |
+**Removed in 2.0.0** (per FR27 retirement, 2026-04-18):
+- `API_KEY` — single shared bearer. Registry-only auth; no global secret.
+- `MONETIZATION_ENABLED` — toggle. Registry is always on.
+- `RATE_LIMIT_SPEECH` — slowapi-format per-IP string. Replaced by per-key `rate_limit_rpm` from the DB row.
 
 ### Decision Impact Analysis
 
@@ -416,12 +425,12 @@ decrypted = fernet.decrypt(encrypted_bytes).decode()  # returns str
 
 ### Communication Patterns
 
-**Auth Payload Flow:**
-- `verify_api_key()` returns `AuthPayload | None`
-- `None` means legacy mode (monetization disabled) — downstream code must handle both
-- `AuthPayload` is a frozen dataclass (immutable after creation)
-- The payload flows: `verify_api_key()` → stored in request state → read by rate-limit resolver → discarded after response
-- Never store AuthPayload in a module-level variable or app.state
+**Auth Payload Flow (2026-04-18 revision):**
+- `verify_api_key()` returns `None`; its side effect is `request.state.auth_payload = AuthPayload(...)` on success. On any denial (401, 403, 500) it raises a `ComadreError` subclass before setting the attribute.
+- `AuthPayload` is a frozen dataclass (immutable after creation).
+- The payload flows: `verify_api_key()` → `request.state.auth_payload` → read by `check_rate_limit` (rate-limit dependency) and by route handlers → discarded after response.
+- Never store AuthPayload in a module-level variable or `app.state`.
+- No "legacy mode" shape — `auth_payload` is either set (registry allow) or the request never reaches the handler (raise). `getattr(request.state, "auth_payload", None)` is still used defensively in middleware for robustness against dependency-order regressions.
 
 **Cache Interaction Pattern:**
 - The auth path ALWAYS checks cache first, then DB on miss
@@ -728,7 +737,7 @@ Host crontab (00:30) → comadre-keys suspend-sweep
 - Security (NFR8–NFR17): SHA-256 hashing, Fernet encryption, timing-safe comparison, 0600 permissions, log scrubbing — all architecturally specified.
 - Reliability (NFR18–NFR24): WAL mode, nightly backup, zero external deps, no warm-up extension.
 - Scalability (NFR25–NFR29): 4096-entry cache, single SQLite file, <50MB overhead target.
-- Compatibility (NFR30–NFR33): byte-identical API, monetization_enabled toggle, legacy mode preserved.
+- Compatibility (NFR30–NFR33): NFR30 public-contract byte-identity on `/v1/audio/speech` + `/health` preserved; NFR31 retired 2026-04-18 (no legacy mode); NFR32 Ansible idempotency; NFR33 CLI back-compat within 2.x.
 - Compliance (NFR34–NFR37): export-customer, delete-customer --hard, breach runbook, CDC proportionality.
 
 ### Gap Analysis Results
@@ -781,7 +790,7 @@ Host crontab (00:30) → comadre-keys suspend-sweep
 **Key Strengths:**
 - Existing 58-rule architecture envelope constrains new decisions, reducing risk of divergence
 - Zero new containers, zero new network dependencies — minimal blast radius
-- Binary `monetization_enabled` toggle provides clean rollback path
+- ~~Binary `monetization_enabled` toggle provides clean rollback path~~ **REVISED 2026-04-18:** rollback via git-revert to 1.6.2 tag; no toggle needed.
 - CLI/runtime separation enforced by module layout, not just convention
 - Every FR maps to a specific module and test file
 

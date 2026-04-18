@@ -1,5 +1,5 @@
 # generated: 2026-04-16
-# last_updated: 2026-04-18 (story 2.1 code-review landed: 6 patches applied — 2 HIGH bugs fixed, 4 test gaps closed; status → done)
+# last_updated: 2026-04-18 (story 2.2 implementation landed via bmad-dev-story; status → review)
 # project: comadre
 # project_key: NOKEY
 # tracking_system: file-system
@@ -71,7 +71,7 @@ development_status:
   # ------------------------------------------------------------------
   epic-2: in-progress
   2-1-registry-based-api-authentication: done
-  2-2-dynamic-per-key-rate-limiting: backlog
+  2-2-dynamic-per-key-rate-limiting: review
   2-3-request-counters-cache-management: backlog
   epic-2-retrospective: optional
 

@@ -1,9 +1,10 @@
-"""Registry-backed API-key authentication path.
+"""Registry-backed API-key authentication.
 
-The sole entry point is ``verify_api_key_registry`` — called by
-``comadre.api.verify_api_key`` when ``settings.monetization_enabled`` is
-True. Sets ``request.state.auth_payload`` on success; raises a
-``ComadreError`` subclass on any denial outcome.
+Sole auth path as of 2026-04-18 (FR27 retired — no dual-mode, no legacy
+single-``API_KEY`` fallback). ``verify_api_key`` is the FastAPI
+dependency wired onto ``POST /v1/audio/speech``. Sets
+``request.state.auth_payload`` on success; raises a ``ComadreError``
+subclass on any denial outcome.
 
 The module's only runtime I/O is a single indexed SELECT against the key
 registry on cache-miss. Zero external deps — the timing-equalisation dummy
@@ -18,13 +19,14 @@ import sqlite3
 from datetime import date
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import Request
+from fastapi import Header, Request
 
 from comadre.config import Settings
 from comadre.exceptions import (
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
     ApiKeySuspendedError,
+    AuthenticationError,
     KeyRegistryError,
 )
 from comadre.keys.billing import ManualBillingProvider
@@ -55,11 +57,31 @@ def _today_in_billing_tz(settings: Settings) -> date:
     return _dt.datetime.now(ZoneInfo(settings.billing_timezone)).date()
 
 
+async def verify_api_key(
+    request: Request,
+    authorization: str = Header(default=""),
+) -> None:
+    """FastAPI dependency — registry-mode bearer auth.
+
+    Parses the ``Authorization: Bearer <token>`` header, then delegates
+    to ``verify_api_key_registry`` (which carries the actual DB + cache
+    logic and is directly callable by tests without HTTP framing).
+    2026-04-18: sole auth path — dual-mode with the retired single-
+    ``API_KEY`` was removed with FR27.
+    """
+    if not authorization.startswith("Bearer "):
+        raise AuthenticationError("Missing or malformed Authorization header")
+    token = authorization.removeprefix("Bearer ")
+    await verify_api_key_registry(request, token=token)
+
+
 async def verify_api_key_registry(request: Request, token: str) -> None:
-    """Registry-mode auth. Sets ``request.state.auth_payload`` on pass.
+    """Registry-mode auth core. Sets ``request.state.auth_payload`` on pass.
 
     Never writes to ``audit_log``. Never updates ``last_used_at``. Fails
-    closed on any SQLite error.
+    closed on any SQLite error. Kept as a separately-callable function
+    (not inlined into ``verify_api_key``) so tests can exercise the full
+    auth logic without constructing an HTTP ``Authorization`` header.
     """
     settings: Settings = request.app.state.settings
     cache: AuthCache = request.app.state.auth_cache

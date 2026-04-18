@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
 
 from cryptography.fernet import Fernet
-from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
+from pydantic import Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,7 +37,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    api_key: SecretStr = Field(min_length=1)
     default_voice: str = "kokoro/pm_santa"
     port: int = Field(default=8000, ge=1, le=65535)
     espeak_data_path: str | None = Field(
@@ -89,14 +87,6 @@ class Settings(BaseSettings):
         ge=1,
         description="Number of CPU threads for Qwen3 inference",
     )
-    rate_limit_speech: str = Field(
-        default="30/minute",
-        description="Rate limit for speech endpoint (per client IP)",
-    )
-    rate_limit_health: str = Field(
-        default="60/minute",
-        description="Rate limit for health endpoint (per client IP)",
-    )
     kokoro_model_url: str = Field(
         default=(
             "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
@@ -120,23 +110,16 @@ class Settings(BaseSettings):
         description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
     )
 
-    monetization_enabled: bool = Field(
-        default=False,
-        description=(
-            "Enable monetization features (dynamic per-key rate limiting, "
-            "billing sweeps, suspension)."
-        ),
-    )
     key_registry_db_path: str = Field(
         default="./data/keys/registry.db",
         min_length=1,
         description=("SQLite key registry path. Created with mode 0600 on first use."),
     )
-    key_registry_encryption_key: SecretStr | None = Field(
-        default=None,
+    key_registry_encryption_key: SecretStr = Field(
+        ...,
         description=(
-            "Fernet key for encrypting tax IDs at rest. Required when "
-            "monetization_enabled=True. Generate with "
+            "Fernet key for encrypting tax IDs at rest. Required — Comadre 2.0.0 "
+            "is registry-only (FR27 retired). Generate with "
             "Fernet.generate_key().decode()."
         ),
     )
@@ -175,16 +158,14 @@ class Settings(BaseSettings):
 
     @field_validator("key_registry_encryption_key")
     @classmethod
-    def _validate_fernet_key_shape(cls, v: SecretStr | None) -> SecretStr | None:
+    def _validate_fernet_key_shape(cls, v: SecretStr) -> SecretStr:
         """Reject malformed Fernet keys without echoing the raw value.
 
         Runs on the already-coerced `SecretStr`, so pydantic's error rendering
         masks the input as `**********` — AC5/NFR16 anti-enumeration guarantee
-        for the key value itself. Mandatory-when-enabled check runs in the
-        model validator below.
+        for the key value itself. The field itself is required (no default),
+        so pydantic handles the missing-value case before this runs.
         """
-        if v is None:
-            return v
         try:
             Fernet(v.get_secret_value().encode())
         except (ValueError, TypeError) as exc:
@@ -192,16 +173,6 @@ class Settings(BaseSettings):
                 "KEY_REGISTRY_ENCRYPTION_KEY must be a valid Fernet key"
             ) from exc
         return v
-
-    @model_validator(mode="after")
-    def _validate_encryption_key_when_monetization_enabled(self) -> Self:
-        """Require the encryption key when monetization is on."""
-        if self.monetization_enabled and self.key_registry_encryption_key is None:
-            raise ValueError(
-                "KEY_REGISTRY_ENCRYPTION_KEY is required when "
-                "MONETIZATION_ENABLED=true and must be a valid Fernet key"
-            )
-        return self
 
 
 @lru_cache(maxsize=1)

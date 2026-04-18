@@ -12,19 +12,19 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from slowapi.middleware import SlowAPIMiddleware
 from starlette.responses import Response
 
 from comadre import __version__
-from comadre.api import api_router, verify_api_key
+from comadre.api import api_router
 from comadre.config import get_settings
 from comadre.download import ensure_kokoro_models, ensure_qwen3_models
-from comadre.exceptions import RateLimitError, register_exception_handlers
+from comadre.exceptions import register_exception_handlers
 from comadre.health import build_health_response, build_minimal_health_response
+from comadre.keys.auth import verify_api_key
 from comadre.keys.cache import AuthCache
 from comadre.keys.db import _apply_migrations, get_connection
 from comadre.logging import get_logger, setup_logging
-from comadre.rate_limit import get_client_ip, limiter
+from comadre.rate_limit import RateLimiter, get_client_ip
 from comadre.service import EngineRouter, KokoroEngine, QwenEngine
 
 logger = get_logger("startup")
@@ -50,19 +50,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     logger.info("Structured logging configured")
 
-    # Phase 2a: Key-registry bootstrap (monetization-gated)
-    if settings.monetization_enabled:
-        logger.info("Opening key registry at %s", settings.key_registry_db_path)
-        app.state.registry_db = get_connection(settings.key_registry_db_path)
-        _apply_migrations(app.state.registry_db)
-        app.state.auth_cache = AuthCache()
-        logger.info(
-            "Key registry ready; auth cache initialised (maxsize=%d, ttl=%ds)",
-            app.state.auth_cache.maxsize,
-            app.state.auth_cache.ttl,
-        )
-    else:
-        logger.info("Monetization disabled; skipping key registry bootstrap")
+    # Phase 2a: Key-registry bootstrap (sole auth path as of 2026-04-18)
+    logger.info("Opening key registry at %s", settings.key_registry_db_path)
+    app.state.registry_db = get_connection(settings.key_registry_db_path)
+    _apply_migrations(app.state.registry_db)
+    app.state.auth_cache = AuthCache()
+    app.state.rate_limiter = RateLimiter.build()
+    logger.info(
+        "Key registry ready; auth cache initialised (maxsize=%d, ttl=%ds); "
+        "per-key rate-limiter initialised",
+        app.state.auth_cache.maxsize,
+        app.state.auth_cache.ttl,
+    )
 
     # Phase 2.5: Ensure models are downloaded (non-blocking)
     logger.info("Checking model files...")
@@ -183,10 +182,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("Shutting down...")
-        if settings.monetization_enabled:
-            db = getattr(app.state, "registry_db", None)
-            if db is not None:
-                db.close()
+        db = getattr(app.state, "registry_db", None)
+        if db is not None:
+            db.close()
 
 
 async def validation_error_handler(
@@ -205,22 +203,6 @@ async def validation_error_handler(
                 ),
             }
         },
-    )
-
-
-def _rate_limit_exceeded_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Convert slowapi RateLimitExceeded to our error format."""
-    error = RateLimitError(retry_after=60)
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": {
-                "message": error.message,
-                "type": error.error_type,
-                "hint": error.hint,
-            }
-        },
-        headers={"Retry-After": "60"},
     )
 
 
@@ -254,8 +236,6 @@ def _method_not_allowed_handler(request: Request, exc: Exception) -> JSONRespons
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    settings = get_settings()
-
     app = FastAPI(
         title="Comadre",
         version=__version__,
@@ -265,8 +245,6 @@ def create_app() -> FastAPI:
         openapi_url=None,
         redirect_slashes=False,
     )
-    app.state.limiter = limiter
-    app.add_middleware(SlowAPIMiddleware)
     access_logger = get_logger("access")
 
     @app.middleware("http")
@@ -288,7 +266,6 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(405, _method_not_allowed_handler)
-    app.add_exception_handler(429, _rate_limit_exceeded_handler)
     app.include_router(api_router)
 
     async def _try_auth(request: Request) -> bool:
@@ -303,7 +280,6 @@ def create_app() -> FastAPI:
         return True
 
     @app.get("/health")
-    @limiter.limit(settings.rate_limit_health)
     async def health_endpoint(request: Request) -> JSONResponse:
         authenticated = await _try_auth(request)
 

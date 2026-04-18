@@ -6,6 +6,9 @@ lastEdited: '2026-04-16'
 editHistory:
   - date: '2026-04-16'
     changes: 'Amended FR45 and related references to reflect architecture decision that immediate cross-replica auth-cache invalidation is not supported in MVP; renamed CLI command cache-flush → cache-status. Driven by implementation-readiness-report-2026-04-16.md §Major Issues #1.'
+  - date: '2026-04-18'
+    changes: |
+      Retired FR27 (legacy single-API_KEY mode) and NFR31 (byte-identical 1.6.2 behaviour). Comadre 2.0.0 is registry-only from the first byte — no `monetization_enabled` toggle, no fallback to the pre-2.0.0 single-`API_KEY` env var, no "legacy mode" rate-limit semantics. Driven by Story 2.2 code-review triage: slowapi 0.1.9's limit-provider signature made the dual-mode contract incoherent, and the toggle has no operational value since the same operator owns both the deploy and the migration. Story 2.2 is being rewritten to use `limits` directly (no slowapi), pure per-key rate-limit, FastAPI `Depends`. `API_KEY` env var is removed from deployment config; `KEY_REGISTRY_ENCRYPTION_KEY` becomes mandatory.
 inputDocuments:
   - _bmad-output/project-context.md
   - docs/api-architecture.md
@@ -142,7 +145,7 @@ Brazilian builders today face a binary choice for pt-BR chatbot TTS: cloud subsc
 
 - Bootstrap Ansible playbook creates the SQLite file, sets permissions, installs the daily suspension cron, and verifies the CLI is runnable — in the existing bootstrap flow, not a separate playbook
 - `cleanup.yml` extends to remove the key database and its backups
-- API-key rotation via `rotate-api-key.sh` becomes legacy (retained for emergency operator-side master-key scenarios, documented as such)
+- API-key rotation is handled exclusively via `comadre-keys rotate-key <prefix>` (per-customer). The pre-2.0.0 `rotate-api-key.sh` script is removed from the deploy package — there is no global master key to rotate in 2.0.0.
 - CLI installed system-wide as `comadre-keys` via `uv tool install` during deploy, available to the operator without virtualenv activation
 
 ### Measurable Outcomes
@@ -176,7 +179,7 @@ Brazilian builders today face a binary choice for pt-BR chatbot TTS: cloud subsc
 - **`BillingProvider` adapter + `ManualBillingProvider`** (the only concrete implementation in 2.0.0)
 - **Documentation (feature slice)**: `docs/monetization.md` operator runbook (onboarding, billing ritual, troubleshooting, complimentary keys), `CLAUDE.md` section, per-command `--help` with operator-actionable examples
 - **Ansible integration**: `bootstrap.yml` extension, `cleanup.yml` extension, `health.yml` extension with monetization probes
-- **Backward-compatible migration path**: deploy variable `monetization_enabled` (default `false`) gates the new auth middleware — existing deployments using the single `API_KEY` continue to work until the operator flips the switch
+- **Upgrade path (2026-04-18 revision — no backward-compat):** 2.0.0 is a breaking release. The single-`API_KEY` env var is removed. Operators upgrading from 1.6.2 must (a) set `KEY_REGISTRY_ENCRYPTION_KEY`, (b) create at least one customer + issue one key via `comadre-keys` CLI before the first request, (c) redeploy. No dual-mode, no `monetization_enabled` toggle. The only deployer is the project author; the break is contained.
 
 **Epic 2 — Security & Compliance (dedicated security epic)**
 
@@ -672,7 +675,7 @@ Comadre 1.6.2 has undergone two black-box penetration tests and several hardenin
 |---|---|---|
 | Import graph downward-only (`config` → `exceptions/schemas` → `preprocessing` → `service` → `rate_limit` → `api/health` → `main`) | Project-wide convention | New modules placed correctly: `keys/db` and `keys/auth` between `rate_limit` and `api`; `keys/billing` between `keys/db` and `keys/auth`; `keys/cli` has its own entry point and is NOT imported by the app runtime |
 | No HTTP concerns in `service.py`, no business logic in `api.py` | Enforced by review | New key-lookup logic lives in `keys/auth.py`, not `api.py` |
-| No raw `os.environ` — use `pydantic-settings` | `config.py` pattern | New settings (`key_registry_db_path`, `key_registry_encryption_key`, `operator_contact_hint`, `billing_day`, `monetization_enabled`) added to `Settings` class, not read from `os.environ` directly |
+| No raw `os.environ` — use `pydantic-settings` | `config.py` pattern | New settings (`key_registry_db_path`, `key_registry_encryption_key`, `operator_contact_hint`, `billing_day`) added to `Settings` class, not read from `os.environ` directly |
 
 **Deployment and ops:**
 
@@ -681,7 +684,7 @@ Comadre 1.6.2 has undergone two black-box penetration tests and several hardenin
 | Docker Compose v2 syntax (`docker compose`, never `docker-compose`) | `CLAUDE.md`, playbooks | New playbook tasks use v2 syntax |
 | `uv` only for package management | `CLAUDE.md`, `uv.lock` | New deps added via `uv add`, never pip/poetry |
 | Ansible become password passed via `-e`, not stored in inventory | `CLAUDE.md` | New playbooks (`backup-keys.yml`, `restore-keys.yml`) use the same pattern |
-| `API_KEY` env var required syntax in compose (`${API_KEY:?...}`) | `compose.yaml` | If `monetization_enabled=true`, a new sibling `KEY_REGISTRY_ENCRYPTION_KEY:?must be set` guard added |
+| Required env vars guarded in compose (`${VAR:?must be set}`) | `compose.yaml` | `KEY_REGISTRY_ENCRYPTION_KEY:?must be set` guard added. `API_KEY` guard **removed** in 2.0.0 (retired with FR27). |
 | No workers/threads for scaling — horizontal replicas only | `compose.yaml` `deploy.replicas` | Monetization stays compatible with multi-replica (each replica reads the same SQLite file, WAL mode for concurrent reads) |
 | Models deploy via SSH/SCP, not git | `deploy-models.yml` | No DB fixtures committed to git; DB created on first boot, optionally seeded from a backup tarball |
 | `_bmad-output/` tracked in git | `CLAUDE.md` | New artifacts (PRD, architecture, stories) committed |
@@ -836,9 +839,9 @@ client → Caddy (TLS, XFF injection)
 - The cache stores only the minimal authorization payload (`customer_id`, `status`, `rate_limit_rpm`, `paid_until`, `billing_mode`). Plaintext keys and personal data never enter the cache.
 - Cache invalidation: natural 60-second TTL. After an operator runs `suspend`, `reactivate`, `mark-paid`, or `revoke-key`, the effect propagates to all replicas within the TTL window. MVP does not support immediate cross-replica cache invalidation — the 60-second TTL is the worst-case propagation bound. The `comadre-keys cache-status` CLI command reports this bound to the operator (and, when practical, cache-health telemetry such as hit rate) without performing any cache mutation. Operators who need faster propagation can restart the affected replica(s), which empties the in-memory cache.
 
-**Backward-compatible migration mode:**
+**Upgrade from 1.6.2 (2026-04-18 revision):**
 
-When `monetization_enabled=false` (default during upgrade), the legacy single-`API_KEY` path is the only accepted auth path. When `monetization_enabled=true`, the SQLite-backed registry becomes the sole auth path. A boolean flag, not a gradual migration, because the two modes are mutually exclusive in semantics (single global key vs. per-customer keys).
+2.0.0 is a breaking release with no dual-mode. The SQLite-backed registry is the sole accepted auth path. Operators upgrading must seed at least one customer + issue one key before bringing the service back up. The single-`API_KEY` env var is no longer honoured; a request authenticated with the old global key fails closed with the same 401 envelope as any invalid key. Container restart clears the in-memory auth cache — post-upgrade first request pays one SQLite lookup, same as any cold start.
 
 ### Data Schemas
 
@@ -926,16 +929,14 @@ New `ComadreError` subclasses:
 
 | Endpoint | Default | Key function | Source |
 |---|---|---|---|
-| `POST /v1/audio/speech` | 30/min per API key (was per IP) | `get_api_key` | New in 2.0.0 |
-| `GET /health` | 60/min per IP | `get_client_ip` | Unchanged |
+| `POST /v1/audio/speech` | `rate_limit_rpm` per API key (DB row) | `key:<key_id>` | New in 2.0.0; `limits` library direct, no slowapi |
+| `GET /health` | Unthrottled at app layer | n/a | 2026-04-18 revision: slowapi removed, no replacement rate-limit on `/health` |
 
-**Per-key limit resolution:**
+**Per-key limit resolution (2026-04-18 revision):**
 
-Every API key carries its own `rate_limit_rpm` field. The slowapi decorator uses a dynamic limit function that reads the limit from the cached key record at request time. The default `30/min` applies only when a key's `rate_limit_rpm` field is not explicitly set (should never happen for MVP-issued keys, defensive default).
+Every API key carries its own `rate_limit_rpm` field. The speech endpoint uses a FastAPI `Depends(check_rate_limit)` that reads `request.state.auth_payload.rate_limit_rpm` (populated by `verify_api_key`) and enforces it via the `limits` library directly — `slowapi` is **removed** in 2.0.0 in favour of a thinner layer over `limits.aio.strategies.MovingWindowRateLimiter`. Bucket key is `key:<key_id>`; `key_id` is stable across `rotate-key`, so a rotated plaintext shares the pre-rotation bucket until the minute rolls over. The rate-limit database row's `rate_limit_rpm` is enforced verbatim — no defensive global default, because the schema's `CHECK (rate_limit_rpm > 0)` constraint guarantees every row has a valid value.
 
-**Global fallback when monetization is disabled:**
-
-If `monetization_enabled=false`, slowapi reverts to the 1.6.2 behavior (per-IP global limit from `RATE_LIMIT_SPEECH` env var). This preserves the deploy-time toggle semantics.
+**No per-IP rate-limit in the application layer.** The only rate-limit bucket is per-key. Motivation: per-IP logic in the app exists only when multiple callers share a key (pre-2.0.0 single-`API_KEY` world); once every caller authenticates with their own key, per-IP is a redundant layer that fights the per-key cap.
 
 ### API Documentation
 
@@ -1015,10 +1016,10 @@ comadre-keys --install-completion                            # Typer built-in
 - SQLite is single-writer-many-reader under WAL. The daily cron sweep is the only heavy writer; all CLI commands issue short transactions. Multi-replica deployments share the same volume-mounted SQLite file and each replica's auth cache is independent (60s TTL per replica).
 - The CLI must be runnable from any replica container or from the host. Bootstrap installs it system-wide via `uv tool install` so the operator's SSH session has it without activating a venv.
 
-**Migration paths:**
+**Upgrade from 1.6.2 (2026-04-18 revision):**
 
-- First install: `monetization_enabled=false` by default. Operator flips to `true` only after manually seeding at least one customer + key and verifying via `comadre-keys health`.
-- Rollback: setting `monetization_enabled=false` restores 1.6.2 semantics. The SQLite file persists for future re-enablement. No destructive rollback.
+- 2.0.0 is a breaking release — no `monetization_enabled` toggle, no dual-mode. Upgrade sequence: (1) set `KEY_REGISTRY_ENCRYPTION_KEY` in deploy env, (2) bring up a fresh 2.0.0 container, (3) `docker compose exec` or SSH + `comadre-keys create-customer` + `issue-key` to seed at least one key, (4) hand the plaintext to the consumer(s) of the old single-`API_KEY`, (5) service is live. No fallback path — the single-`API_KEY` env var is no longer honoured.
+- Rollback: git-revert to the 1.6.2 tag and redeploy. The registry SQLite file persists across versions (it is simply ignored by 1.6.2). No destructive rollback.
 
 **Observability hooks (minimal in MVP):**
 
@@ -1047,7 +1048,7 @@ Secondary philosophy: **Platform enablement.** The MVP makes Comadre a product a
 
 - **Not Experience MVP** — no visual polish work, no landing-page redesign for monetization, no customer portal. The CLI is intentionally utilitarian.
 - **Not Problem-Solving MVP** — the problem (TTS for pt-BR chatbots) was already solved in 1.6.2. This cycle solves the *business* problem of selling that solution.
-- **Not a pilot** — the output is an actual release (2.0.0), not a behind-a-flag experiment. The `monetization_enabled` toggle exists only for safe migration, not for gradual rollout.
+- **Not a pilot** — the output is an actual release (2.0.0), not a behind-a-flag experiment. 2026-04-18 revision: `monetization_enabled` toggle retired entirely; 2.0.0 is registry-only from the first byte, no flag-gated rollout.
 
 ### Resource Requirements
 
@@ -1153,9 +1154,9 @@ The MVP deliberately refuses the following, with the rationale documented so fut
 - **FR22:** System validates an incoming Bearer key against an immutably-hashed copy stored in the registry, never storing or comparing the plaintext.
 - **FR23:** System caches valid authorizations to satisfy the NFR1 auth-path latency target for repeat requests from the same key.
 - **FR24:** System enforces a per-key rate limit derived at request time from the specific key's configured limit.
-- **FR25:** System enforces a per-IP rate limit applied independently of auth outcome, so failed auth attempts are bounded.
+- **FR25:** ~~System enforces a per-IP rate limit applied independently of auth outcome, so failed auth attempts are bounded.~~ **RETIRED 2026-04-18.** Per-IP rate-limit removed from the application layer. Rationale: with per-key rate-limit and well-dimensioned key sales (sum of `rate_limit_rpm` ≤ server capacity), the TTS compute surface is bounded independent of IP. Enumeration is bounded cryptographically by key entropy (128 bits of `cmdr_live_` + 32 hex chars); per-IP inside the Python layer only added complexity without protecting anything the per-key limit doesn't already cover.
 - **FR26:** System equalizes the timing of key-lookup operations so that an attacker cannot distinguish a hash hit from a miss by wall-clock observation.
-- **FR27:** System can operate in a legacy single-API-key mode when the monetization toggle is disabled, preserving compatibility with pre-2.0.0 deployments.
+- **FR27:** ~~System can operate in a legacy single-API-key mode when the monetization toggle is disabled, preserving compatibility with pre-2.0.0 deployments.~~ **RETIRED 2026-04-18.** Comadre 2.0.0 is registry-only from the first byte. The single-`API_KEY` env var is removed; `monetization_enabled` toggle is removed; dual-mode dispatch in `verify_api_key` is removed. Operators upgrade by seeding a customer + key before first request (see §Upgrade from 1.6.2).
 - **FR28:** System returns a distinct 401 error envelope for suspended and revoked keys that directs the customer to their operator's billing contact.
 - **FR29:** System preserves the request and response contract of `/v1/audio/speech` and `/health` identically to Comadre 1.6.2, so existing customer integrations continue to function without modification.
 
@@ -1240,7 +1241,7 @@ The MVP deliberately refuses the following, with the rationale documented so fut
 ### Compatibility
 
 - **NFR30:** The public `/v1/audio/speech` and `/health` request/response contracts must remain byte-identical to Comadre 1.6.2; any customer integration that worked against 1.6.2 must continue to work against 2.0.0 without modification.
-- **NFR31:** The legacy single-`API_KEY` auth mode (when `monetization_enabled=false`) must preserve every behavior of Comadre 1.6.2 exactly, including error envelopes, rate-limit values, and timing characteristics.
+- **NFR31:** ~~The legacy single-`API_KEY` auth mode (when `monetization_enabled=false`) must preserve every behavior of Comadre 1.6.2 exactly, including error envelopes, rate-limit values, and timing characteristics.~~ **RETIRED 2026-04-18.** The legacy single-`API_KEY` mode is removed in 2.0.0. NFR30 (request/response contract byte-identical to 1.6.2 on `/v1/audio/speech` + `/health`) stands. Auth-envelope byte-identity is no longer meaningful because the auth mechanism itself changed (single bearer → registry-backed bearer); the 401/403 envelope **shape** (`error.{message,type,hint}`) is preserved, but the content of `message` and `hint` reflects the new auth path.
 - **NFR32:** Ansible playbooks must remain idempotent: running `bootstrap.yml` or `update.yml` multiple times must not re-issue keys, re-provision the database, or trigger spurious restarts.
 - **NFR33:** The `comadre-keys` CLI must be backward-compatible within a major version: CLI invocations that worked on 2.0.0 must continue to work on every 2.x release.
 

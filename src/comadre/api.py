@@ -3,30 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 
-from comadre.config import get_settings
 from comadre.exceptions import (
-    AuthenticationError,
     GenerationError,
     ServiceUnavailableError,
 )
-from comadre.keys.auth import verify_api_key_registry
+from comadre.keys.auth import verify_api_key
 from comadre.logging import get_logger
-from comadre.rate_limit import limiter
+from comadre.rate_limit import check_rate_limit
 from comadre.schemas import ResponseFormat, SpeechRequest
 
 logger = get_logger("request")
 
 api_router = APIRouter()
-
-
-def _speech_rate_limit() -> str:
-    return get_settings().rate_limit_speech
 
 
 async def verify_ready(request: Request) -> None:
@@ -38,33 +31,14 @@ async def verify_ready(request: Request) -> None:
         )
 
 
-async def verify_api_key(
-    request: Request,
-    authorization: str = Header(default=""),
-) -> None:
-    """Validate bearer token. Dual-mode: legacy single-key vs registry-backed.
-
-    Legacy path (``monetization_enabled=False``) is byte-identical to the
-    1.6.2 implementation. Registry path delegates to
-    ``verify_api_key_registry``, which sets ``request.state.auth_payload``
-    on success so Story 2.2's rate-limit resolver can read it.
-    """
-    settings = request.app.state.settings
-    if not authorization.startswith("Bearer "):
-        raise AuthenticationError("Missing or malformed Authorization header")
-    token = authorization.removeprefix("Bearer ")
-    if not settings.monetization_enabled:
-        if not hmac.compare_digest(token, settings.api_key.get_secret_value()):
-            raise AuthenticationError()
-        return
-    await verify_api_key_registry(request, token=token)
-
-
 @api_router.post(
     "/v1/audio/speech",
-    dependencies=[Depends(verify_ready), Depends(verify_api_key)],
+    dependencies=[
+        Depends(verify_ready),
+        Depends(verify_api_key),
+        Depends(check_rate_limit),
+    ],
 )
-@limiter.limit(_speech_rate_limit)
 async def generate_speech(
     request: Request,
     body: SpeechRequest,

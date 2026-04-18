@@ -18,3 +18,21 @@ propagation restart the replica.
 
 Story 2.3 exposes the cache counters (`hits`, `misses`, `entries`,
 `ttl_seconds`) through `comadre-keys cache-status`.
+
+## Rate Limiting
+
+- `POST /v1/audio/speech` rate-limits per API key when
+  `MONETIZATION_ENABLED=true`, using each key's `rate_limit_rpm` from the
+  registry. When monetization is disabled, the per-IP `RATE_LIMIT_SPEECH`
+  default (30/min) applies instead.
+- `GET /health` always rate-limits per client IP (`RATE_LIMIT_HEALTH`,
+  default 60/min) regardless of mode.
+- Rate-limit error envelopes are byte-identical across both modes:
+  HTTP 429, `Retry-After: 60`,
+  `{"error": {"message": "Rate limit exceeded", "type": "rate_limit_error", "hint": "Too many requests. Try again in 60 seconds."}}`.
+- Per-key buckets key on the stable `key_<ulid>` identity, so
+  `comadre-keys rotate-key` preserves a customer's bucket state —
+  rotation is not a DoS bypass.
+- slowapi's default in-memory storage is per-replica; multi-replica
+  deployments bound effective throughput by `rpm × replica_count`. A
+  `docker compose restart` resets every bucket.

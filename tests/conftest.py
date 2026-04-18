@@ -19,8 +19,7 @@ from comadre.config import Settings, get_settings
 from comadre.keys.cache import AuthCache
 from comadre.keys.db import _apply_migrations, get_connection
 from comadre.main import create_app
-
-TEST_API_KEY = "test-key-12345"
+from comadre.rate_limit import RateLimiter
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -36,10 +35,26 @@ def _clear_settings_cache() -> None:
     get_settings.cache_clear()
 
 
+# 2026-04-18: the slowapi ``_reset_rate_limiter`` autouse fixture is gone.
+# Each test's ``app`` fixture constructs a fresh ``RateLimiter`` with its own
+# in-memory storage, so no cross-test bucket leakage is possible.
+
+
 @pytest.fixture()
-def mock_settings() -> Settings:
-    """Return a Settings instance with a known API key and defaults."""
-    return Settings(api_key=SecretStr(TEST_API_KEY))
+def fernet_key() -> str:
+    """Return a freshly generated Fernet key for tests."""
+    return Fernet.generate_key().decode()
+
+
+@pytest.fixture()
+def mock_settings(fernet_key: str) -> Settings:
+    """Return a Settings instance with test defaults.
+
+    2026-04-18: `api_key` (single shared secret) was removed when FR27 was
+    retired; registry mode is the only auth path. Tests that need a
+    specific encryption key override `key_registry_encryption_key`.
+    """
+    return Settings(key_registry_encryption_key=SecretStr(fernet_key))
 
 
 @pytest.fixture()
@@ -68,64 +83,28 @@ def mock_router() -> MagicMock:
 
 
 @pytest.fixture()
-def app(
-    mock_settings: Settings, mock_router: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> Any:
-    """Create a FastAPI app with mocked state (no lifespan)."""
-    monkeypatch.setenv("API_KEY", TEST_API_KEY)
-    monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
-    monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
-    get_settings.cache_clear()
-    application = create_app()
-    application.state.settings = mock_settings
-    application.state.router = mock_router
-    application.state.ready = True
-    application.state.queue_lock = asyncio.Lock()
-    application.state.queue_depth = 0
-    application.state.start_time = time.monotonic()
-    return application
-
-
-@pytest.fixture()
-async def client(app: Any) -> AsyncIterator[AsyncClient]:
-    """Return an httpx AsyncClient wired to the test app."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as c:
-        yield c
-
-
-@pytest.fixture()
-def auth_headers() -> dict[str, str]:
-    """Return authorization headers matching mock_settings."""
-    return {"Authorization": f"Bearer {TEST_API_KEY}"}
-
-
-@pytest.fixture()
-def monetized_registry_db_path(tmp_path: Path) -> Path:
-    """Return the tmp-path location the monetized app writes its registry to."""
+def registry_db_path(tmp_path: Path) -> Path:
+    """Return the tmp-path location the test app writes its registry to."""
     return tmp_path / "registry.db"
 
 
 @pytest.fixture()
-def app_monetized(
+def app(
     mock_router: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
-    monetized_registry_db_path: Path,
+    registry_db_path: Path,
+    fernet_key: str,
 ) -> Any:
-    """Same shape as ``app``, but with monetization enabled + a seeded registry.
+    """Registry-mode FastAPI app with mocked engine state.
 
-    Mirrors the lifespan's Phase 2a: opens the registry DB, applies
-    migrations, and attaches an ``AuthCache`` to ``app.state``. Integration
+    2026-04-18: the pre-FR27-retirement `app` / `app_monetized` split is
+    collapsed into a single fixture — there is no legacy mode. Opens the
+    registry DB, applies migrations, attaches an ``AuthCache``. Integration
     tests seed customer/api_key rows via ``app.state.registry_db`` directly.
     """
-    monkeypatch.setenv("API_KEY", TEST_API_KEY)
-    monkeypatch.setenv("RATE_LIMIT_SPEECH", "9999/minute")
     monkeypatch.setenv("RATE_LIMIT_HEALTH", "9999/minute")
-    monkeypatch.setenv("MONETIZATION_ENABLED", "true")
-    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(monetized_registry_db_path))
-    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(registry_db_path))
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
     monkeypatch.setenv(
         "OPERATOR_CONTACT_HINT", "Contact Ana on WhatsApp: +55 11 90000-0000"
     )
@@ -139,10 +118,11 @@ def app_monetized(
     application.state.queue_depth = 0
     application.state.start_time = time.monotonic()
 
-    conn = get_connection(monetized_registry_db_path)
+    conn = get_connection(registry_db_path)
     _apply_migrations(conn)
     application.state.registry_db = conn
     application.state.auth_cache = AuthCache()
+    application.state.rate_limiter = RateLimiter.build()
 
     try:
         yield application
@@ -151,17 +131,40 @@ def app_monetized(
 
 
 @pytest.fixture()
-async def client_monetized(app_monetized: Any) -> AsyncIterator[AsyncClient]:
-    """httpx AsyncClient wired to the monetization-enabled app."""
+async def client(app: Any) -> AsyncIterator[AsyncClient]:
+    """httpx AsyncClient wired to the test app."""
     async with AsyncClient(
-        transport=ASGITransport(app=app_monetized),
+        transport=ASGITransport(app=app),
         base_url="http://test",
     ) as c:
         yield c
 
 
 @pytest.fixture()
-def registry_db(app_monetized: Any) -> sqlite3.Connection:
-    """Shortcut to the monetized app's SQLite connection."""
-    conn: sqlite3.Connection = app_monetized.state.registry_db
+def registry_db(app: Any) -> sqlite3.Connection:
+    """Shortcut to the test app's SQLite connection."""
+    conn: sqlite3.Connection = app.state.registry_db
     return conn
+
+
+@pytest.fixture()
+def auth_headers(app: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Seed a generous active key and return a Bearer-auth header dict.
+
+    2026-04-18: pre-FR27-retirement this fixture returned a legacy
+    ``test-key-12345`` bearer; now it seeds an actual registry row with a
+    high ``rate_limit_rpm`` so any test using ``auth_headers`` can fire
+    dozens of requests without tripping the per-key limit.
+    """
+    from datetime import date
+
+    from comadre.keys import auth as auth_module
+    from tests._keys_fixtures import seed_customer_and_key
+
+    monkeypatch.setattr(
+        auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
+    )
+    plaintext, _kid, _cid = seed_customer_and_key(
+        app.state.registry_db, rate_limit_rpm=9999
+    )
+    return {"Authorization": f"Bearer {plaintext}"}
