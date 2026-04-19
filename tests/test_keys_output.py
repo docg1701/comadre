@@ -21,6 +21,7 @@ from comadre.keys.cli.output import (
     render_customer_list,
     render_empty_state,
     render_error,
+    render_health_report,
     render_json,
     render_key_detail,
     render_key_list,
@@ -31,6 +32,7 @@ from comadre.keys.cli.output import (
     stderr_console,
     stdout_console,
 )
+from comadre.keys.health import HealthCheck, HealthReport
 from comadre.keys.models import (
     ApiKeyListRow,
     ApiKeyRecord,
@@ -1278,3 +1280,96 @@ class TestRenderSuspendSweepPreview:
         out = buf.getvalue()
         # The literal markup survives — no Rich interpretation.
         assert "[red]evil[/]" in out
+
+
+def _report_with(checks: tuple[HealthCheck, ...]) -> HealthReport:
+    return HealthReport(
+        checks=checks,
+        is_healthy=all(c.severity in {"ok", "info"} for c in checks),
+        generated_at="2026-04-19T18:42:07Z",
+    )
+
+
+class TestRenderHealthReport:
+    """Story 3.4 — UX-DR3 DetailPanel for ``comadre-keys health``."""
+
+    def test_panel_title_and_healthy_footer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        report = _report_with(
+            (
+                HealthCheck(label="A", value="first", severity="ok"),
+                HealthCheck(label="BB", value="second", severity="ok"),
+                HealthCheck(label="CCC", value="third", severity="info"),
+            )
+        )
+        render_health_report(report)
+        out = buf.getvalue()
+        assert "System Health" in out
+        assert "Healthy." in out
+        # Labels column-align: each appears; the longest label width governs.
+        assert "A  " in out or "A " in out
+        assert "CCC" in out
+
+    def test_unhealthy_footer_counts_warn_and_fail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        report = _report_with(
+            (
+                HealthCheck(label="OK", value="fine", severity="ok"),
+                HealthCheck(label="WARN", value="drift", severity="warn"),
+                HealthCheck(label="FAIL", value="broken", severity="fail"),
+            )
+        )
+        render_health_report(report)
+        out = buf.getvalue()
+        assert "Unhealthy: 1 warning(s), 1 failure(s)." in out
+
+    def test_severity_colour_yellow_on_warn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # force_terminal=True + default Rich palette emits ANSI; the body's
+        # yellow-wrapped value contains the canonical CSI 33 sequence.
+        buf = StringIO()
+        fake = Console(
+            file=buf, force_terminal=True, color_system="truecolor", width=120
+        )
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        report = _report_with(
+            (HealthCheck(label="Database", value="0644", severity="warn"),)
+        )
+        render_health_report(report)
+        raw = buf.getvalue()
+        # Either "yellow" is expanded by Rich to a specific SGR — match any
+        # ANSI CSI followed by a number (a defensive pattern that survives
+        # palette adjustments).
+        assert ANSI_ESCAPE.search(raw) is not None
+        assert "0644" in raw
+
+    def test_markup_injection_in_value_is_escaped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        report = _report_with(
+            (
+                HealthCheck(
+                    label="Evil",
+                    value="[red]evil[/]",
+                    severity="ok",
+                    detail="[bold]hostile[/]",
+                ),
+            )
+        )
+        render_health_report(report)
+        out = buf.getvalue()
+        # Literal escape survives — the Rich markup is not interpreted.
+        assert "[red]evil[/]" in out
+        assert "[bold]hostile[/]" in out

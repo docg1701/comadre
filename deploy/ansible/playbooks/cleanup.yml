@@ -63,6 +63,14 @@
         name: "comadre-audio-cleanup"
         state: absent
 
+    # Remove the marker first so that if the cron uninstall fails partway,
+    # ``comadre-keys health`` flips to "Not installed" (consistent with
+    # reality) rather than remaining "installed" (misleading).
+    - name: "[Cron] Remove health marker for comadre-daily-suspension"
+      ansible.builtin.file:
+        path: "~/comadre/data/keys/registry.db.cron-installed"
+        state: absent
+
     - name: "[Cron] Remove daily suspension sweep"
       ansible.builtin.cron:
         name: "comadre-daily-suspension"

@@ -31,14 +31,15 @@ Comadre is configured via environment variables. All variables are loaded at sta
 
 ## Auxiliary files
 
-The key registry lives at `KEY_REGISTRY_DB_PATH`, and two sibling files share the same parent directory and mode `0600`:
+The key registry lives at `KEY_REGISTRY_DB_PATH`, and three sibling files share the same parent directory and mode `0600`:
 
 | Path | Purpose |
 | --- | --- |
 | `{KEY_REGISTRY_DB_PATH}.invalidate` | Cache-invalidation sentinel. The `comadre-keys` CLI touches this file on every `api_key` mutation; the API stats it on each cache read and flushes the `AuthCache` the moment mtime advances. See [rate-limiting.md](rate-limiting.md#operator-surface). |
 | `{KEY_REGISTRY_DB_PATH}.counters.{replica_id}.json` | Per-replica request counters snapshot written every 15 s by the API process (one file per replica, `{replica_id}` = `socket.gethostname()`). The `comadre-keys cache-status` and `show <key-prefix> --audit-tail N` commands glob every matching file and aggregate. See [rate-limiting.md](rate-limiting.md#counters). |
+| `{KEY_REGISTRY_DB_PATH}.cron-installed` | Cron-installed marker for the daily suspension sweep, written by `deploy/ansible/playbooks/bootstrap.yml` and removed by `cleanup.yml`. Two ASCII `key=value` lines (`schedule=...`, `cron_tz=...`), mode `0600`. `comadre-keys health` reads this to report the cron's installed status; the container cannot read the host crontab, so the marker is the only source of truth for the CLI. **Do not hand-edit** — manual changes drift from the real crontab and mislead `health`'s cron check. |
 
-Neither file is a configuration surface — the paths are derived from `KEY_REGISTRY_DB_PATH` and cannot be overridden. The CLI silently degrades when either file is absent (e.g. API not running yet).
+None of these files is a configuration surface — the paths are derived from `KEY_REGISTRY_DB_PATH` and cannot be overridden. The CLI silently degrades when any of them is absent (e.g. API not running yet, or the cron has not been installed).
 
 ## Rate limiting is not env-configured
 

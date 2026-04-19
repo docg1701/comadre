@@ -1,5 +1,5 @@
 # generated: 2026-04-16
-# last_updated: 2026-04-19 (story 3.4 → in-progress; system-health command implementation)
+# last_updated: 2026-04-19 (story 3.4 → done; post-review patches: shared format_seconds_ago helper, _marker_parse dead try/except removed, future-timestamp sweep → warn)
 # project: comadre
 # project_key: NOKEY
 # tracking_system: file-system
@@ -83,7 +83,7 @@ development_status:
   3-1-payment-tracking-mark-paid-suspend-reactivate: done
   3-2-at-risk-queries-revenue-reports: done
   3-3-automated-suspension-sweep-cron: done
-  3-4-system-health-command: in-progress
+  3-4-system-health-command: done
   epic-3-retrospective: optional
 
   # ------------------------------------------------------------------

@@ -16,12 +16,15 @@ from typing import Literal
 
 from rich import box
 from rich.console import Console
+from rich.markup import escape as _rich_escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
 from comadre.counters import AggregatedCacheStatus
+from comadre.keys.formatters import format_seconds_ago
+from comadre.keys.health import HealthCheck, HealthReport
 from comadre.keys.models import (
     ApiKeyListRow,
     AuditEventRow,
@@ -669,26 +672,6 @@ def _format_uptime(seconds: int) -> str:
     return f"{hours}h {remaining_minutes:02d}m"
 
 
-def _format_seconds_ago(seconds: int) -> str:
-    """Render an age in seconds as a compact human duration.
-
-    Used for ``snapshot written Xs ago`` in ``cache-status`` and for
-    ``Last activity: Xs ago`` in the last-24h stats section. Clamps
-    negatives to zero so a tiny clock skew never produces ``-1s ago``.
-    """
-    seconds = max(0, seconds)
-    if seconds < 60:
-        return f"{seconds}s ago"
-    minutes, _ = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m ago"
-    hours, remaining_minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours}h {remaining_minutes:02d}m ago"
-    days, remaining_hours = divmod(hours, 24)
-    return f"{days}d {remaining_hours:02d}h ago"
-
-
 def _format_decimal(value: float, *, places: int = 1) -> str:
     """Return ``value`` with fixed decimal places. Used for hit-rate / avg rpm."""
     return f"{value:.{places}f}"
@@ -724,7 +707,7 @@ def render_cache_status(status: AggregatedCacheStatus | None) -> None:
 
     lookups = status.lookups
     hit_rate_pct = status.hit_rate * 100.0
-    age_label = _format_seconds_ago(status.snapshot_age_seconds)
+    age_label = format_seconds_ago(status.snapshot_age_seconds)
     console.print(
         f"Cache health (from snapshot written {age_label}):",
         markup=False,
@@ -791,7 +774,7 @@ def render_last_24h_stats(stats: Last24hStats | None) -> None:
     )
     header = (
         f"Last-24h stats (from snapshot written "
-        f"{_format_seconds_ago(stats.snapshot_age_seconds)}, "
+        f"{format_seconds_ago(stats.snapshot_age_seconds)}, "
         f"uptime {_format_uptime(stats.process_uptime_seconds)}"
         f"{replica_note}):"
     )
@@ -844,7 +827,7 @@ def _last_activity_ago(iso_ts: str) -> str:
         parsed = datetime.fromisoformat(iso_clean)
         now = datetime.now(UTC)
         delta_seconds = int((now - parsed).total_seconds())
-        return _format_seconds_ago(delta_seconds)
+        return format_seconds_ago(delta_seconds)
     except (ValueError, TypeError):
         return iso_ts
 
@@ -875,6 +858,62 @@ def render_show_json(
     if include_stats:
         payload["stats"] = stats
     stdout_console().print_json(data=payload)
+
+
+_SEVERITY_STYLE: dict[str, str] = {
+    "ok": "",
+    "info": "",
+    "warn": "yellow",
+    "fail": "red",
+}
+
+
+def _health_row(check: HealthCheck, label_width: int) -> str:
+    label = _rich_escape(check.label).ljust(label_width)
+    value = _rich_escape(check.value)
+    style = _SEVERITY_STYLE.get(check.severity, "")
+    if style:
+        value = f"[{style}]{value}[/{style}]"
+    detail_segment = ""
+    if check.detail is not None and check.detail != "":
+        detail_segment = f" [dim]({_rich_escape(check.detail)})[/dim]"
+    return f"{label} {value}{detail_segment}"
+
+
+def render_health_report(report: HealthReport) -> None:
+    """UX-DR3 DetailPanel for ``comadre-keys health`` (Story 3.4).
+
+    Single-border rounded Panel titled ``System Health``. One row per
+    ``HealthCheck`` in the report's ``checks`` order; labels are
+    right-padded to the longest label so values column-align. Severity
+    drives colour (``warn`` → yellow, ``fail`` → red; ``ok``/``info``
+    plain). Footer is a ``render_confirmation`` line with the aggregate
+    verdict.
+    """
+    checks = report.checks
+    # Runtime guard (not ``assert`` — survives ``python -O``). The
+    # collector always emits 8 checks today; future extensions append.
+    if len(checks) == 0:
+        render_confirmation("System Health: no checks available.")
+        return
+    label_width = max(len(c.label) for c in checks)
+    body = "\n".join(_health_row(c, label_width) for c in checks)
+    stdout_console().print(
+        Panel(
+            body,
+            title="System Health",
+            box=box.ROUNDED,
+            expand=False,
+        )
+    )
+    warn_count = sum(1 for c in checks if c.severity == "warn")
+    fail_count = sum(1 for c in checks if c.severity == "fail")
+    if report.is_healthy:
+        render_confirmation("Healthy.")
+    else:
+        render_confirmation(
+            f"Unhealthy: {warn_count} warning(s), {fail_count} failure(s)."
+        )
 
 
 def _reset_for_tests() -> None:

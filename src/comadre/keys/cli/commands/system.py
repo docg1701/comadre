@@ -1,21 +1,26 @@
-"""`comadre-keys cache-status` + `suspend-sweep` — system/operational verbs.
+"""`comadre-keys cache-status` + `suspend-sweep` + `health` — system verbs.
 
-Story 2.3 landed ``cache-status``; Story 3.3 adds ``suspend-sweep``.
-Story 3.4 (``health``) and Story 4.2 (``rotate-encryption-key``) will
-add further subcommands here — grouping the operational verbs in one
+Story 2.3 landed ``cache-status``; Story 3.3 added ``suspend-sweep``;
+Story 3.4 adds ``health``. Story 4.2 (``rotate-encryption-key``) will
+add the final subcommand here — grouping the operational verbs in one
 module keeps the CLI map legible (customers → keys → billing → system).
 
 Exit-code contract (UX-DR10, matches sibling command modules):
-  0 — success (including "no running API instance" for ``cache-status``
-      and zero-row sweeps for ``suspend-sweep`` — valid operational
-      states, not errors; ``--dry-run`` always exits 0 regardless of
-      preview count)
-  2 — usage error (bad ``--format`` on ``cache-status``; ``suspend-sweep``
-      never emits 2 — the only operator-parseable flag is ``--dry-run``)
+  0 — success (including "no running API instance" for ``cache-status``,
+      zero-row sweeps for ``suspend-sweep``, and ``health --format table``
+      regardless of severity — read-tier semantics; yellow warnings are
+      operator-readable hints, not script signals).
+  2 — usage error (bad ``--format`` on ``cache-status`` / ``health``;
+      ``suspend-sweep`` never emits 2 — the only operator-parseable
+      flag is ``--dry-run``).
   5 — database error from ``get_connection`` / ``_apply_migrations`` /
-      ``run_suspension_sweep`` (``suspend-sweep`` only)
+      ``run_suspension_sweep`` (``suspend-sweep``) / health-collection
+      query (``health``).
   6 — permission / configuration error (missing encryption key or
-      invalid ``BILLING_TIMEZONE``)
+      invalid ``BILLING_TIMEZONE``).
+  7 — unhealthy state in ``health --format json`` (any check has
+      severity ``warn`` or ``fail``). Never emitted by ``cache-status``
+      or ``suspend-sweep``; never emitted by ``health --format table``.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 from datetime import date
+from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -45,15 +51,18 @@ from comadre.keys.cli.output import (
     render_confirmation,
     render_empty_state,
     render_error,
+    render_health_report,
     render_suspend_sweep_preview,
     stdout_console,
 )
 from comadre.keys.db import (
+    _SCHEMA_VERSION,
     _apply_migrations,
     get_connection,
     list_api_keys,
     run_suspension_sweep,
 )
+from comadre.keys.health import collect_health_report, health_report_to_json
 from comadre.logging import get_logger
 
 _logger = get_logger("keys.cli")
@@ -307,3 +316,96 @@ def _suspend_sweep_dry_run(conn: sqlite3.Connection, today: date) -> None:
         return
 
     render_suspend_sweep_preview(preview, today)
+
+
+@app.command("health")
+def health_cmd(
+    format: str = typer.Option(
+        "table",
+        "--format",
+        help=(
+            "Output format: table (default, human-readable single-border "
+            "panel — always exits 0; warnings render as yellow text but "
+            "do not flip the exit code) or json (machine-readable; exits "
+            "7 when any check has severity warn or fail). Example: "
+            "--format json."
+        ),
+    ),
+) -> None:
+    """Report registry / cron / cache health (FR34).
+
+    Read-only. Safe to run from cron, monitoring scripts, or the
+    operator's terminal. Pipe ``--format json`` into a Nagios-class
+    monitor; ``$?`` is 0 for healthy, 7 for any unhealthy condition.
+
+    Example: comadre-keys health
+             comadre-keys health --format json
+    """
+    # 1. Literal flag check (exit 2).
+    if format not in LIST_FORMAT_CHOICES:
+        render_error(
+            "Usage error: --format must be table or json",
+            "Valid values: table, json.",
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Settings + TZ (exit 6). Reuse the shared ladder.
+    loaded = load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings_obj, _billing_tz = loaded
+    settings = cast(Settings, settings_obj)
+
+    # 3. Open DB + migrations (exit 5). ``from exc`` preserves the
+    # original traceback per Story 3.3 code-review patch contract.
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from exc
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except (sqlite3.Error, RuntimeError) as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from exc
+
+        # 4. Resolve marker / backup paths and collect.
+        db_path = settings.key_registry_db_path
+        cron_marker_path = f"{db_path}.cron-installed"
+        backup_parent = str(Path(db_path).parent)
+        try:
+            report = collect_health_report(
+                conn=conn,
+                db_path=db_path,
+                schema_version_expected=_SCHEMA_VERSION,
+                cron_marker_path=cron_marker_path,
+                backup_parent=backup_parent,
+            )
+        except (sqlite3.Error, OSError) as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from exc
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    # 5. PII-austere INFO log — counts only (NFR15).
+    with contextlib.suppress(Exception):
+        _logger.info(
+            "Health report generated | format=%s | is_healthy=%s | "
+            "warn_count=%d | fail_count=%d",
+            format,
+            report.is_healthy,
+            sum(1 for c in report.checks if c.severity == "warn"),
+            sum(1 for c in report.checks if c.severity == "fail"),
+        )
+
+    # 6. Render branch.
+    if format == "json":
+        stdout_console().print_json(data=health_report_to_json(report))
+        if not report.is_healthy:
+            raise typer.Exit(code=7)
+        return
+
+    render_health_report(report)

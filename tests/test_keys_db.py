@@ -13,6 +13,8 @@ import pytest
 from comadre.keys.db import (
     _SCHEMA_VERSION,
     _apply_migrations,
+    count_active_customers,
+    count_keys_by_status,
     count_tombstones,
     generate_customer_id,
     generate_key_id,
@@ -976,6 +978,97 @@ class TestCountTombstones:
             conn.close()
 
 
+class TestCountActiveCustomers:
+    """Story 3.4 — partitions the customer table with ``count_tombstones``."""
+
+    def test_returns_zero_on_fresh_db(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert count_active_customers(conn) == 0
+        finally:
+            conn.close()
+
+    def test_excludes_tombstoned_rows(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_customer_with_time(
+                conn, name="Alive1", registered_at="2026-04-10T10:00:00Z"
+            )
+            _seed_customer_with_time(
+                conn, name="Alive2", registered_at="2026-04-10T10:00:00Z"
+            )
+            _seed_customer_with_time(
+                conn, name="Alive3", registered_at="2026-04-10T10:00:00Z"
+            )
+            dead1 = _seed_customer_with_time(
+                conn, name="Dead1", registered_at="2026-04-11T10:00:00Z"
+            )
+            dead2 = _seed_customer_with_time(
+                conn, name="Dead2", registered_at="2026-04-11T10:00:00Z"
+            )
+            conn.executemany(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                [("2026-04-15T00:00:00Z", dead1), ("2026-04-15T00:00:00Z", dead2)],
+            )
+            conn.commit()
+            assert count_active_customers(conn) == 3
+            assert count_tombstones(conn) == 2
+        finally:
+            conn.close()
+
+
+class TestCountKeysByStatus:
+    """Story 3.4 — fixed-shape dict so renderer never branches on missing keys."""
+
+    def test_returns_zeros_on_empty_db(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert count_keys_by_status(conn) == {
+                "active": 0,
+                "suspended": 0,
+                "revoked": 0,
+            }
+        finally:
+            conn.close()
+
+    def test_returns_full_shape_with_mixed_statuses(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="a" * 64,
+                key_prefix="AAAAAAAA",
+                status="active",
+            )
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="b" * 64,
+                key_prefix="BBBBBBBB",
+                status="suspended",
+            )
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="c" * 64,
+                key_prefix="CCCCCCCC",
+                status="suspended",
+            )
+            assert count_keys_by_status(conn) == {
+                "active": 1,
+                "suspended": 2,
+                "revoked": 0,
+            }
+        finally:
+            conn.close()
+
+
 class TestListCommandsDoNotWrite:
     """AC9 regression guard — listings never mutate the DB."""
 
@@ -1002,6 +1095,8 @@ class TestListCommandsDoNotWrite:
             is_first_run(conn)
             is_first_run_for_keys(conn)
             count_tombstones(conn)
+            count_active_customers(conn)
+            count_keys_by_status(conn)
 
             after = {
                 "customer": _count_rows(conn, "customer"),

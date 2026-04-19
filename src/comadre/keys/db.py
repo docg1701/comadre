@@ -623,6 +623,37 @@ def count_tombstones(conn: sqlite3.Connection) -> int:
     return int(row[0])
 
 
+def count_active_customers(conn: sqlite3.Connection) -> int:
+    """Return the count of non-tombstoned customers (``deleted_at IS NULL``).
+
+    Companion to ``count_tombstones`` — together they partition the
+    ``customer`` table for ``health`` summary rendering (Story 3.4).
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM customer WHERE deleted_at IS NULL"
+    ).fetchone()
+    return int(row[0])
+
+
+def count_keys_by_status(conn: sqlite3.Connection) -> dict[str, int]:
+    """Return ``{status: count}`` across the ``api_key.status`` enum.
+
+    Always returns the full fixed-shape set
+    ``{"active": N, "suspended": N, "revoked": N}`` — statuses absent
+    from the GROUP BY result render as ``0``. The fixed-shape contract
+    lets the renderer iterate without branching on missing keys.
+    """
+    base: dict[str, int] = {"active": 0, "suspended": 0, "revoked": 0}
+    rows = conn.execute(
+        "SELECT status, COUNT(*) FROM api_key GROUP BY status"
+    ).fetchall()
+    for row in rows:
+        status = str(row[0])
+        if status in base:
+            base[status] = int(row[1])
+    return base
+
+
 def get_customer_detail(
     conn: sqlite3.Connection,
     customer_id: str,

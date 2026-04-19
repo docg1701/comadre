@@ -2,6 +2,11 @@
 
 Items surfaced during code reviews that were judged real but non-gating for the current story. Re-triage when picking up a related story or a hardening pass.
 
+## Deferred from: code review of story-3-4 (2026-04-19)
+
+- **Marker `cron_tz` vs app's `BILLING_TIMEZONE` drift not cross-validated.** `_check_cron_marker` surfaces `CRON_TZ` as written by `bootstrap.yml` but never compares against the runtime `BILLING_TIMEZONE` env var. CLAUDE.md flags this drift as a known gotcha; surfacing it in `health` would catch the exact misconfiguration operators are most likely to hit. Out of 3.4 scope; candidate for a future hardening pass or a dedicated "config drift" check. [`src/comadre/keys/health.py:344-389`]
+- **Auth-cache `"1 replicas"` plural-grammar slip.** `_check_auth_cache` renders `"{N} replicas"` unconditionally; at N=1 it reads "1 replicas". Test `test_ok_when_replica_reports` pins the grammar bug in place and would need updating alongside the fix. Cosmetic UX polish; low priority. [`src/comadre/keys/health.py:501-504`]
+
 ## Deferred from: code review of story-3-3 (2026-04-19)
 
 - **`paid_until` lex-sort (SQL sweep) vs Python `date.fromisoformat` semantic-sort (dry-run) divergence on non-canonical date strings.** `mark-paid` canonicalizes to `YYYY-MM-DD` on write, so the divergence is theoretical today. Defense-in-depth: add a CHECK constraint `paid_until GLOB '____-__-__'` on the `api_key` table. Schema change is a separate concern; revisit with Story 4.x or any audit-retention migration. [`src/comadre/keys/db.py:~1432`, `src/comadre/keys/cli/commands/system.py:~272`]

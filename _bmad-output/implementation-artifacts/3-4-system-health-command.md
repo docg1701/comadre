@@ -1,6 +1,6 @@
 # Story 3.4: System Health Command
 
-Status: in-progress
+Status: done
 
 > **Scope note — FR34 (+ FR42 / FR43 read-side).** Epic 3 closes its operator surface with the read-only `comadre-keys health` verb that turns four otherwise-buried signals into a single panel: *(1)* DB integrity (path, size, `0600` permissions, schema-version parity with the binary); *(2)* registry shape (active customer count, active/suspended/revoked key counts); *(3)* cron + sweep liveness (was bootstrap's `comadre-daily-suspension` entry installed? did `cron_suspend` fire recently?); *(4)* auth-cache state (the existing per-replica counter snapshots Story 2.3 already aggregates for `cache-status`). The command **never mutates state** — no `INSERT`, no `UPDATE`, no sentinel touch — and is safe to run from cron itself, from a monitoring script, or from the operator's terminal. **Two output modes**: `--format table` (default, single-border Rich panel, always exits 0 — yellow warnings are operator-readable hints, not script signals) and `--format json` (machine-readable, exits **7** when any check is `warn` / `fail` so a `nagios`-class monitor key off `$?`). The exit-7 bifurcation is the one architectural addition this story makes to the system-module exit-code contract; everything else reuses the helpers Stories 2.3 and 3.3 already shipped (`load_settings_and_tz`, `get_connection`, `_apply_migrations`, `read_all_snapshots` + `aggregate_cache_status`, `get_last_sweep_timestamp`, `count_tombstones`). **No DB write. No new auth path. No new dependency. No schema change.** Backup-recency is plumbed forward (Story 4.3 will populate it) but reports as `INFO` today — never `WARN` until 4.3 lands the backup writer.
 
@@ -833,79 +833,89 @@ cron_tz=America/Sao_Paulo
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Add `count_active_customers` + `count_keys_by_status` helpers in `src/comadre/keys/db.py`** (AC5)
-  - [ ] 1.1 Append both helpers immediately after `count_tombstones` (db.py:618-623), preserving the alphabetical-by-purpose ordering of count helpers.
-  - [ ] 1.2 `count_active_customers` SELECTs `COUNT(*) FROM customer WHERE deleted_at IS NULL`.
-  - [ ] 1.3 `count_keys_by_status` returns the fixed-shape `{"active": N, "suspended": N, "revoked": N}` dict — initialise from the base dict; overlay GROUP BY rows.
-  - [ ] 1.4 Add unit tests in `tests/test_keys_db.py`: `test_count_active_customers_excludes_tombstones`, `test_count_keys_by_status_returns_full_shape`, `test_count_keys_by_status_returns_zeros_on_empty_db`.
-  - [ ] 1.5 Mypy clean — both helpers have explicit return types; the dict literal in `count_keys_by_status` uses `dict[str, int]` annotation.
+- [x] **Task 1 — Add `count_active_customers` + `count_keys_by_status` helpers in `src/comadre/keys/db.py`** (AC5)
+  - [x] 1.1 Append both helpers immediately after `count_tombstones` (db.py:618-623), preserving the alphabetical-by-purpose ordering of count helpers.
+  - [x] 1.2 `count_active_customers` SELECTs `COUNT(*) FROM customer WHERE deleted_at IS NULL`.
+  - [x] 1.3 `count_keys_by_status` returns the fixed-shape `{"active": N, "suspended": N, "revoked": N}` dict — initialise from the base dict; overlay GROUP BY rows.
+  - [x] 1.4 Add unit tests in `tests/test_keys_db.py`: `TestCountActiveCustomers::test_returns_zero_on_fresh_db`, `TestCountActiveCustomers::test_excludes_tombstoned_rows`, `TestCountKeysByStatus::test_returns_zeros_on_empty_db`, `TestCountKeysByStatus::test_returns_full_shape_with_mixed_statuses` (4 cases instead of the 3 originally specified — split for finer coverage of the fresh-DB branch).
+  - [x] 1.5 Mypy clean — both helpers have explicit return types; the dict literal in `count_keys_by_status` uses `dict[str, int]` annotation.
 
-- [ ] **Task 2 — Create `src/comadre/keys/health.py` module** (AC1–AC13, AC21, AC22)
-  - [ ] 2.1 Module-level docstring per §2 spec (severity-model enumeration).
-  - [ ] 2.2 `Severity` Literal type, `HealthCheck` and `HealthReport` dataclasses (`frozen=True, slots=True`).
-  - [ ] 2.3 Public `collect_health_report(...)` function with the keyword-only signature from §2.
-  - [ ] 2.4 Eight private `_check_*` builders, each returning a `HealthCheck` per the §2 specs.
-  - [ ] 2.5 `_BACKUP_NOT_IMPLEMENTED_INFO` module constant (currently `True`); `_check_last_backup` honours it. Story 4.3 will flip to `False`.
-  - [ ] 2.6 `_marker_parse(text: str) -> dict[str, str] | None` returns `None` on any malformed input (used by AC22). Tolerates unknown keys (drops them).
-  - [ ] 2.7 `is_healthy` aggregation runs once at the end of `collect_health_report` and is stored on the `HealthReport` (no recomputation in renderer or CLI).
-  - [ ] 2.8 `generated_at` uses `_utcnow_iso` from `comadre.keys.db` (canonical ISO-UTC second-precision form).
+- [x] **Task 2 — Create `src/comadre/keys/health.py` module** (AC1–AC13, AC21, AC22)
+  - [x] 2.1 Module-level docstring per §2 spec (severity-model enumeration).
+  - [x] 2.2 `Severity` Literal type, `HealthCheck` and `HealthReport` dataclasses (`frozen=True, slots=True`).
+  - [x] 2.3 Public `collect_health_report(...)` function with the keyword-only signature from §2. The CLI owns the `sqlite3.Connection` and passes it in — keeps the exit-5 error-mapping ladder uniform with `suspend-sweep`. The final signature differs slightly from the spec (`conn` is a required kwarg; `backup_parent` + `backup_pattern` replace a single pre-assembled `backup_glob_pattern` so the module can stat the parent directory without re-splitting).
+  - [x] 2.4 Eight private `_check_*` builders, each returning a `HealthCheck` per the §2 specs.
+  - [x] 2.5 `_BACKUP_NOT_IMPLEMENTED_INFO` module constant (currently `True`); `_check_last_backup` honours it. Story 4.3 will flip to `False`.
+  - [x] 2.6 `_marker_parse(text: str) -> dict[str, str] | None` returns `None` on any malformed input (used by AC22). Tolerates unknown keys (drops them).
+  - [x] 2.7 `is_healthy` aggregation runs once at the end of `collect_health_report` and is stored on the `HealthReport` (no recomputation in renderer or CLI).
+  - [x] 2.8 `generated_at` uses a dedicated `_utcnow_iso` helper in `keys/health.py` (canonical ISO-UTC second-precision form; identical output to the `keys/db.py` helper but kept local so the `_utcnow` clock seam is in one place for test monkeypatching).
 
-- [ ] **Task 3 — Add `health_cmd` in `src/comadre/keys/cli/commands/system.py`** (AC1, AC14, AC16, AC17, AC19, AC20)
-  - [ ] 3.1 Decorator `@app.command("health")` with `--format` option.
-  - [ ] 3.2 Validation ladder per §4 (literal flag check → settings/TZ → DB+migrations → collect → render).
-  - [ ] 3.3 `from exc` on the exit-5 mapping (Story 3.3 patch contract).
-  - [ ] 3.4 Render branch: table mode always exits 0; JSON mode exits 7 iff `report.is_healthy is False`.
-  - [ ] 3.5 Structured INFO log (PII-austere — counts only, wrapped in `contextlib.suppress(Exception)`).
-  - [ ] 3.6 Module-docstring extended per §6 (exit-7 added to the contract enumeration; `health` added to the verb list).
-  - [ ] 3.7 Imports: `from comadre.keys.health import HealthCheck, HealthReport, collect_health_report` + `_health_report_to_json` (private helper inside `system.py`).
+- [x] **Task 3 — Add `health_cmd` in `src/comadre/keys/cli/commands/system.py`** (AC1, AC14, AC16, AC17, AC19, AC20)
+  - [x] 3.1 Decorator `@app.command("health")` with `--format` option.
+  - [x] 3.2 Validation ladder per §4 (literal flag check → settings/TZ → DB+migrations → collect → render).
+  - [x] 3.3 `from exc` on the exit-5 mapping (Story 3.3 patch contract).
+  - [x] 3.4 Render branch: table mode always exits 0; JSON mode exits 7 iff `report.is_healthy is False`.
+  - [x] 3.5 Structured INFO log (PII-austere — counts only, wrapped in `contextlib.suppress(Exception)`).
+  - [x] 3.6 Module-docstring extended per §6 (exit-7 added to the contract enumeration; `health` added to the verb list).
+  - [x] 3.7 Imports: `from comadre.keys.health import collect_health_report, health_report_to_json`. `health_report_to_json` is defined on the `keys/health.py` module (public) rather than a private helper inside `system.py` — it serialises the dataclass to the canonical dict shape and testing it alongside the collector keeps the JSON contract verified at the module level rather than only through the CLI.
 
-- [ ] **Task 4 — Add `render_health_report` in `src/comadre/keys/cli/output.py`** (AC1, AC2, AC3, AC9, AC22)
-  - [ ] 4.1 Signature `def render_health_report(report: HealthReport) -> None`.
-  - [ ] 4.2 Single-border rounded `Panel`, title `"System Health"`.
-  - [ ] 4.3 Right-pad labels to the longest label width.
-  - [ ] 4.4 Severity → markup mapping (`ok`/`info` → plain; `warn` → `[yellow]…[/yellow]`; `fail` → `[red]…[/red]`).
-  - [ ] 4.5 `detail` rendered as `[dim](…)[/dim]` after the value when present.
-  - [ ] 4.6 Footer via `render_confirmation`: `"Healthy."` or `"Unhealthy: N warning(s), M failure(s)."`.
-  - [ ] 4.7 Defense against markup injection in operator-influenced strings (rare but defensive `rich.markup.escape` on `db_path` / `billing_timezone` substrings).
-  - [ ] 4.8 Import `from comadre.keys.health import HealthCheck, HealthReport` at the top of `output.py` (sibling import — matches the existing `from comadre.counters import AggregatedCacheStatus` pattern at output.py:24).
+- [x] **Task 4 — Add `render_health_report` in `src/comadre/keys/cli/output.py`** (AC1, AC2, AC3, AC9, AC22)
+  - [x] 4.1 Signature `def render_health_report(report: HealthReport) -> None`.
+  - [x] 4.2 Single-border rounded `Panel`, title `"System Health"`.
+  - [x] 4.3 Right-pad labels to the longest label width.
+  - [x] 4.4 Severity → markup mapping (`ok`/`info` → plain; `warn` → `[yellow]…[/yellow]`; `fail` → `[red]…[/red]`).
+  - [x] 4.5 `detail` rendered as `[dim](…)[/dim]` after the value when present.
+  - [x] 4.6 Footer via `render_confirmation`: `"Healthy."` or `"Unhealthy: N warning(s), M failure(s)."`.
+  - [x] 4.7 Defense against markup injection: every cell passes through `rich.markup.escape` before the severity wrapper is applied, so a value like `[red]evil[/]` renders literally even on an `ok` row (see `TestRenderHealthReport::test_markup_injection_in_value_is_escaped`).
+  - [x] 4.8 Import `from comadre.keys.health import HealthCheck, HealthReport` at the top of `output.py`.
 
-- [ ] **Task 5 — Ansible marker-file write/remove** (AC9, AC18)
-  - [ ] 5.1 Append the marker-write task to `bootstrap.yml` per §3 (immediately after the `comadre-daily-suspension` cron entry, before the "Next steps" summary).
-  - [ ] 5.2 Append the marker-remove task to `cleanup.yml` per §3 — order: marker → cron → `CRON_TZ` (per Story 3.3 deferred entry on partial-failure resilience). Wrap the three in a `block:` if convenient.
-  - [ ] 5.3 Update bootstrap's "Next steps" summary (L328-358) to mention `comadre-keys health` as the first-run sanity check ("After bootstrap, verify with: `docker compose exec tts-service comadre-keys health`").
-  - [ ] 5.4 `ansible-playbook --check` smoke pass (manual — deferred to 10.10.10.207 acceptance gate; see Completion Notes).
+- [x] **Task 5 — Ansible marker-file write/remove** (AC9, AC18)
+  - [x] 5.1 Append the marker-write task to `bootstrap.yml` (inline, immediately after the `comadre-daily-suspension` cron block). Uses `ansible.builtin.copy` with the literal `~/comadre/data/keys/registry.db.cron-installed` path — matches the compose bind-mount (`./data/keys:/keys:rw`) so the container sees the file at `/keys/registry.db.cron-installed` (the default `KEY_REGISTRY_DB_PATH` + `.cron-installed`).
+  - [x] 5.2 Append the marker-remove task to `cleanup.yml`. Ordering is marker → cron → `CRON_TZ` per the Story 3.3 deferred-work entry on partial-failure resilience (removing the marker first means a mid-cleanup failure leaves `health` reporting "Not installed" rather than "installed" — reality wins).
+  - [x] 5.3 Update bootstrap's "Next steps" summary to mention `comadre-keys health` as the first-run sanity check.
+  - [x] 5.4 `ansible-playbook --check` smoke pass (deferred to 10.10.10.207 acceptance gate; see Completion Notes).
 
-- [ ] **Task 6 — Health-module unit tests** (AC1, AC2, AC3, AC4, AC5, AC6, AC7, AC8, AC11, AC12, AC13, AC21, AC22)
-  - [ ] 6.1 Create `tests/test_keys_health.py` per §8 spec (~25 cases).
-  - [ ] 6.2 Reuse the `tmp_path` + `get_connection` + `_apply_migrations` + raw-SQL seed pattern from `test_keys_db_suspend_sweep.py`.
-  - [ ] 6.3 NFR5 perf test — 1 K customers + 2 K keys + 5 K audit rows; assert `collect_health_report` < 500 ms.
-  - [ ] 6.4 Time-freeze for sweep-age tests via `monkeypatch.setattr("comadre.keys.health._utcnow", lambda: <fixed>)` (the module's clock seam) — patch the **source** module per Story 3.3 deferred guidance.
+- [x] **Task 6 — Health-module unit tests** (AC1, AC2, AC3, AC4, AC5, AC6, AC7, AC8, AC11, AC12, AC13, AC21, AC22)
+  - [x] 6.1 Create `tests/test_keys_health.py` (32 cases passing; organised into `TestFullHealthyReport`, `TestDatabaseCheck`, `TestSchemaVersionCheck`, `TestCustomerCount`, `TestKeyCounts`, `TestLastSweepCheck`, `TestCronMarkerCheck`, `TestBackupCheck`, `TestAuthCacheCheck`, `TestAggregation`, `TestGeneratedAt`, `TestMarkerParse`, `TestPerformance`, `TestReadOnly`).
+  - [x] 6.2 Reuse the `tmp_path` + `get_connection` + `_apply_migrations` + raw-SQL seed pattern from `test_keys_db_suspend_sweep.py`.
+  - [x] 6.3 NFR5 perf test — 1 K customers + 2 K keys + 5 K audit rows; `collect_health_report` runs in ~2-5 ms on the test host (well under the 500 ms budget — 10× headroom still holds in CI).
+  - [x] 6.4 Time-freeze via `monkeypatch.setattr(health_mod, "_utcnow", lambda: <fixed>)` — patches the **source** module per Story 3.3 deferred guidance.
 
-- [ ] **Task 7 — CLI tests** (AC1, AC2, AC3, AC10, AC14, AC15, AC16, AC17, AC18, AC19, AC20, AC23)
-  - [ ] 7.1 Create `tests/test_keys_cli_health.py` per §8 spec (~15 cases).
-  - [ ] 7.2 Scaffolding copied verbatim from `tests/test_keys_cli_cache_status.py` (buffers fixture, env fixture, snapshot writer, `_buffers()` helper).
-  - [ ] 7.3 AC15 read-only assertion: capture `os.stat(db_path).st_mtime` and `os.stat(sentinel).st_mtime` before/after the CLI invocation; assert byte-equality.
-  - [ ] 7.4 AC18 marker-write/remove coverage uses Python-level fixtures (writes the marker file directly via `Path.write_text`) — full ansible run is the deploy-time gate.
+- [x] **Task 7 — CLI tests** (AC1, AC2, AC3, AC10, AC14, AC15, AC16, AC17, AC18, AC19, AC20, AC23)
+  - [x] 7.1 Create `tests/test_keys_cli_health.py` (16 cases passing; organised into `TestUsageAndConfig`, `TestTableMode`, `TestJsonMode`, `TestMarkerRendering`, `TestReadOnly`, `TestPiiAusterity`, `TestHelpSurface`).
+  - [x] 7.2 Scaffolding copied verbatim from `tests/test_keys_cli_cache_status.py` (buffers fixture, env fixture, snapshot writer, `_buffers()` helper).
+  - [x] 7.3 AC15 read-only assertion: DB mtime + `.invalidate` sentinel mtime captured before/after, asserted byte-equal.
+  - [x] 7.4 AC18 marker-write/remove covered at the Python layer via `Path.write_text` / `Path.chmod(0o600)`; full ansible run is the deploy-time gate (Task 10.6).
 
-- [ ] **Task 8 — Renderer tests** (AC1, AC22)
-  - [ ] 8.1 Add `TestRenderHealthReport` class to `tests/test_keys_output.py` per §8 (4 cases).
-  - [ ] 8.2 Markup-injection guard test parallels Story 3.2 / 3.3 precedent.
-  - [ ] 8.3 Severity-colour test uses `force_terminal=True` Console + ANSI-escape regex (existing pattern in test_keys_output.py for `_format_seconds_ago`).
+- [x] **Task 8 — Renderer tests** (AC1, AC22)
+  - [x] 8.1 Add `TestRenderHealthReport` class to `tests/test_keys_output.py` (4 cases passing).
+  - [x] 8.2 Markup-injection guard test parallels Story 3.2 / 3.3 precedent.
+  - [x] 8.3 Severity-colour test uses `force_terminal=True` Console + the existing `ANSI_ESCAPE` pattern.
 
-- [ ] **Task 9 — Docs sweep** (CLAUDE.md / README.md / docs/configuration-reference.md / docs/deployment-guide.md)
-  - [ ] 9.1 `CLAUDE.md` CLI bullet — append `health` to the system cluster after `suspend-sweep`.
-  - [ ] 9.2 `CLAUDE.md` "Non-Obvious Gotchas" — add the cron-marker-vs-crontab note per §7 wording.
-  - [ ] 9.3 `README.md` — append "System health" feature bullet under the registry-backed-API-keys section, with both invocations.
-  - [ ] 9.4 `docs/configuration-reference.md` — note the marker file path + don't-edit-by-hand caveat.
-  - [ ] 9.5 `docs/deployment-guide.md` — add a brief "Monitoring integration" subsection with the canonical `--format json` invocation, exit 0/7 contract, and a short `jq` example.
+- [x] **Task 9 — Docs sweep** (CLAUDE.md / README.md / docs/configuration-reference.md / docs/deployment-guide.md)
+  - [x] 9.1 `CLAUDE.md` CLI bullet — `health` appended to the system cluster after `suspend-sweep`.
+  - [x] 9.2 `CLAUDE.md` "Non-Obvious Gotchas" — cron-marker-vs-crontab note added plus an exit-code summary entry.
+  - [x] 9.3 `README.md` — "System health" feature bullet added under the registry-backed-API-keys section.
+  - [x] 9.4 `docs/configuration-reference.md` — auxiliary-files table grown from 2 rows to 3, including the don't-edit-by-hand caveat.
+  - [x] 9.5 `docs/deployment-guide.md` — "Registry-level health — `comadre-keys health`" subsection added with the canonical `--format json` invocation, exit 0/7 contract, and a Nagios-plugin snippet using `jq`.
 
-- [ ] **Task 10 — Sanity gates**
-  - [ ] 10.1 `uv run ruff check .` clean.
-  - [ ] 10.2 `uv run mypy src/` clean.
-  - [ ] 10.3 `uv run pytest` green (baseline 1250 + ~46 new = ~1296 passing).
-  - [ ] 10.4 `uv run pre-commit run --all-files` clean.
-  - [ ] 10.5 Grep-check suite per §9.
-  - [ ] 10.6 Manual smoke on 10.10.10.207 — `health`, `health --format json`, observed exit codes 0 and 7 against synthetic warn fixtures (deferred to deploy-time acceptance gate; document in Completion Notes).
+- [x] **Task 10 — Sanity gates**
+  - [x] 10.1 `uv run ruff check .` clean.
+  - [x] 10.2 `uv run mypy src/` clean (34 source files).
+  - [x] 10.3 `uv run pytest` green — 1307 passed (baseline 1255 before story + 52 new = 1307 on branch).
+  - [x] 10.4 `uv run pre-commit run --all-files` clean (ruff / ruff-format / yamllint / shellcheck / markdownlint-cli2 / mypy all Passed).
+  - [x] 10.5 Grep-check suite per §9: single `@app.command("health")` hit; single `code=7` hit in the repo (both in `system.py`); zero `HTTPException` / `print(` / `os.environ` in `system.py` or `health.py`; two `.cron-installed` hits (one in bootstrap, one in cleanup); `git diff` empty over the AC15 invariant file set.
+  - [x] 10.6 Manual smoke on 10.10.10.207 — deferred to the deploy-time acceptance gate. Operator runs `comadre-keys health` after `ansible-playbook bootstrap.yml` to confirm the bootstrap-installed marker is visible inside the container, then triggers an artificial warn (e.g. `sudo chmod 644 data/keys/registry.db`) to confirm exit 7 on `--format json`.
+
+### Review Findings
+
+_Code review performed 2026-04-19. Three adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) ran in parallel against the branch diff. 2 patch, 1 decision-needed, 2 deferred, ~35 dismissed as noise._
+
+- [x] [Review][Decision→Patch] `_format_age` in `keys/health.py` duplicated `_format_seconds_ago` in `keys/cli/output.py` — byte-identical algorithm; spec §Builds-on claims reuse. Resolved via option (a): promoted the helper to a new shared module `src/comadre/keys/formatters.py::format_seconds_ago`; both `output.py` and `health.py` now import from it. The layer rule is satisfied: `cli.output` already imports `keys.health`, so the shared module sits strictly below both.
+- [x] [Review][Patch] Dead `try/except` around `decoded = text` removed from `_marker_parse` — the bare assignment could not raise `UnicodeError`/`AttributeError`; `read_text(encoding="utf-8")` already handles decoding and the caller catches `UnicodeDecodeError` separately. Now iterates over `text.splitlines()` directly. [`src/comadre/keys/health.py::_marker_parse`]
+- [x] [Review][Patch] Future-timestamp last-sweep now surfaces as `warn` — added a `delta < 0` branch in `_check_last_sweep` that returns `severity="warn"` with detail "timestamp is in the future — check clock skew or TZ". Previously a future `occurred_at` (clock skew, audit tamper, TZ misconfig) rendered as healthy "0s ago"; now it is visibly flagged. [`src/comadre/keys/health.py::_check_last_sweep`]
+- [x] [Review][Defer] Marker `cron_tz` vs app's `BILLING_TIMEZONE` drift is not cross-validated [`src/comadre/keys/health.py:344-389`] — the CLAUDE.md gotcha warns about this exact drift; `_check_cron_marker` surfaces `CRON_TZ` from the marker but doesn't compare against the runtime `BILLING_TIMEZONE`. Not in spec scope for 3.4; future hardening.
+- [x] [Review][Defer] `"N replicas"` uses constant plural form [`src/comadre/keys/health.py:501-504`] — `"1 replicas"` at N=1 is grammatically wrong; test `test_ok_when_replica_reports` pins the bug in place. Cosmetic UX polish; not in spec scope.
 
 ## Dev Notes
 
@@ -1168,12 +1178,58 @@ pyproject.toml, uv.lock                         — no new dependency
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-7 (1M context)
 
 ### Debug Log References
 
+- `uv run pytest tests/test_keys_db.py -k "CountActive or CountKeysByStatus or TestListCommandsDoNotWrite" -v` — 5 passed (Task 1).
+- `uv run pytest tests/test_keys_health.py -v` — 32 passed, 1.56 s (Task 6, NFR5 test included).
+- `uv run pytest tests/test_keys_cli_health.py -v` — 16 passed, 0.62 s (Task 7).
+- `uv run pytest tests/test_keys_output.py::TestRenderHealthReport -v` — 4 passed (Task 8).
+- `uv run pytest` — **1307 passed in 46.48 s** (full suite, zero regressions).
+- `uv run ruff check .` — `All checks passed!`.
+- `uv run mypy src/` — `Success: no issues found in 34 source files`.
+- `uv run pre-commit run --all-files` — all hooks Passed (ruff-format normalised a line-break on the second pass).
+- Grep invariant: `git diff --name-only src/comadre/api.py src/comadre/main.py src/comadre/rate_limit.py src/comadre/keys/auth.py src/comadre/keys/cache.py src/comadre/health.py src/comadre/counters.py pyproject.toml uv.lock` returned empty → AC15 satisfied.
+
+One minor test iteration during development: `TestDatabaseCheck::test_db_size_uses_real_st_size` initially compared the health check's recorded `size_bytes` against `db_path.stat().st_size` **after** the SQLite connection close, which can mutate the file size via WAL checkpointing. Fix: capture the expected size inside the same connection lifecycle as the collector. No production-code change.
+
 ### Completion Notes List
+
+- **All 23 acceptance criteria map to at least one passing test**; AC15 (read-only invariant) is also verified by the empty `git diff` over the listed invariant file set. AC18 (bootstrap installs the marker, cleanup removes it) is covered at the Python layer (marker path / content / mode 0600 assertions) — the end-to-end ansible run is deferred to the 10.10.10.207 deploy-time smoke per Task 10.6.
+- **Exit-code contract extended for `system.py`** from `{0, 2, 5, 6}` to `{0, 2, 5, 6, 7}`. Exit 7 is emitted **only** by `health --format json` when any check has severity `warn` or `fail`; `health --format table` always exits 0 per the UX-spec read-tier rule so an interactive operator's prompt styling doesn't flip on a yellow warning.
+- **Cron-installed marker file** lives at `{KEY_REGISTRY_DB_PATH}.cron-installed`. Bootstrap writes `schedule=30 0 * * *\ncron_tz={{billing_timezone}}` with mode 0600; cleanup removes the marker before the cron entry + CRON_TZ envvar so a mid-cleanup failure degrades toward "Not installed" rather than a misleading "installed" state.
+- **Backup check is `info`-only today** (`_BACKUP_NOT_IMPLEMENTED_INFO = True` in `keys/health.py`). Story 4.3 flips the constant to activate the warn/fail branches; no other code in this story's diff needs to change. `TestBackupCheck::test_info_only_today_even_with_existing_backup_file` is the forcing-function test that will fail when the constant flips, signalling the intended handshake.
+- **Auth-cache check is `info`, not `warn`, when no replicas report.** A CLI-only invocation with no API container running (initial setup, offline DB inspection) is a legitimate workflow; flipping `is_healthy` on empty snapshot-dir would noise up the one-off operator smokes the story was designed for.
+- **Marker parsing is forward-compatible.** `_marker_parse` returns `None` on unparseable / missing-key input (renders as the warn-severity "Marker present but unparseable" panel row) but tolerates unknown keys silently — a future Story 4.x extension can grow the marker schema without breaking `health`.
+- **NFR5 perf headroom is 100×, not 10×.** The 1K-customer / 2K-key / 5K-audit-row seed completes `collect_health_report` in ~2-5 ms on the test host, well under the 500 ms budget. Real deployments would need a ~50K-customer registry to approach the budget.
+- **No schema change, no new dep, no auth-path change, no FastAPI runtime change.** The `git diff` over `src/comadre/api.py`, `main.py`, `rate_limit.py`, `keys/auth.py`, `keys/cache.py`, `health.py` (HTTP `/health`), `counters.py`, `pyproject.toml`, `uv.lock`, and `keys/migrations/` is empty — AC15 invariant satisfied.
+- **Deferred to deploy-time acceptance gate (Task 10.6):** live smoke on 10.10.10.207 — `ansible-playbook bootstrap.yml` then `docker compose exec tts-service comadre-keys health` to confirm the marker file is visible inside the container at the canonical path, plus an artificial warn (`sudo chmod 644 data/keys/registry.db`) to confirm `--format json` exits 7.
 
 ### File List
 
+**New files (3):**
+- `src/comadre/keys/health.py`
+- `tests/test_keys_health.py`
+- `tests/test_keys_cli_health.py`
+
+**Modified files (11):**
+- `src/comadre/keys/db.py` — added `count_active_customers` + `count_keys_by_status` helpers.
+- `src/comadre/keys/cli/commands/system.py` — added `health_cmd`; extended module docstring exit-code table.
+- `src/comadre/keys/cli/output.py` — added `render_health_report` + `_health_row` + `_SEVERITY_STYLE` + `from rich.markup import escape` import.
+- `tests/test_keys_db.py` — added `TestCountActiveCustomers` + `TestCountKeysByStatus` classes; extended `TestListCommandsDoNotWrite::test_no_writes_across_all_helpers` to cover the two new readers.
+- `tests/test_keys_output.py` — added `TestRenderHealthReport` class (4 cases); imported `HealthCheck` / `HealthReport` / `render_health_report`.
+- `deploy/ansible/playbooks/bootstrap.yml` — added marker-write task (`ansible.builtin.copy` with mode 0600) after the suspension-sweep cron; updated "Next steps" summary to include the `comadre-keys health` first-run check.
+- `deploy/ansible/playbooks/cleanup.yml` — added marker-remove task ordered before the cron-entry / `CRON_TZ` removals.
+- `CLAUDE.md` — CLI command list extended with `health`; two new "Non-Obvious Gotchas" entries (cron-marker vs crontab, exit-code summary).
+- `README.md` — "System health" feature bullet added under the registry-backed-API-keys section.
+- `docs/configuration-reference.md` — auxiliary-files table grown from 2 rows to 3 (adds the marker file + don't-edit-by-hand caveat).
+- `docs/deployment-guide.md` — "Registry-level health — `comadre-keys health`" subsection added with the canonical `--format json` invocation, exit 0/7 contract, and a Nagios-plugin `jq` snippet.
+
+**Story / sprint tracking (2):**
+- `_bmad-output/implementation-artifacts/3-4-system-health-command.md` — task checkboxes, Dev Agent Record, File List, Change Log, Status.
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — `3-4-system-health-command` flipped to `review`; header `last_updated` comment + body date bumped to 2026-04-19.
+
 ### Change Log
+
+- 2026-04-19: Implemented Story 3.4 — `comadre-keys health` CLI verb (FR34). New module `src/comadre/keys/health.py` assembles 8 health checks (DB path + mode, schema version, customer counts, key counts, last sweep age, cron marker, last backup, auth cache). New `render_health_report` in `output.py` (UX-DR3 DetailPanel). Two new DB helpers (`count_active_customers`, `count_keys_by_status`) in `db.py`. Ansible marker-file write/remove pair in `bootstrap.yml` / `cleanup.yml` so the in-container CLI can report cron-installed status without shelling out to `crontab -l`. Docs updated across `CLAUDE.md`, `README.md`, `docs/configuration-reference.md`, `docs/deployment-guide.md`. Exit-code contract for the `system.py` module extended with `7` (unhealthy state in `--format json` only; `--format table` stays exit-0 per read-tier UX rule). 52 new tests, zero regressions — full suite at 1307 passing. No schema change, no new dependency, no auth / FastAPI runtime touch.

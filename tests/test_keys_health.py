@@ -1,0 +1,782 @@
+"""Story 3.4 — unit tests for ``comadre.keys.health``.
+
+Exercises ``collect_health_report`` end-to-end against a tmp-path SQLite
+DB plus filesystem fixtures (marker file, counter snapshots). CLI-level
+assertions live in ``tests/test_keys_cli_health.py``; renderer assertions
+live in ``tests/test_keys_output.py::TestRenderHealthReport``.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+import comadre.keys.health as health_mod
+from comadre.keys.audit import log_event
+from comadre.keys.db import (
+    _SCHEMA_VERSION,
+    _apply_migrations,
+    generate_customer_id,
+    generate_key_id,
+    get_connection,
+)
+from comadre.keys.health import (
+    HealthCheck,
+    HealthReport,
+    _marker_parse,
+    collect_health_report,
+    health_report_to_json,
+)
+
+_ISO_UTC_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+
+
+# ---------------------------------------------------------------------------
+# Seed helpers — mirror the ones in test_keys_db_suspend_sweep.py
+# ---------------------------------------------------------------------------
+
+
+def _seed_customer(
+    conn: sqlite3.Connection,
+    *,
+    name: str = "Helena",
+    registered_at: str = "2026-04-10T10:00:00Z",
+    deleted_at: str | None = None,
+) -> str:
+    cid = generate_customer_id()
+    conn.execute(
+        "INSERT INTO customer ("
+        "id, name, email, tax_id_kind, tax_id_encrypted, notes, "
+        "registered_at, deleted_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            cid,
+            name,
+            f"{name.lower()}@example.com",
+            "cpf",
+            b"ciphertext",
+            "",
+            registered_at,
+            deleted_at,
+        ),
+    )
+    conn.commit()
+    return cid
+
+
+def _seed_api_key(
+    conn: sqlite3.Connection,
+    *,
+    customer_id: str,
+    key_hash: str,
+    status: str = "active",
+    billing_mode: str = "manual",
+    paid_until: str | None = None,
+    key_prefix: str = "AAAAAAAA",
+) -> str:
+    kid = generate_key_id()
+    conn.execute(
+        "INSERT INTO api_key ("
+        "id, customer_id, key_hash, key_prefix, rate_limit_rpm, status, "
+        "billing_mode, price_monthly, paid_until, created_at, last_used_at, "
+        "notes"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            kid,
+            customer_id,
+            key_hash,
+            key_prefix,
+            60,
+            status,
+            billing_mode,
+            149.0,
+            paid_until,
+            "2026-04-10T12:00:00Z",
+            None,
+            "",
+        ),
+    )
+    conn.commit()
+    return kid
+
+
+def _write_marker(
+    db_path: Path,
+    *,
+    schedule: str = "30 0 * * *",
+    cron_tz: str = "UTC",
+    content: str | None = None,
+) -> Path:
+    marker = Path(f"{db_path}.cron-installed")
+    if content is None:
+        content = f"schedule={schedule}\ncron_tz={cron_tz}"
+    marker.write_text(content, encoding="utf-8")
+    marker.chmod(0o600)
+    return marker
+
+
+def _write_snapshot(
+    db_path: Path,
+    *,
+    replica: str = "test-replica",
+    age_seconds: int = 3,
+    hits: int = 1000,
+    misses: int = 10,
+    entries: int = 42,
+) -> Path:
+    written = datetime.now(UTC) - timedelta(seconds=age_seconds)
+    snapshot_path = Path(f"{db_path}.counters.{replica}.json")
+    payload = {
+        "schema_version": 1,
+        "written_at": written.strftime("%Y-%m-%dT%H:%M:%S.")
+        + f"{written.microsecond // 1000:03d}Z",
+        "process_uptime_seconds": 60,
+        "auth_cache": {
+            "entries": entries,
+            "maxsize": 4096,
+            "ttl_seconds": 60,
+            "hits": hits,
+            "misses": misses,
+        },
+        "per_key": {},
+    }
+    snapshot_path.write_text(json.dumps(payload), encoding="utf-8")
+    return snapshot_path
+
+
+def _collect(
+    conn: sqlite3.Connection, db_path: Path, **overrides: object
+) -> HealthReport:
+    kwargs: dict[str, object] = {
+        "conn": conn,
+        "db_path": str(db_path),
+        "schema_version_expected": _SCHEMA_VERSION,
+        "cron_marker_path": str(db_path) + ".cron-installed",
+        "backup_parent": str(db_path.parent),
+    }
+    kwargs.update(overrides)
+    return collect_health_report(**kwargs)  # type: ignore[arg-type]
+
+
+def _check_by_label(report: HealthReport, label: str) -> HealthCheck:
+    for c in report.checks:
+        if c.label == label:
+            return c
+    raise AssertionError(f"No check labelled {label!r}")
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestFullHealthyReport:
+    def test_collect_full_healthy_report(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="AAAA1111"
+            )
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="b" * 64,
+                key_prefix="BBBB1111",
+                status="suspended",
+            )
+            # One recent sweep row.
+            with conn:
+                log_event(
+                    conn,
+                    actor="cron:suspension-sweep",
+                    action="cron_suspend",
+                    target_type="system",
+                    target_id=None,
+                    details={"swept_count": 0, "cutoff_date": "2026-04-18"},
+                )
+            _write_marker(db_path)
+            _write_snapshot(db_path)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+
+        assert report.is_healthy is True
+        # 8 fixed checks.
+        assert len(report.checks) == 8
+        labels = [c.label for c in report.checks]
+        assert labels == [
+            "Database",
+            "Schema version",
+            "Customers",
+            "Keys",
+            "Last suspension sweep",
+            "Cron",
+            "Last backup",
+            "Auth cache",
+        ]
+        severities = {c.severity for c in report.checks}
+        assert "warn" not in severities
+        assert "fail" not in severities
+
+
+class TestDatabaseCheck:
+    def test_warn_when_db_permissions_drift(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            db_path.chmod(0o644)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Database")
+        assert check.severity == "warn"
+        assert "0644" in check.value
+        assert check.detail is not None
+        assert "0600" in check.detail
+        assert report.is_healthy is False
+
+    def test_ok_when_mode_0600(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Database")
+        assert check.severity == "ok"
+        assert "0600" in check.value
+
+    def test_db_size_uses_real_st_size(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            expected_size = db_path.stat().st_size
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Database")
+        assert check.data is not None
+        # WAL sidecar + checkpoint-on-close can change st_size between the
+        # collector's stat and a post-close stat; anchor against the stat
+        # taken inside the same connection lifecycle as the collector.
+        assert check.data["size_bytes"] == expected_size
+        assert isinstance(check.data["size_bytes"], int)
+        assert int(check.data["size_bytes"]) > 0
+
+
+class TestSchemaVersionCheck:
+    def test_warn_when_below_expected(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            with conn:
+                conn.execute("DELETE FROM schema_version")
+                conn.execute(
+                    "INSERT INTO schema_version (version, applied_at) "
+                    "VALUES (0, '2026-04-01T00:00:00Z')"
+                )
+            report = collect_health_report(
+                conn=conn,
+                db_path=str(db_path),
+                schema_version_expected=1,
+                cron_marker_path=str(db_path) + ".cron-installed",
+                backup_parent=str(db_path.parent),
+            )
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Schema version")
+        assert check.severity == "warn"
+
+    def test_fail_when_above_expected(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            with conn:
+                conn.execute(
+                    "INSERT INTO schema_version (version, applied_at) "
+                    "VALUES (999, '2026-04-01T00:00:00Z')"
+                )
+            report = collect_health_report(
+                conn=conn,
+                db_path=str(db_path),
+                schema_version_expected=1,
+                cron_marker_path=str(db_path) + ".cron-installed",
+                backup_parent=str(db_path.parent),
+            )
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Schema version")
+        assert check.severity == "fail"
+        assert report.is_healthy is False
+
+
+class TestCustomerCount:
+    def test_counts_active_and_tombstoned(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _seed_customer(conn, name="Alive1")
+            _seed_customer(conn, name="Alive2")
+            _seed_customer(conn, name="Alive3")
+            dead = _seed_customer(conn, name="Dead")
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-15T00:00:00Z", dead),
+            )
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = "
+                "(SELECT id FROM customer WHERE name = 'Alive2')",
+                ("2026-04-15T00:00:00Z",),
+            )
+            conn.commit()
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Customers")
+        assert "2 active, 2 tombstoned" in check.value
+
+    def test_omits_tombstoned_tail_when_zero(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _seed_customer(conn, name="Alive1")
+            _seed_customer(conn, name="Alive2")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Customers")
+        assert check.value == "2 active"
+        assert "tombstoned" not in check.value
+
+
+class TestKeyCounts:
+    def test_all_three_statuses_rendered_even_when_zero(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            _seed_api_key(
+                conn, customer_id=cid, key_hash="a" * 64, key_prefix="KKKK1111"
+            )
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Keys")
+        assert check.value == "1 active, 0 suspended, 0 revoked"
+
+
+class TestLastSweepCheck:
+    def test_ok_when_recent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            with conn:
+                log_event(
+                    conn,
+                    actor="cron:suspension-sweep",
+                    action="cron_suspend",
+                    target_type="system",
+                    target_id=None,
+                    details={"swept_count": 0},
+                )
+            _write_marker(db_path)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last suspension sweep")
+        assert check.severity == "ok"
+        assert check.data is not None
+        assert isinstance(check.data["age_seconds"], int)
+        assert check.data["age_seconds"] >= 0
+
+    def test_warn_when_stale_beyond_threshold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            with conn:
+                log_event(
+                    conn,
+                    actor="cron:suspension-sweep",
+                    action="cron_suspend",
+                    target_type="system",
+                    target_id=None,
+                    details={"swept_count": 0},
+                    occurred_at="2026-04-15T03:30:00Z",
+                )
+            _write_marker(db_path)
+            # Freeze now to 72h after the sweep.
+            fixed_now = datetime(2026, 4, 18, 3, 30, 0, tzinfo=UTC)
+            monkeypatch.setattr(health_mod, "_utcnow", lambda: fixed_now)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last suspension sweep")
+        assert check.severity == "warn"
+        assert check.detail is not None
+        assert "48h" in check.detail
+        assert report.is_healthy is False
+
+    def test_info_when_never_and_no_cron(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last suspension sweep")
+        assert check.severity == "info"
+        assert "never" in check.value
+        assert "cron not installed" in check.value
+
+    def test_warn_when_never_but_cron_installed(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_marker(db_path)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last suspension sweep")
+        assert check.severity == "warn"
+        assert "not yet fired" in check.value
+        assert check.detail is not None
+        assert "00:30" in check.detail
+
+
+class TestCronMarkerCheck:
+    def test_warn_when_missing(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Cron")
+        assert check.severity == "warn"
+        assert "Not installed" in check.value
+        assert check.detail is not None
+        assert "bootstrap.yml" in check.detail
+
+    def test_ok_with_canonical_marker(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_marker(db_path, schedule="30 0 * * *", cron_tz="America/Sao_Paulo")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Cron")
+        assert check.severity == "ok"
+        assert "30 0 * * *" in check.value
+        assert "America/Sao_Paulo" in check.value
+
+    def test_warn_with_unparseable_marker(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_marker(db_path, content="\x00garbage\x01")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Cron")
+        assert check.severity == "warn"
+        assert "unparseable" in check.value.lower()
+
+    def test_warn_when_missing_required_keys(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            # Only schedule= present, no cron_tz=
+            _write_marker(db_path, content="schedule=30 0 * * *")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Cron")
+        assert check.severity == "warn"
+
+    def test_unknown_keys_tolerated(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_marker(
+                db_path,
+                content=(
+                    "schedule=30 0 * * *\n"
+                    "cron_tz=UTC\n"
+                    "future_field=reserved_for_story_4_x"
+                ),
+            )
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Cron")
+        assert check.severity == "ok"
+
+
+class TestBackupCheck:
+    def test_info_only_today_without_backup(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last backup")
+        assert check.severity == "info"
+        assert check.data is not None
+        assert check.data["available_after_story_4_3"] is False
+
+    def test_info_only_today_even_with_existing_backup_file(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            # Simulate a forward-leaning backup file.
+            (tmp_path / "registry.db.backup-2026-04-19.tar.gz.enc").write_bytes(
+                b"encrypted-stub"
+            )
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last backup")
+        # Still info today — WARN branch is gated behind the constant flip.
+        assert check.severity == "info"
+
+
+class TestAuthCacheCheck:
+    def test_info_when_no_replicas(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Auth cache")
+        assert check.severity == "info"
+        assert "no API replicas" in check.value
+
+    def test_ok_when_replica_reports(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_snapshot(db_path, replica="one")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Auth cache")
+        assert check.severity == "ok"
+        assert "1 replicas" in check.value
+        assert "%" in check.value  # hit rate rendered
+
+
+class TestAggregation:
+    def test_is_healthy_false_with_one_warn(self) -> None:
+        report = HealthReport(
+            checks=(
+                HealthCheck(label="A", value="ok", severity="ok"),
+                HealthCheck(label="B", value="warning", severity="warn"),
+            ),
+            is_healthy=False,
+            generated_at="2026-04-19T00:00:00Z",
+        )
+        # Using the JSON helper exercises the aggregation output path.
+        payload = health_report_to_json(report)
+        assert payload["is_healthy"] is False
+        assert payload["warn_count"] == 1
+        assert payload["fail_count"] == 0
+
+    def test_is_healthy_true_with_info_only(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_marker(db_path)
+            # With marker present but no sweep, "Last suspension sweep" is
+            # warn — so we deliberately seed a sweep to keep it info-free.
+            with conn:
+                log_event(
+                    conn,
+                    actor="cron:suspension-sweep",
+                    action="cron_suspend",
+                    target_type="system",
+                    target_id=None,
+                    details={"swept_count": 0},
+                )
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        # No warn/fail on a clean run → healthy even though Last backup is info.
+        assert report.is_healthy is True
+
+
+class TestGeneratedAt:
+    def test_iso_utc_format(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        assert re.match(_ISO_UTC_RE, report.generated_at) is not None
+
+
+class TestMarkerParse:
+    def test_parses_two_keys(self) -> None:
+        out = _marker_parse("schedule=30 0 * * *\ncron_tz=UTC")
+        assert out == {"schedule": "30 0 * * *", "cron_tz": "UTC"}
+
+    def test_rejects_missing_equals(self) -> None:
+        assert _marker_parse("schedule 30 0 * * *\ncron_tz=UTC") is None
+
+    def test_rejects_empty(self) -> None:
+        assert _marker_parse("") is None
+        assert _marker_parse("\n\n") is None
+
+    def test_rejects_binary(self) -> None:
+        assert _marker_parse("schedule=\x00\x01binary\ncron_tz=UTC") is None
+
+    def test_tolerates_trailing_newline(self) -> None:
+        assert _marker_parse("schedule=30\ncron_tz=UTC\n") == {
+            "schedule": "30",
+            "cron_tz": "UTC",
+        }
+
+
+class TestPerformance:
+    def test_collect_under_500ms_for_1k_customers(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            # Seed 1 000 customers + 2 000 keys using executemany — raw SQL
+            # for speed (the high-level helpers add transaction overhead
+            # per row that would dominate the seed time).
+            customer_rows = [
+                (
+                    generate_customer_id(),
+                    f"Customer {i}",
+                    f"c{i}@example.com",
+                    "cpf",
+                    b"ciphertext",
+                    "",
+                    "2026-04-10T12:00:00Z",
+                    None,
+                )
+                for i in range(1000)
+            ]
+            conn.executemany(
+                "INSERT INTO customer ("
+                "id, name, email, tax_id_kind, tax_id_encrypted, notes, "
+                "registered_at, deleted_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                customer_rows,
+            )
+            key_rows = []
+            for i, (cid, *_) in enumerate(customer_rows):
+                for j in range(2):
+                    key_rows.append(
+                        (
+                            generate_key_id(),
+                            cid,
+                            f"{i:064x}"[:64] if j == 0 else f"{(i + 99999):064x}"[:64],
+                            f"K{i:06d}{j:01d}",
+                            60,
+                            "active" if (i + j) % 3 != 0 else "suspended",
+                            "manual",
+                            149.0,
+                            None,
+                            "2026-04-10T12:00:00Z",
+                            None,
+                            "",
+                        )
+                    )
+            conn.executemany(
+                "INSERT INTO api_key ("
+                "id, customer_id, key_hash, key_prefix, rate_limit_rpm, "
+                "status, billing_mode, price_monthly, paid_until, "
+                "created_at, last_used_at, notes"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                key_rows,
+            )
+            audit_rows = [
+                (
+                    "cron:suspension-sweep",
+                    "cron_suspend",
+                    "system",
+                    None,
+                    json.dumps({"swept_count": 0}),
+                    f"2026-04-{(i % 28) + 1:02d}T12:00:00Z",
+                )
+                for i in range(5000)
+            ]
+            conn.executemany(
+                "INSERT INTO audit_log ("
+                "actor, action, target_type, target_id, details_json, "
+                "occurred_at"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                audit_rows,
+            )
+            conn.commit()
+
+            start = time.perf_counter()
+            report = _collect(conn, db_path)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+        finally:
+            conn.close()
+
+        assert elapsed_ms < 500, f"collect took {elapsed_ms:.1f} ms (>500 ms)"
+        # Sanity: report still has the 8 canonical checks.
+        assert len(report.checks) == 8
+
+
+class TestReadOnly:
+    def test_collect_does_not_write_to_db(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            # Force the file's mtime to stabilise.
+            conn.commit()
+            before_ns = db_path.stat().st_mtime_ns
+            # Touch the file back to a sentinel time so a stat-cache hiccup
+            # doesn't noise the assertion on fast filesystems.
+            time.sleep(0.01)
+            _collect(conn, db_path)
+            after_ns = db_path.stat().st_mtime_ns
+        finally:
+            conn.close()
+        assert before_ns == after_ns

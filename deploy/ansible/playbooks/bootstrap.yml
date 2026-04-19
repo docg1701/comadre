@@ -327,6 +327,19 @@
           docker compose exec -T tts-service comadre-keys suspend-sweep 2>&1 |
           logger -t comadre-suspension-sweep'
 
+    # The in-container ``comadre-keys health`` CLI cannot read the host's
+    # crontab, so we drop a marker file alongside the registry DB. The CLI
+    # stats the marker to report the cron's installed status without
+    # shelling out to ``crontab -l``. The bind-mount ``./data/keys:/keys``
+    # surfaces this file to the container at the same canonical path.
+    - name: "[Cron] Write health marker for comadre-daily-suspension"
+      ansible.builtin.copy:
+        dest: "~/comadre/data/keys/registry.db.cron-installed"
+        content: |-
+          schedule=30 0 * * *
+          cron_tz={{ billing_timezone | default('UTC') }}
+        mode: "0600"
+
     # =========================================================================
     # Health Check
     # =========================================================================
@@ -362,6 +375,9 @@
           HTTPS URL:       https://{{ ansible_host }}
           UFW:             Active (22, 80, 443)
           Suspension sweep: 00:30 {{ billing_timezone | default('UTC') }} (cron, zero-touch)
+
+          First-run sanity check — verify overall registry health:
+            docker compose exec tts-service comadre-keys health
 
           Next steps — issue a customer API key from the host:
             docker compose exec tts-service comadre-keys register-customer \

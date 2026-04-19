@@ -235,6 +235,30 @@ cd deploy/ansible
 ansible-playbook playbooks/health.yml -i inventory/production.yml
 ```
 
+### Registry-level health — `comadre-keys health`
+
+`ansible-playbook health.yml` covers infrastructure (container state, disk, cron existence at the host level). **Registry-level health** — DB integrity, schema parity, permissions drift, last suspension-sweep age, cron-installed marker, auth-cache telemetry — lives in the `comadre-keys health` CLI verb that runs inside the `tts-service` container:
+
+```bash
+docker compose exec tts-service comadre-keys health              # table output
+docker compose exec tts-service comadre-keys health --format json  # machine-readable
+```
+
+**Exit codes:** `0` healthy, `2` usage error, `5` DB error, `6` configuration error, **`7` unhealthy** (only in `--format json`; table mode always exits `0` — read-tier UX rule). A minimal Nagios-style check:
+
+```bash
+set -e
+payload="$(docker compose exec -T tts-service comadre-keys health --format json)" && rc=$? || rc=$?
+case $rc in
+  0) echo "OK"; exit 0 ;;
+  7) msg="$(echo "$payload" | jq -r '.checks[] | select(.severity == "warn" or .severity == "fail") | "\(.label): \(.value)"' | tr '\n' ';')"
+     echo "WARNING: $msg"; exit 1 ;;
+  *) echo "CRITICAL: comadre-keys health exited $rc"; exit 2 ;;
+esac
+```
+
+The eight checks in each report are: `Database`, `Schema version`, `Customers`, `Keys`, `Last suspension sweep`, `Cron`, `Last backup`, `Auth cache`. `Last backup` is `info`-only until the backup playbook ships — it never flips `is_healthy` today.
+
 ## Cleanup -- Full Decommission
 
 Removes all Comadre artifacts **and** system-level components from the VPS, restoring it to its pre-bootstrap state. This is irreversible.
