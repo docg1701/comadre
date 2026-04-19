@@ -34,6 +34,22 @@ class TestGenerateApiKeyPlaintext:
         body = generate_api_key_plaintext().removeprefix(API_KEY_PREFIX)
         assert re.fullmatch(r"[A-Za-z0-9_-]{43}", body)
 
+    def test_stored_prefix_first_char_is_always_alphanumeric(self) -> None:
+        """Regression: CLI tests invoke ``show <prefix>`` etc. positionally;
+        a prefix starting with ``-`` or ``_`` is parsed by Click as an option
+        group and exits 2. The generator rerolls until the first char after
+        ``cmdr_live_`` is ``[A-Za-z0-9]``. 2 000 samples is ~22% expected to
+        see a reject under the base64-URL alphabet, so this passes only if
+        the retry loop is in place.
+        """
+        for _ in range(2000):
+            plaintext = generate_api_key_plaintext()
+            first_stored_char = plaintext[len(API_KEY_PREFIX)]
+            assert first_stored_char.isalnum(), (
+                f"First stored-prefix char {first_stored_char!r} is not "
+                "alphanumeric — Click CLI tests will flake."
+            )
+
 
 class TestHashApiKey:
     def test_returns_64_lowercase_hex(self) -> None:

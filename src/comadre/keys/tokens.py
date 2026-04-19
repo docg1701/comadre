@@ -23,8 +23,21 @@ def generate_api_key_plaintext() -> str:
 
     ``secrets.token_urlsafe(32)`` returns 43 URL-safe base64 characters
     without padding, so the full plaintext is 53 chars.
+
+    The first character after ``cmdr_live_`` (i.e. position 10, which is
+    also ``key_prefix_from_plaintext`` byte 0) is constrained to be
+    alphanumeric. URL-safe base64 includes ``-`` and ``_``; if the stored
+    prefix starts with either, every CLI invocation that takes the prefix
+    as a positional arg (``show``, ``suspend``, ``mark-paid``, …) trips
+    Click's option parser and exits 2. Reroll until the first stored-prefix
+    char is ``[A-Za-z0-9]``. Entropy cost is negligible (~1 bit on the
+    leading char only; the remaining 42 chars preserve full base64 entropy)
+    and average iterations is 32/30 ≈ 1.07.
     """
-    return f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+    while True:
+        candidate = f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+        if candidate[len(API_KEY_PREFIX)].isalnum():
+            return candidate
 
 
 def hash_api_key(plaintext: str) -> str:
