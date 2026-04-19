@@ -1,0 +1,539 @@
+"""End-to-end CLI tests for ``comadre-keys at-risk`` (Story 3.2)."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sqlite3
+import time
+from collections.abc import Iterator
+from datetime import UTC, date, datetime
+from io import StringIO
+from pathlib import Path
+
+import pytest
+from cryptography.fernet import Fernet
+from rich.console import Console
+from typer.testing import CliRunner
+
+import comadre.keys.cli.commands.billing as billing_cmd
+import comadre.keys.cli.output as output_mod
+from comadre.config import get_settings
+from comadre.keys.cli.app import app
+from comadre.keys.db import (
+    _apply_migrations,
+    generate_customer_id,
+    generate_key_id,
+    get_connection,
+    insert_api_key,
+    insert_customer,
+)
+from comadre.keys.models import ApiKeyRecord, CustomerRecord
+
+runner = CliRunner()
+
+
+# Story 2.3 PII-leak guard — any match in an INFO log line is a FR37 / NFR15 regression.
+_PII_FORBIDDEN_RE = re.compile(
+    r"cmdr_live_|[0-9a-f]{64}|[0-9]{11,14}|@[a-z0-9.-]+\.[a-z]{2,}",
+    re.IGNORECASE,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache() -> Iterator[None]:
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
+    stdout_buf = StringIO()
+    stderr_buf = StringIO()
+    output_mod._reset_for_tests()
+    output_mod._stdout_console = Console(
+        file=stdout_buf, force_terminal=False, no_color=True, width=120
+    )
+    output_mod._stderr_console = Console(
+        file=stderr_buf, force_terminal=False, no_color=True, width=120
+    )
+    yield stdout_buf, stderr_buf
+    output_mod._reset_for_tests()
+
+
+@pytest.fixture()
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    key = Fernet.generate_key().decode()
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
+    return {"db_path": str(db_path), "key": key}
+
+
+def _freeze_today(monkeypatch: pytest.MonkeyPatch, today: date) -> None:
+    monkeypatch.setattr(billing_cmd, "_resolve_today_in_tz", lambda _tz: today)
+
+
+def _buffers() -> tuple[str, str]:
+    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
+    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
+    return stdout_file.getvalue(), stderr_file.getvalue()
+
+
+def _clear_buffers() -> None:
+    for attr in ("_stdout_console", "_stderr_console"):
+        console = getattr(output_mod, attr)
+        console.file.seek(0)  # type: ignore[union-attr]
+        console.file.truncate()  # type: ignore[union-attr]
+
+
+def _seed_customer(conn: sqlite3.Connection, *, name: str, email: str) -> str:
+    cid = generate_customer_id()
+    insert_customer(
+        conn,
+        CustomerRecord(
+            id=cid,
+            name=name,
+            email=email,
+            tax_id_kind="cpf",
+            tax_id_encrypted=b"gAAAAA-ciphertext",
+            notes="",
+            registered_at=datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC),
+            deleted_at=None,
+        ),
+        actor="cli:tester",
+    )
+    return cid
+
+
+def _seed_key(
+    conn: sqlite3.Connection,
+    *,
+    customer_id: str,
+    key_prefix: str,
+    key_hash: str,
+    status: str = "active",
+    billing_mode: str = "manual",
+    paid_until: str | None = None,
+    price_monthly: float = 149.0,
+    notes: str = "",
+) -> str:
+    kid = generate_key_id()
+    insert_api_key(
+        conn,
+        ApiKeyRecord(
+            id=kid,
+            customer_id=customer_id,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            rate_limit_rpm=60,
+            status=status,  # type: ignore[arg-type]
+            billing_mode=billing_mode,  # type: ignore[arg-type]
+            price_monthly=price_monthly if billing_mode == "manual" else 0.0,
+            paid_until=paid_until,
+            created_at=datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC),
+            last_used_at=None,
+            notes=notes,
+        ),
+        actor="cli:tester",
+    )
+    return kid
+
+
+def _seed_basic_portfolio(db_path: str) -> dict[str, str]:
+    """Seed the AC1/AC3 fixture and return a name→id map.
+
+    Pedro (paid_until=2026-04-20, days_left=2), Marcos (2026-04-22, 4),
+    Helena (2026-04-30, 12 — outside 5d window).
+    Plus AC3's exclusion cases.
+    """
+    conn = get_connection(db_path)
+    try:
+        _apply_migrations(conn)
+        ids: dict[str, str] = {}
+        ids["pedro_cid"] = _seed_customer(conn, name="Pedro Lopes", email="p@c.com")
+        ids["marcos_cid"] = _seed_customer(conn, name="Marcos Silva", email="m@c.com")
+        ids["helena_cid"] = _seed_customer(conn, name="Helena Ribeiro", email="h@c.com")
+        ids["pedro_kid"] = _seed_key(
+            conn,
+            customer_id=ids["pedro_cid"],
+            key_prefix="Pq_abc12",
+            key_hash="a" * 64,
+            paid_until="2026-04-20",
+        )
+        ids["marcos_kid"] = _seed_key(
+            conn,
+            customer_id=ids["marcos_cid"],
+            key_prefix="Mx_def34",
+            key_hash="b" * 64,
+            paid_until="2026-04-22",
+        )
+        ids["helena_kid"] = _seed_key(
+            conn,
+            customer_id=ids["helena_cid"],
+            key_prefix="Hx_ghi56",
+            key_hash="c" * 64,
+            paid_until="2026-04-30",
+        )
+        return ids
+    finally:
+        conn.close()
+
+
+def _seed_exclusion_cases(db_path: str) -> None:
+    """Keys that must be excluded from at-risk regardless of window.
+
+    NULL paid_until active manual, suspended manual with in-window date,
+    complimentary with in-window date, revoked with in-window date.
+    """
+    conn = get_connection(db_path)
+    try:
+        _apply_migrations(conn)
+        cid = _seed_customer(conn, name="EdgeCases", email="e@c.com")
+        _seed_key(
+            conn,
+            customer_id=cid,
+            key_prefix="NX_null00",
+            key_hash="d" * 64,
+            paid_until=None,
+        )
+        _seed_key(
+            conn,
+            customer_id=cid,
+            key_prefix="SX_susp00",
+            key_hash="e" * 64,
+            status="suspended",
+            paid_until="2026-04-19",
+        )
+        _seed_key(
+            conn,
+            customer_id=cid,
+            key_prefix="CX_comp00",
+            key_hash="f" * 64,
+            billing_mode="complimentary",
+            paid_until="2026-04-19",
+        )
+        _seed_key(
+            conn,
+            customer_id=cid,
+            key_prefix="RX_revk00",
+            key_hash="1" * 64,
+            status="revoked",
+            paid_until="2026-04-19",
+        )
+    finally:
+        conn.close()
+
+
+class TestAtRiskTableHappyPath:
+    """AC1 — renders in-window active manual rows sorted ASC."""
+
+    def test_two_rows_in_window(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_basic_portfolio(env["db_path"])
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+
+        t0 = time.perf_counter()
+        result = runner.invoke(app, ["at-risk", "--window", "5d"])
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+        assert "At-Risk Keys (next 5 days)" in stdout
+        assert "Pq_abc12" in stdout
+        assert "Mx_def34" in stdout
+        assert "Hx_ghi56" not in stdout  # outside 5d window
+        assert "2 keys found." in stdout
+        # Pedro first (days_left=2), Marcos second (days_left=4).
+        pedro_idx = stdout.index("Pq_abc12")
+        marcos_idx = stdout.index("Mx_def34")
+        assert pedro_idx < marcos_idx
+        # NFR5 advisory — slack for CI.
+        assert elapsed_ms < 1000, f"at-risk took {elapsed_ms:.0f} ms"
+
+    def test_inclusive_on_both_ends(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC1 final — today+5 is included; today+6 is excluded; today is included."""
+        conn = get_connection(env["db_path"])
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn, name="TZ Edge", email="t@c.com")
+            # today (2026-04-18) — days_left=0 (edge-today).
+            _seed_key(
+                conn,
+                customer_id=cid,
+                key_prefix="EDG_tod0",
+                key_hash="a" * 64,
+                paid_until="2026-04-18",
+            )
+            # today+5 — edge-window (included).
+            _seed_key(
+                conn,
+                customer_id=cid,
+                key_prefix="EDG_win5",
+                key_hash="b" * 64,
+                paid_until="2026-04-23",
+            )
+            # today+6 — outside (excluded).
+            _seed_key(
+                conn,
+                customer_id=cid,
+                key_prefix="EDG_out6",
+                key_hash="c" * 64,
+                paid_until="2026-04-24",
+            )
+        finally:
+            conn.close()
+
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "EDG_tod0" in stdout
+        assert "EDG_win5" in stdout
+        assert "EDG_out6" not in stdout
+        assert "3 keys found." not in stdout
+        assert "2 keys found." in stdout
+
+    def test_sort_by_customer_name_on_tie(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = get_connection(env["db_path"])
+        try:
+            _apply_migrations(conn)
+            c_zoe = _seed_customer(conn, name="Zoe", email="z@c.com")
+            c_ana = _seed_customer(conn, name="Ana", email="a@c.com")
+            _seed_key(
+                conn,
+                customer_id=c_zoe,
+                key_prefix="Z_tie001",
+                key_hash="9" * 64,
+                paid_until="2026-04-20",
+            )
+            _seed_key(
+                conn,
+                customer_id=c_ana,
+                key_prefix="A_tie001",
+                key_hash="8" * 64,
+                paid_until="2026-04-20",
+            )
+        finally:
+            conn.close()
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        # Alphabetical tiebreak → Ana before Zoe.
+        assert stdout.index("A_tie001") < stdout.index("Z_tie001")
+
+
+class TestAtRiskEmptyState:
+    """AC2 / AC6 — empty state."""
+
+    def test_empty_db_returns_informational_exit_0(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d"])
+        stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+        assert "No keys at risk in the next 5 days." in stdout
+        # No red error panel.
+        assert "error" not in stderr.lower()
+
+    def test_empty_state_message_uses_parsed_integer(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "14d"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "No keys at risk in the next 14 days." in stdout
+
+    def test_json_empty_returns_empty_array(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d", "--format", "json"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert json.loads(stdout) == []
+        # No informational prose.
+        assert "No keys at risk" not in stdout
+
+
+class TestAtRiskExclusions:
+    """AC3 — NULL paid_until, suspended, complimentary, revoked all excluded."""
+
+    def test_exclusions_only_no_other_rows(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_exclusion_cases(env["db_path"])
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        assert "No keys at risk in the next 5 days." in stdout
+        for forbidden in ("NX_null00", "SX_susp00", "CX_comp00", "RX_revk00"):
+            assert forbidden not in stdout
+
+
+class TestAtRiskWindowValidation:
+    """AC4 — --window shape + upper cap (exit 2, fail-fast before DB)."""
+
+    def _prepare(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
+        monkeypatch.setenv(
+            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
+        )
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["0d", "-5d", "5w", "5", "", "abc", "1.5d", "5 d"],
+    )
+    def test_bad_window_shape_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+    ) -> None:
+        self._prepare(tmp_path, monkeypatch)
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", bad])
+        _stdout, stderr = _buffers()
+        assert result.exit_code == 2, f"{bad!r}"
+        assert "--window must be Nd" in stderr
+        # Fail-fast before DB open.
+        assert not (tmp_path / "registry.db").exists()
+        # NFR16 — the raw rejected input must never be interpolated into
+        # the error title or hint. Skip values that legitimately appear
+        # in the static hint text (``"5"`` is part of ``"--window 5d"``;
+        # the empty string is trivially a substring of everything).
+        if bad and bad != "5":
+            assert bad not in stderr, (
+                f"NFR16 violation: rejected input {bad!r} echoed back in stderr"
+            )
+
+    def test_366d_exceeds_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prepare(tmp_path, monkeypatch)
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "366d"])
+        _stdout, stderr = _buffers()
+        assert result.exit_code == 2
+        assert "exceeds 365d cap" in stderr or "Maximum window is 365d" in stderr
+        assert not (tmp_path / "registry.db").exists()
+
+    def test_365d_accepted(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "365d"])
+        _stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+
+    def test_invalid_format_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prepare(tmp_path, monkeypatch)
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d", "--format", "xml"])
+        _stdout, stderr = _buffers()
+        assert result.exit_code == 2
+        assert "--format must be table or json" in stderr
+
+
+class TestAtRiskJsonShape:
+    """AC5 — JSON array with days_left."""
+
+    def test_populated_json_has_days_left_and_expected_keys(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_basic_portfolio(env["db_path"])
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        _clear_buffers()
+        result = runner.invoke(app, ["at-risk", "--window", "5d", "--format", "json"])
+        stdout, _stderr = _buffers()
+        assert result.exit_code == 0
+        data = json.loads(stdout)
+        assert isinstance(data, list)
+        assert len(data) == 2
+        for entry in data:
+            assert set(entry.keys()) == {
+                "id",
+                "customer_id",
+                "customer_name",
+                "key_prefix",
+                "status",
+                "billing_mode",
+                "rate_limit_rpm",
+                "price_monthly",
+                "paid_until",
+                "created_at",
+                "last_used_at",
+                "notes",
+                "days_left",
+            }
+            assert isinstance(entry["days_left"], int)
+            assert entry["days_left"] >= 0
+        # Sorted ascending by paid_until — Pedro (2026-04-20) first.
+        assert data[0]["key_prefix"] == "Pq_abc12"
+        assert data[0]["days_left"] == 2
+        assert data[1]["key_prefix"] == "Mx_def34"
+        assert data[1]["days_left"] == 4
+
+
+class TestAtRiskLogging:
+    """AC19 — PII-austere INFO logs."""
+
+    def test_info_log_is_aggregate_and_pii_free(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from comadre.logging import get_logger
+
+        _seed_basic_portfolio(env["db_path"])
+        _freeze_today(monkeypatch, date(2026, 4, 18))
+        logger = get_logger("keys.cli")
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _Capture(level=logging.INFO)
+        logger.addHandler(handler)
+        try:
+            _clear_buffers()
+            records.clear()
+            result = runner.invoke(app, ["at-risk", "--window", "5d"])
+        finally:
+            logger.removeHandler(handler)
+        assert result.exit_code == 0
+        at_risk = [r for r in records if "At-risk queried" in r.getMessage()]
+        assert at_risk, [r.getMessage() for r in records]
+        joined = "\n".join(r.getMessage() for r in at_risk)
+        assert "window_days=5" in joined
+        assert "count=2" in joined
+        assert not _PII_FORBIDDEN_RE.search(joined), joined
+        assert "Pedro Lopes" not in joined
+        assert "Marcos Silva" not in joined
+
+
+class TestAtRiskTopLevelHelp:
+    """AC20 — at-risk surfaces on --help."""
+
+    def test_at_risk_in_help(self) -> None:
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "at-risk" in result.stdout

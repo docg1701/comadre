@@ -566,11 +566,13 @@ class TestFormatJson:
                 "paid_until",
                 "created_at",
                 "last_used_at",
+                "notes",
             }
             assert "key_hash" not in entry
             # Numeric fields emit as numbers.
             assert isinstance(entry["price_monthly"], (int, float))
             assert isinstance(entry["rate_limit_rpm"], int)
+            assert isinstance(entry["notes"], str)
 
     def test_with_filter(self, env: dict[str, str]) -> None:
         customer_id = _seed_customer(env)

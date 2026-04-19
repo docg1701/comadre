@@ -539,7 +539,7 @@ def list_api_keys(
     sql = (
         "SELECT k.id, k.customer_id, c.name AS customer_name, "
         "k.key_prefix, k.status, k.billing_mode, k.rate_limit_rpm, "
-        "k.price_monthly, k.paid_until, k.created_at, k.last_used_at "
+        "k.price_monthly, k.paid_until, k.created_at, k.last_used_at, k.notes "
         "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
         f"{where_clause} "
         "ORDER BY k.created_at ASC"
@@ -560,6 +560,7 @@ def list_api_keys(
                 paid_until=row["paid_until"],
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
+                notes=row["notes"] or "",
             )
         )
     return rows

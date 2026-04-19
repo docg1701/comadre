@@ -20,6 +20,7 @@ from comadre.keys.models import (
     CustomerRecord,
     IssuedKey,
     KeyDetailRow,
+    RevenueReport,
 )
 
 
@@ -261,7 +262,7 @@ class TestCustomerListRow:
 
 
 class TestApiKeyListRow:
-    def _make(self) -> ApiKeyListRow:
+    def _make(self, notes: str = "") -> ApiKeyListRow:
         return ApiKeyListRow(
             id="key_01abc",
             customer_id="cust_01abc",
@@ -274,6 +275,7 @@ class TestApiKeyListRow:
             paid_until=None,
             created_at="2026-04-15T12:34:56Z",
             last_used_at=None,
+            notes=notes,
         )
 
     def test_round_trip_fields(self) -> None:
@@ -289,6 +291,11 @@ class TestApiKeyListRow:
         assert row.paid_until is None
         assert row.created_at == "2026-04-15T12:34:56Z"
         assert row.last_used_at is None
+        assert row.notes == ""
+
+    def test_accepts_notes_field(self) -> None:
+        row = self._make(notes="bundled R$ 850/mo")
+        assert row.notes == "bundled R$ 850/mo"
 
     def test_is_frozen(self) -> None:
         row = self._make()
@@ -494,3 +501,41 @@ class TestAuthPayload:
         )
         assert payload.paid_until is None
         assert payload.billing_mode == "complimentary"
+
+
+class TestRevenueReport:
+    def _make(self) -> RevenueReport:
+        return RevenueReport(
+            month_label="May 2026",
+            month_iso="2026-05",
+            paid_count=12,
+            pending_count=2,
+            suspended_count=0,
+            complimentary_count=1,
+            mrr=1788.0,
+            projected=2086.0,
+            next_charge_date="2026-06-05",
+            complimentary_rows=(),
+        )
+
+    def test_round_trip_fields(self) -> None:
+        r = self._make()
+        assert r.month_label == "May 2026"
+        assert r.month_iso == "2026-05"
+        assert r.paid_count == 12
+        assert r.pending_count == 2
+        assert r.suspended_count == 0
+        assert r.complimentary_count == 1
+        assert r.mrr == 1788.0
+        assert r.projected == 2086.0
+        assert r.next_charge_date == "2026-06-05"
+        assert r.complimentary_rows == ()
+
+    def test_is_frozen(self) -> None:
+        r = self._make()
+        with pytest.raises((AttributeError, TypeError)):
+            r.mrr = 0.0  # type: ignore[misc]
+
+    def test_has_slots(self) -> None:
+        r = self._make()
+        assert not hasattr(r, "__dict__")

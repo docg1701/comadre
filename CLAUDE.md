@@ -51,7 +51,7 @@ uv run pre-commit run --all-files  # All quality checks
 - `deploy/espeak-ng/pt_extra` — custom sigla dictionary for espeak-ng
 - `docs/` — technical research docs (feasibility report, engine internals, dictionary docs, **qwen3-tts-cli build guide**, **qwen3 model quantization guide**, **voice management guide**)
 - `deploy/bin/qwen3-tts-cli` — pre-built Qwen3 C++ binary (see `docs/building-qwen3-tts-cli.md` to rebuild)
-- `src/comadre/keys/cli/` — `comadre-keys` CLI (Typer app). Commands: `create-customer`, `list-customers`, `update-customer`, `issue-key`, `list-keys`, `update-key`, `rotate-key`, `revoke-key`, `mark-paid`, `suspend`, `reactivate`, `show`, `cache-status`. This is the sole key-management surface.
+- `src/comadre/keys/cli/` — `comadre-keys` CLI (Typer app). Commands: `create-customer`, `list-customers`, `update-customer`, `issue-key`, `list-keys`, `update-key`, `rotate-key`, `revoke-key`, `mark-paid`, `suspend`, `reactivate`, `at-risk`, `revenue`, `show`, `cache-status`. This is the sole key-management surface.
 - `deploy/caddy/Caddyfile` — Caddy reverse proxy config (HTTPS termination)
 - `scripts/loadtest.py` — saturation test (concurrency-based, 6 scenarios)
 - `scripts/capacity_test.py` — capacity test (rate-based, WhatsApp context, ElevenLabs comparison)

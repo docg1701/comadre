@@ -1,11 +1,16 @@
-"""`comadre-keys mark-paid` / `suspend` / `reactivate` (Story 3.1).
+"""`comadre-keys` billing verbs: ``mark-paid`` / ``suspend`` / ``reactivate``
+(Story 3.1) and ``at-risk`` / ``revenue`` (Story 3.2).
 
 Exit-code contract (UX-DR10):
   0 — success (also: ``mark-paid`` on a complimentary key — informational,
-      no mutation; see AC5 rationale)
-  2 — usage error (bad ``--until`` shape, customer-ID passed as key arg)
+      no mutation; see AC5 rationale — and empty-result ``at-risk`` /
+      ``revenue``; empty results are not errors)
+  2 — usage error (bad ``--until`` / ``--window`` / ``--month`` /
+      ``--format`` shape, customer-ID passed as key arg)
   3 — not-found / terminal state (key missing, ambiguous prefix,
-      already-active / already-suspended / revoked)
+      already-active / already-suspended / revoked). ``at-risk`` /
+      ``revenue`` never emit 3 — they operate on the whole row set and
+      do not resolve a single key identifier.
   5 — database error (``sqlite3.Error``, ``RuntimeError`` from helper)
   6 — permission / configuration error (missing encryption key,
       invalid IANA timezone)
@@ -13,27 +18,43 @@ Exit-code contract (UX-DR10):
 
 from __future__ import annotations
 
+import calendar
 import contextlib
+import re
 import sqlite3
-from datetime import date
+from collections.abc import Iterable
+from datetime import date, timedelta
 
 import typer
 
 from comadre.keys.audit import get_cli_actor
+from comadre.keys.billing import first_charge_date
 from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
 from comadre.keys.cli.commands.keys import (
+    _key_row_to_json,
     _truncate_ident,
     load_settings_and_tz,
     resolve_key_target,
 )
-from comadre.keys.cli.output import render_confirmation, render_error
+from comadre.keys.cli.output import (
+    LIST_FORMAT_CHOICES,
+    render_at_risk_table,
+    render_confirmation,
+    render_empty_state,
+    render_error,
+    render_json,
+    render_revenue_report,
+    stdout_console,
+)
 from comadre.keys.db import (
     _apply_migrations,
     get_connection,
+    list_api_keys,
     mark_key_paid,
     reactivate_key,
     suspend_key,
 )
+from comadre.keys.models import ApiKeyListRow, RevenueReport
 from comadre.logging import get_logger
 
 _logger = get_logger("keys.cli")
@@ -403,3 +424,446 @@ def reactivate_cmd(
     render_confirmation(
         f"Reactivated: {result.key.key_prefix} ({result.key.customer_name})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Story 3.2 — read-only billing reports: ``at-risk`` and ``revenue``.
+# ---------------------------------------------------------------------------
+
+# ``--window 0d`` is deliberately rejected: the "paid_until <= today" query
+# belongs to ``list-keys --paid-until-lte today``; at-risk is strictly
+# look-ahead. The upper cap prevents the "whole portfolio" degenerate (the
+# operator should use ``list-keys`` for that).
+_AT_RISK_WINDOW_RE = re.compile(r"^[1-9][0-9]*d$")
+_AT_RISK_WINDOW_MAX_DAYS = 365
+_AT_RISK_WINDOW_HINT = (
+    "Example: --window 5d (today through today+5). Use a larger window "
+    "for more look-ahead."
+)
+_AT_RISK_WINDOW_CAP_HINT = (
+    "Maximum window is 365d. Use 'comadre-keys list-keys' for a full scan."
+)
+
+# Sane operator bounds — the registry was first migrated in 2026; years
+# before 2020 cannot carry legitimate data, years after 2099 are not a
+# use case anyone is asking for. The CLI rejects inputs outside this
+# window at exit 2 instead of producing a confusing empty report.
+_REVENUE_YEAR_MIN = 2020
+_REVENUE_YEAR_MAX = 2099
+_REVENUE_MONTH_RE = re.compile(r"^[0-9]{4}-[0-9]{2}$")
+_REVENUE_MONTH_HINT = (
+    "Example: --month current or --month 2026-05. Month must be 'current' "
+    f"or YYYY-MM with year in {_REVENUE_YEAR_MIN}..{_REVENUE_YEAR_MAX}."
+)
+
+_FORMAT_HINT = "Valid values: table, json."
+
+
+def _parse_window_days(raw: str) -> int:
+    """Parse ``--window`` into an integer day count or exit 2.
+
+    Rejects non-canonical shapes (``-5d``, ``5w``, ``5``, empty, ``1.5d``)
+    and the 365-day upper cap. ``0d`` is rejected because the zero-day
+    semantic belongs to ``list-keys --paid-until-lte today``.
+    """
+    trimmed = raw.strip()
+    if not _AT_RISK_WINDOW_RE.match(trimmed):
+        render_error(
+            "Usage error: --window must be Nd where N \u2265 1 (days)",
+            _AT_RISK_WINDOW_HINT,
+        )
+        raise typer.Exit(code=2)
+    window_days = int(trimmed[:-1])
+    if window_days > _AT_RISK_WINDOW_MAX_DAYS:
+        render_error(
+            f"Usage error: --window exceeds {_AT_RISK_WINDOW_MAX_DAYS}d cap",
+            _AT_RISK_WINDOW_CAP_HINT,
+        )
+        raise typer.Exit(code=2)
+    return window_days
+
+
+def _parse_month(raw: str, *, today: date) -> tuple[int, int]:
+    """Parse ``--month`` into a ``(year, month)`` tuple or exit 2.
+
+    ``current`` resolves against the operator-TZ ``today`` the caller
+    has already computed so the two surfaces agree on the month boundary.
+    """
+    trimmed = raw.strip()
+    if trimmed == "current":
+        return today.year, today.month
+    if not _REVENUE_MONTH_RE.match(trimmed):
+        render_error(
+            "Usage error: --month must be 'current' or YYYY-MM (e.g., 2026-05)",
+            _REVENUE_MONTH_HINT,
+        )
+        raise typer.Exit(code=2)
+    year_str, month_str = trimmed.split("-")
+    year = int(year_str)
+    month = int(month_str)
+    if not _REVENUE_YEAR_MIN <= year <= _REVENUE_YEAR_MAX:
+        render_error(
+            "Usage error: --month year outside supported range "
+            f"({_REVENUE_YEAR_MIN}..{_REVENUE_YEAR_MAX})",
+            _REVENUE_MONTH_HINT,
+        )
+        raise typer.Exit(code=2)
+    if not 1 <= month <= 12:
+        render_error(
+            "Usage error: --month component must be 01..12",
+            _REVENUE_MONTH_HINT,
+        )
+        raise typer.Exit(code=2)
+    return year, month
+
+
+def _at_risk_row_to_json(row: ApiKeyListRow, *, days_left: int) -> dict[str, object]:
+    """Serialize an at-risk row to JSON.
+
+    Reuses the Story 1.3 ``_key_row_to_json`` shape then appends
+    ``days_left`` so scripted pipelines see the same schema as
+    ``list-keys --format json`` plus the at-risk-specific delta.
+    """
+    payload = _key_row_to_json(row)
+    payload["days_left"] = days_left
+    return payload
+
+
+def _revenue_report_to_json(report: RevenueReport) -> None:
+    """Emit ``report`` as a single JSON object via the shared stdout console."""
+    payload: dict[str, object] = {
+        "month": report.month_iso,
+        "month_label": report.month_label,
+        "paid_count": report.paid_count,
+        "pending_count": report.pending_count,
+        "suspended_count": report.suspended_count,
+        "complimentary_count": report.complimentary_count,
+        "mrr": report.mrr,
+        "projected": report.projected,
+        "next_charge_date": report.next_charge_date,
+        "complimentary": [
+            {
+                "key_prefix": r.key_prefix,
+                "customer_name": r.customer_name,
+                "notes": r.notes,
+            }
+            for r in report.complimentary_rows
+        ],
+    }
+    stdout_console().print_json(data=payload)
+
+
+def _bucketize_for_revenue(
+    rows: Iterable[ApiKeyListRow], *, month_first: date
+) -> tuple[
+    list[ApiKeyListRow],
+    list[ApiKeyListRow],
+    list[ApiKeyListRow],
+    list[ApiKeyListRow],
+]:
+    """Single-pass bucketize: (paid, pending, suspended, complimentary).
+
+    Revoked rows are dropped entirely. Complimentary rows bucket on
+    billing-mode regardless of status (suspended complimentary still
+    counts here — AC10). Manual-mode paid / pending split hinges on the
+    calendar-month coverage predicate documented in the story.
+    """
+    paid: list[ApiKeyListRow] = []
+    pending: list[ApiKeyListRow] = []
+    suspended: list[ApiKeyListRow] = []
+    complimentary: list[ApiKeyListRow] = []
+    for row in rows:
+        if row.status == "revoked":
+            continue
+        if row.billing_mode == "complimentary":
+            complimentary.append(row)
+            continue
+        # manual-mode rows from here down.
+        if row.status == "suspended":
+            suspended.append(row)
+            continue
+        if row.status != "active":
+            # Defensive: future CustomerStatus variants or automated-mode
+            # rows shouldn't silently leak into a bucket. Drop rather than
+            # raise — keeping revenue robust against data drift.
+            continue
+        if row.paid_until is None:
+            pending.append(row)
+            continue
+        try:
+            paid_date = date.fromisoformat(row.paid_until)
+        except ValueError:
+            # Canonical ISO dates are enforced at write-time (Story 3.1
+            # mark-paid canonicalizes). If a corrupted row slips through,
+            # treat it as pending so the operator sees it on the chase list.
+            pending.append(row)
+            continue
+        if paid_date >= month_first:
+            paid.append(row)
+        else:
+            pending.append(row)
+    return paid, pending, suspended, complimentary
+
+
+@app.command("at-risk")
+def at_risk_cmd(
+    window: str = typer.Option(
+        "5d",
+        "--window",
+        help=(
+            "Look-ahead window for expirations. Format: Nd where N is a "
+            "positive integer (days). Example: --window 5d, --window 14d."
+        ),
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        help=(
+            "Output format: table (default, human-readable) or json. "
+            "Example: --format json."
+        ),
+    ),
+) -> None:
+    """Preview active manual keys whose paid_until falls within a window.
+
+    Trial-window keys (active manual rows with ``paid_until IS NULL``)
+    are excluded — they belong to the J1 first-sale flow, not the
+    Day-04 pre-billing review.
+
+    Example: comadre-keys at-risk --window 5d
+    """
+    # 1. --format membership.
+    if format not in LIST_FORMAT_CHOICES:
+        render_error("Usage error: --format must be table or json", _FORMAT_HINT)
+        raise typer.Exit(code=2)
+
+    # 2. --window shape + upper cap (exit 2; no DB work on reject).
+    window_days = _parse_window_days(window)
+
+    # 3. Settings + TZ (exit 6).
+    loaded = load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings, billing_tz = loaded
+    today = _resolve_today_in_tz(billing_tz)
+    cutoff = today + timedelta(days=window_days)
+
+    # 4. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 5. Enumerate the full active-manual set. Trial-window (NULL
+        # paid_until) rows are filtered in Python — the SQL
+        # paid_until_lte filter matches NULL-OR-lte which is the opposite
+        # of at-risk semantics.
+        all_active_manual = list_api_keys(
+            conn,
+            status="active",
+            billing_mode="manual",
+        )
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    # 6. Filter: today <= paid_until <= cutoff. NULL excluded.
+    in_window: list[tuple[ApiKeyListRow, int]] = []
+    for row in all_active_manual:
+        if row.paid_until is None:
+            continue
+        try:
+            paid_date = date.fromisoformat(row.paid_until)
+        except ValueError:
+            continue
+        if today <= paid_date <= cutoff:
+            in_window.append((row, (paid_date - today).days))
+
+    # 7. Sort: (paid_until ASC, customer_name ASC, key_prefix ASC). The
+    # tertiary key guarantees a deterministic row order when two keys
+    # share the same paid_until AND the same customer_name (e.g. one
+    # customer with multiple active keys) — table and JSON output stay
+    # reproducible regardless of DB insertion order.
+    in_window.sort(
+        key=lambda pair: (
+            pair[0].paid_until or "",
+            pair[0].customer_name,
+            pair[0].key_prefix,
+        )
+    )
+
+    # 8. Structured INFO log — PII-austere aggregate.
+    with contextlib.suppress(Exception):
+        _logger.info(
+            "At-risk queried | window_days=%d | count=%d",
+            window_days,
+            len(in_window),
+        )
+
+    # 9. Branch on --format.
+    if format == "json":
+        render_json(
+            [_at_risk_row_to_json(row, days_left=delta) for row, delta in in_window]
+        )
+        return
+
+    if not in_window:
+        render_empty_state([f"No keys at risk in the next {window_days} days."])
+        return
+
+    render_at_risk_table(in_window, window_days)
+
+
+@app.command("revenue")
+def revenue_cmd(
+    month: str = typer.Option(
+        "current",
+        "--month",
+        help=(
+            "Month to report: 'current' or YYYY-MM. Example: --month current "
+            "or --month 2026-05."
+        ),
+    ),
+    format: str = typer.Option(
+        "table",
+        "--format",
+        help=(
+            "Output format: table (default, human-readable panel) or json. "
+            "Example: --month 2026-05 --format json."
+        ),
+    ),
+) -> None:
+    """Monthly revenue report: paid / pending / suspended / complimentary.
+
+    Shows live portfolio state filtered by the reporting month's
+    ``paid_until`` coverage. For strict forensic "state as of Day 06 of
+    that month", an ``--as-of`` replay is a future story; this command
+    reports what is true now, filtered by the reporting calendar month.
+
+    Example: comadre-keys revenue --month current
+    """
+    # 1. --format membership.
+    if format not in LIST_FORMAT_CHOICES:
+        render_error("Usage error: --format must be table or json", _FORMAT_HINT)
+        raise typer.Exit(code=2)
+
+    # 2. Settings + TZ (exit 6). We resolve ``today`` before parsing --month
+    # so 'current' is anchored to operator-local time (AC18).
+    loaded = load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings, billing_tz = loaded
+    today = _resolve_today_in_tz(billing_tz)
+
+    # 3. --month shape + bounds (exit 2).
+    year, month_int = _parse_month(month, today=today)
+
+    # 4. Month boundaries.
+    month_first = date(year, month_int, 1)
+    days_in_month = calendar.monthrange(year, month_int)[1]
+    month_last = date(year, month_int, days_in_month)
+    month_iso = f"{year:04d}-{month_int:02d}"
+    # strftime("%B %Y") is locale-independent for ASCII English month
+    # names — the project's language policy forbids pt-BR labels here.
+    month_label = month_first.strftime("%B %Y")
+
+    # Next charge: the first billing_day strictly after the reporting
+    # month's last day. For --month current, today may be after that
+    # date's billing_day, but the semantic is "when does THIS month's
+    # billing cycle close" — always the next billing_day after
+    # month_last (reused from Story 1.2's first_charge_date helper).
+    next_charge = first_charge_date(
+        today=month_last,
+        billing_day=settings.billing_day,  # type: ignore[attr-defined]
+        tz=settings.billing_timezone,  # type: ignore[attr-defined]
+    )
+
+    # 5. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 6. Enumerate the whole row set; bucketize in Python.
+        all_rows = list_api_keys(conn)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    paid, pending, suspended, complimentary = _bucketize_for_revenue(
+        all_rows, month_first=month_first
+    )
+
+    mrr = sum(row.price_monthly for row in paid)
+    projected = mrr + sum(row.price_monthly for row in pending)
+
+    # Stable display order for the complimentary list — same invariant
+    # the at-risk table uses (paid_until ASC, customer_name ASC,
+    # key_prefix ASC). Comp rows usually have NULL paid_until so this
+    # degenerates to customer_name ordering with key_prefix as the
+    # tertiary tie-break for one-customer-multiple-keys deterministic
+    # output.
+    complimentary_sorted = sorted(
+        complimentary,
+        key=lambda r: (r.paid_until or "", r.customer_name, r.key_prefix),
+    )
+
+    report = RevenueReport(
+        month_label=month_label,
+        month_iso=month_iso,
+        paid_count=len(paid),
+        pending_count=len(pending),
+        suspended_count=len(suspended),
+        complimentary_count=len(complimentary_sorted),
+        mrr=mrr,
+        projected=projected,
+        next_charge_date=next_charge.isoformat(),
+        complimentary_rows=tuple(complimentary_sorted),
+    )
+
+    # 7. Structured INFO log — PII-austere aggregate.
+    with contextlib.suppress(Exception):
+        _logger.info(
+            "Revenue report | month=%s | paid=%d | pending=%d | suspended=%d | "
+            "complimentary=%d | mrr=%.2f | projected=%.2f",
+            report.month_iso,
+            report.paid_count,
+            report.pending_count,
+            report.suspended_count,
+            report.complimentary_count,
+            report.mrr,
+            report.projected,
+        )
+
+    # 8. Branch on --format.
+    if format == "json":
+        _revenue_report_to_json(report)
+        return
+
+    all_empty = (
+        report.paid_count == 0
+        and report.pending_count == 0
+        and report.suspended_count == 0
+        and report.complimentary_count == 0
+    )
+    if all_empty:
+        render_empty_state([f"No keys to report for {report.month_label}."])
+        return
+
+    render_revenue_report(report)

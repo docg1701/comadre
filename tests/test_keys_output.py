@@ -14,6 +14,7 @@ import comadre.keys.cli.output as output_mod
 from comadre.keys.cli.output import (
     _reset_for_tests,
     _status_label,
+    render_at_risk_table,
     render_audit_tail,
     render_confirmation,
     render_customer_detail,
@@ -24,6 +25,7 @@ from comadre.keys.cli.output import (
     render_key_detail,
     render_key_list,
     render_key_panel,
+    render_revenue_report,
     render_show_json,
     stderr_console,
     stdout_console,
@@ -36,6 +38,7 @@ from comadre.keys.models import (
     CustomerListRow,
     IssuedKey,
     KeyDetailRow,
+    RevenueReport,
 )
 
 ANSI_ESCAPE = re.compile(r"\x1b\[")
@@ -439,6 +442,7 @@ class TestRenderKeyList:
                 paid_until=None,
                 created_at="2026-04-10T10:00:00Z",
                 last_used_at=None,
+                notes="",
             ),
             ApiKeyListRow(
                 id="key_01suspend000000000000000",
@@ -452,6 +456,7 @@ class TestRenderKeyList:
                 paid_until="2026-04-01",
                 created_at="2026-04-11T10:00:00Z",
                 last_used_at=None,
+                notes="",
             ),
             ApiKeyListRow(
                 id="key_01revoked00000000000000",
@@ -465,6 +470,7 @@ class TestRenderKeyList:
                 paid_until="2026-05-01",
                 created_at="2026-04-12T10:00:00Z",
                 last_used_at=None,
+                notes="",
             ),
             ApiKeyListRow(
                 id="key_01comp000000000000000000",
@@ -478,6 +484,7 @@ class TestRenderKeyList:
                 paid_until=None,
                 created_at="2026-04-13T10:00:00Z",
                 last_used_at=None,
+                notes="",
             ),
         ]
 
@@ -1033,3 +1040,187 @@ class TestContextBlockPaidUntilBranch:
         out = buf.getvalue()
         assert re.search(r"paid until:\s+\u2014 \(not applicable\)", out)
         assert "R$ 0,00 (bundled externally)" in out
+
+
+def _at_risk_row(
+    *,
+    key_prefix: str = "Pq_abc12",
+    customer_name: str = "Pedro Lopes",
+    paid_until: str = "2026-04-20",
+    price_monthly: float = 149.0,
+) -> ApiKeyListRow:
+    return ApiKeyListRow(
+        id=f"key_{key_prefix.lower()}0000000000000000000",
+        customer_id="cust_01abc",
+        customer_name=customer_name,
+        key_prefix=key_prefix,
+        status="active",
+        billing_mode="manual",
+        rate_limit_rpm=60,
+        price_monthly=price_monthly,
+        paid_until=paid_until,
+        created_at="2026-01-05T12:00:00Z",
+        last_used_at=None,
+        notes="",
+    )
+
+
+class TestRenderAtRiskTable:
+    def test_title_headers_and_footer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        rows = [
+            (_at_risk_row(key_prefix="Pq_abc12", paid_until="2026-04-20"), 2),
+            (
+                _at_risk_row(
+                    key_prefix="Mx_def34",
+                    customer_name="Marcos Silva",
+                    paid_until="2026-04-22",
+                ),
+                4,
+            ),
+        ]
+        render_at_risk_table(rows, window_days=5)
+        out = buf.getvalue()
+        assert "At-Risk Keys (next 5 days)" in out
+        headers = ("Prefix", "Customer", "Status", "Price", "Paid Until", "Days Left")
+        for header in headers:
+            assert header in out
+        assert "at-risk" in out
+        assert "2 keys found." in out
+
+    def test_days_left_computed_correctly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        rows = [
+            (_at_risk_row(key_prefix="D1______", paid_until="2026-04-19"), 1),
+            (_at_risk_row(key_prefix="D4______", paid_until="2026-04-22"), 4),
+        ]
+        render_at_risk_table(rows, window_days=5)
+        flat = re.sub(r"\s+", " ", buf.getvalue())
+        # Days-left column is right-justified whole numbers — assert both show up.
+        assert re.search(r"D1_+\s+.*\s+1\b", flat)
+        assert re.search(r"D4_+\s+.*\s+4\b", flat)
+
+    def test_price_formatting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        rows = [(_at_risk_row(price_monthly=1234.56), 3)]
+        render_at_risk_table(rows, window_days=7)
+        assert "R$ 1.234,56/month" in buf.getvalue()
+
+
+def _revenue_report(
+    *,
+    paid_count: int = 12,
+    pending_count: int = 2,
+    suspended_count: int = 0,
+    complimentary_rows: tuple[ApiKeyListRow, ...] = (),
+    mrr: float = 1788.0,
+    projected: float = 2086.0,
+) -> RevenueReport:
+    return RevenueReport(
+        month_label="May 2026",
+        month_iso="2026-05",
+        paid_count=paid_count,
+        pending_count=pending_count,
+        suspended_count=suspended_count,
+        complimentary_count=len(complimentary_rows),
+        mrr=mrr,
+        projected=projected,
+        next_charge_date="2026-06-05",
+        complimentary_rows=complimentary_rows,
+    )
+
+
+class TestRenderRevenueReport:
+    def test_panel_shape_and_totals(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        comp = _at_risk_row(
+            key_prefix="Cx_abc12",
+            customer_name="AgroBots",
+            paid_until="2099-01-01",
+        )
+        # Override notes for the complimentary row.
+        comp_with_notes = ApiKeyListRow(
+            id=comp.id,
+            customer_id=comp.customer_id,
+            customer_name=comp.customer_name,
+            key_prefix=comp.key_prefix,
+            status="active",
+            billing_mode="complimentary",
+            rate_limit_rpm=comp.rate_limit_rpm,
+            price_monthly=0.0,
+            paid_until=None,
+            created_at=comp.created_at,
+            last_used_at=comp.last_used_at,
+            notes="bundled R$ 850/mo",
+        )
+        report = _revenue_report(complimentary_rows=(comp_with_notes,))
+        render_revenue_report(report)
+        out = buf.getvalue()
+        assert "Revenue Report \u2014 May 2026" in out
+        for label in (
+            "Paid customers:",
+            "Pending:",
+            "Suspended (carry-over):",
+            "Complimentary:",
+            "Monthly recurring:",
+            "Projected (if all pay):",
+            "Next charge date:",
+            "Complimentary keys:",
+        ):
+            assert label in out, f"missing label {label!r}"
+        # pt-BR currency byte-identity.
+        assert "R$ 1.788,00" in out
+        assert "R$ 2.086,00" in out
+        assert "2026-06-05" in out
+        # Complimentary row line with its notes.
+        assert "Cx_abc12 (AgroBots)" in out
+        assert "bundled R$ 850/mo" in out
+
+    def test_no_complimentary_section_when_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        report = _revenue_report(complimentary_rows=())
+        render_revenue_report(report)
+        out = buf.getvalue()
+        assert "Complimentary keys:" not in out
+        # Counts block still renders.
+        assert "Paid customers:" in out
+
+    def test_markup_injection_guarded_in_complimentary_notes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        hostile = ApiKeyListRow(
+            id="key_01hostile0000000000000000",
+            customer_id="cust_01abc",
+            customer_name="EvilCorp",
+            key_prefix="Hx_abc12",
+            status="active",
+            billing_mode="complimentary",
+            rate_limit_rpm=60,
+            price_monthly=0.0,
+            paid_until=None,
+            created_at="2026-01-05T12:00:00Z",
+            last_used_at=None,
+            notes="[red]evil[/]",
+        )
+        report = _revenue_report(complimentary_rows=(hostile,))
+        render_revenue_report(report)
+        out = buf.getvalue()
+        # The literal markup must survive — no Rich interpretation.
+        assert "[red]evil[/]" in out

@@ -547,6 +547,7 @@ def _seed_api_key(
     price_monthly: float = 149.0,
     paid_until: str | None = None,
     created_at: str = "2026-04-16T12:00:00Z",
+    notes: str = "",
 ) -> str:
     key_id = generate_key_id()
     conn.execute(
@@ -567,7 +568,7 @@ def _seed_api_key(
             paid_until,
             created_at,
             None,
-            "",
+            notes,
         ),
     )
     conn.commit()
@@ -832,6 +833,48 @@ class TestListApiKeys:
             by_id = {r.id: r.customer_name for r in rows}
             assert by_id[ids["k_active_manual"]] == "Helena"
             assert by_id[ids["k_complimentary"]] == "Bruno"
+        finally:
+            conn.close()
+
+    def test_notes_surfaces_on_row(self, tmp_path: Path) -> None:
+        """Story 3.2 — ``notes`` now rides on the list row so the revenue
+        report can show complimentary-key notes without a second query."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer_with_time(
+                conn, name="AgroBots", registered_at="2026-04-10T10:00:00Z"
+            )
+            _seed_api_key(
+                conn,
+                customer_id=cid,
+                key_hash="e" * 64,
+                key_prefix="NOTESKEY",
+                billing_mode="complimentary",
+                price_monthly=0.0,
+                notes="bundled R$ 850/mo",
+            )
+            rows = list_api_keys(conn)
+            assert len(rows) == 1
+            assert rows[0].notes == "bundled R$ 850/mo"
+        finally:
+            conn.close()
+
+    def test_notes_defaults_to_empty_string(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            ids = self._seed_customers_and_keys(conn)
+            rows = list_api_keys(conn)
+            for row in rows:
+                assert row.notes == "", f"row {row.id} had notes={row.notes!r}"
+            expected_keys = (
+                "k_active_manual",
+                "k_suspended",
+                "k_revoked",
+                "k_complimentary",
+            )
+            assert {r.id for r in rows} == {ids[k] for k in expected_keys}
         finally:
             conn.close()
 

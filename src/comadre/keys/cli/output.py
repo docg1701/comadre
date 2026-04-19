@@ -17,6 +17,7 @@ from typing import Literal
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -31,6 +32,7 @@ from comadre.keys.models import (
     IssuedKey,
     KeyDetailRow,
     Last24hStats,
+    RevenueReport,
 )
 
 _stdout_console: Console | None = None
@@ -303,6 +305,144 @@ def render_key_list(title: str, rows: list[ApiKeyListRow]) -> None:
         )
     console.print(table)
     render_confirmation(f"{len(rows)} keys found.")
+
+
+def render_at_risk_table(
+    rows: list[tuple[ApiKeyListRow, int]],
+    window_days: int,
+) -> None:
+    """Story 3.2 UX-DR2 — StatusTable for ``at-risk`` with yellow badges.
+
+    Column order mirrors ``render_key_list`` but replaces the tail "Paid
+    Until" column with "Paid Until" + "Days Left" (right-justified signed
+    integer). Status cell is always ``Text("at-risk", style="yellow")``:
+    the at-risk set is a semantic overlay on active manual keys (the
+    underlying status is still ``active``), so the colored label here is
+    hard-coded rather than routed through ``_status_label``.
+
+    Callers must handle the empty case via ``render_empty_state``; this
+    renderer assumes ``rows`` is non-empty. Each entry is a
+    ``(row, days_left)`` pair where ``days_left`` is the signed integer
+    the caller already computed during filtering — the renderer does NOT
+    re-derive it from ``row.paid_until`` so the two surfaces can't drift.
+    """
+    console = stdout_console()
+    table = Table(title=f"At-Risk Keys (next {window_days} days)", expand=False)
+    table.add_column("Prefix", justify="left", no_wrap=True)
+    table.add_column("Customer", justify="left")
+    table.add_column("Status", justify="left")
+    table.add_column("Price", justify="right", no_wrap=True)
+    table.add_column("Paid Until", justify="left", no_wrap=True)
+    table.add_column("Days Left", justify="right", no_wrap=True)
+    for row, days_left in rows:
+        # Caller filters NULL paid_until; the renderer only runs on rows
+        # where the filter guarantees a non-NULL ISO date.
+        assert row.paid_until is not None
+        table.add_row(
+            row.key_prefix,
+            row.customer_name,
+            Text("at-risk", style="yellow"),
+            f"R$ {_format_brl(row.price_monthly)}/month",
+            _iso_date(row.paid_until),
+            str(days_left),
+        )
+    console.print(table)
+    render_confirmation(f"{len(rows)} keys found.")
+
+
+_REVENUE_REPORT_COUNT_LABELS: tuple[str, ...] = (
+    "Paid customers:",
+    "Pending:",
+    "Suspended (carry-over):",
+    "Complimentary:",
+)
+
+_REVENUE_REPORT_TOTAL_LABELS: tuple[str, ...] = (
+    "Monthly recurring:",
+    "Projected (if all pay):",
+    "Next charge date:",
+)
+
+
+def render_revenue_report(report: RevenueReport) -> None:
+    """Story 3.2 UX-DR4 — single-border Panel with count + totals + (opt) comp list.
+
+    Structure:
+        Count block → Rule() → totals block (bold on mrr + projected) →
+        [Rule() → complimentary listing] (only when ``complimentary_rows``
+        is non-empty). Panel title is ``Revenue Report — {month_label}``.
+
+    Rich markup is enabled on the panel so ``[bold]`` renders, but each
+    complimentary row line is emitted with ``markup=False, highlight=False``
+    at print time — the panel is assembled as a Rich ``Group`` rather than a
+    single markup string so operator-supplied ``notes`` cannot inject
+    arbitrary markup. Callers must short-circuit to ``render_empty_state``
+    when every bucket count is zero (the renderer assumes the portfolio is
+    non-trivial — any count > 0 is enough).
+    """
+    from rich.console import Group, RenderableType
+
+    # Column widths are derived from the longest label on each side of the
+    # Rule() so a future label rename does not drift the layout.
+    all_labels = (*_REVENUE_REPORT_COUNT_LABELS, *_REVENUE_REPORT_TOTAL_LABELS)
+    label_width = max(len(label) for label in all_labels)
+
+    counts = (
+        report.paid_count,
+        report.pending_count,
+        report.suspended_count,
+        report.complimentary_count,
+    )
+    count_lines = "\n".join(
+        f"{label.ljust(label_width)}  {value}"
+        for label, value in zip(_REVENUE_REPORT_COUNT_LABELS, counts, strict=True)
+    )
+
+    # Bold on the monetary totals only; label and prefix stay unbolded so
+    # triple-click selects a readable "R$ 1.643,00" segment.
+    totals_lines = "\n".join(
+        (
+            (
+                f"{_REVENUE_REPORT_TOTAL_LABELS[0].ljust(label_width)}  "
+                f"[bold]R$ {_format_brl(report.mrr)}[/bold]"
+            ),
+            (
+                f"{_REVENUE_REPORT_TOTAL_LABELS[1].ljust(label_width)}  "
+                f"[bold]R$ {_format_brl(report.projected)}[/bold]"
+            ),
+            (
+                f"{_REVENUE_REPORT_TOTAL_LABELS[2].ljust(label_width)}  "
+                f"{report.next_charge_date}"
+            ),
+        )
+    )
+
+    children: list[RenderableType] = [
+        Text(count_lines),
+        Rule(),
+        Text.from_markup(totals_lines),
+    ]
+
+    if report.complimentary_rows:
+        children.append(Rule())
+        children.append(Text("Complimentary keys:"))
+        for row in report.complimentary_rows:
+            # Operator-supplied ``notes`` is untrusted — render as plain
+            # Text() (no markup parse) so a value like ``[red]evil[/]`` is
+            # displayed literally instead of restyling the panel.
+            notes = row.notes if row.notes else "\u2014"
+            children.append(
+                Text(f"  {row.key_prefix} ({row.customer_name}) \u2014 {notes}")
+            )
+
+    stdout_console().print(
+        Panel(
+            Group(*children),
+            title=f"Revenue Report \u2014 {report.month_label}",
+            box=box.ROUNDED,
+            expand=False,
+        )
+    )
 
 
 def render_json(payload: list[dict[str, object]]) -> None:

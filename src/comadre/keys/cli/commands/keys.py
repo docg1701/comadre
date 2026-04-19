@@ -451,6 +451,7 @@ def _key_row_to_json(row: ApiKeyListRow) -> dict[str, object]:
         "paid_until": row.paid_until,
         "created_at": row.created_at,
         "last_used_at": row.last_used_at,
+        "notes": row.notes,
     }
 
 

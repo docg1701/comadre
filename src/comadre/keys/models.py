@@ -107,6 +107,11 @@ class ApiKeyListRow:
     ``customer_name`` is joined in so the renderer doesn't issue a second
     query per row. ``key_hash`` is deliberately NOT carried — list output
     never exposes the hash (FR37 anti-enumeration).
+
+    ``notes`` is included so the Story 3.2 ``revenue`` report can list a
+    complimentary key's bundled context without issuing a second query
+    per row. The Story 1.3 ``list-keys`` table output does not render
+    this column (width budget); the ``--format json`` path does emit it.
     """
 
     id: str
@@ -120,6 +125,7 @@ class ApiKeyListRow:
     paid_until: str | None
     created_at: str
     last_used_at: str | None
+    notes: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +231,30 @@ class Last24hStats:
     snapshot_age_seconds: int
     process_uptime_seconds: int
     replicas: int
+
+
+@dataclass(frozen=True, slots=True)
+class RevenueReport:
+    """Aggregated monthly revenue payload for ``revenue_cmd`` (Story 3.2).
+
+    ``mrr`` counts only **paid** manual-mode revenue for the reporting
+    month. ``projected`` counts paid + pending (paid + "still billable").
+    Complimentary rows are carried separately and NEVER summed into any
+    total — FR17 hard requirement. ``month_iso`` is the stable
+    ``YYYY-MM`` key JSON consumers parse; ``month_label`` is the human
+    label (English per the project's language policy).
+    """
+
+    month_label: str
+    month_iso: str
+    paid_count: int
+    pending_count: int
+    suspended_count: int
+    complimentary_count: int
+    mrr: float
+    projected: float
+    next_charge_date: str
+    complimentary_rows: tuple[ApiKeyListRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
