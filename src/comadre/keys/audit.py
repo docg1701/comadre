@@ -69,12 +69,19 @@ def log_event(
     target_type: str | None,
     target_id: str | None,
     details: dict[str, object] | None = None,
+    occurred_at: str | None = None,
 ) -> None:
     """Append one row to `audit_log` using the caller's transaction.
 
     `details` is serialized with `sort_keys=True` for deterministic test
     assertions. Forbidden keys (case-insensitive, including nested dicts)
     raise `ValueError` — callers should never pass them.
+
+    `occurred_at` lets callers pin the timestamp string rather than letting
+    the helper sample the clock. The suspension sweep (Story 3.3) pins it so
+    the returned `completed_at` has byte-identity with the summary row's
+    `occurred_at` (AC3). All other call sites pass `None` and accept the
+    helper's `_utcnow_iso()` default.
     """
     details_json: str | None
     if details is None:
@@ -87,5 +94,12 @@ def log_event(
         "INSERT INTO audit_log ("
         "occurred_at, actor, action, target_type, target_id, details_json"
         ") VALUES (?, ?, ?, ?, ?, ?)",
-        (_utcnow_iso(), actor, action, target_type, target_id, details_json),
+        (
+            occurred_at if occurred_at is not None else _utcnow_iso(),
+            actor,
+            action,
+            target_type,
+            target_id,
+            details_json,
+        ),
     )

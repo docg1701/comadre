@@ -11,7 +11,7 @@ NO_COLOR compliance — rich respects the env var automatically. We do NOT set
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from rich import box
@@ -336,8 +336,10 @@ def render_at_risk_table(
     table.add_column("Days Left", justify="right", no_wrap=True)
     for row, days_left in rows:
         # Caller filters NULL paid_until; the renderer only runs on rows
-        # where the filter guarantees a non-NULL ISO date.
-        assert row.paid_until is not None
+        # where the filter guarantees a non-NULL ISO date. Runtime guard
+        # (not ``assert``) so ``python -O`` doesn't strip the check.
+        if row.paid_until is None:
+            continue
         table.add_row(
             row.key_prefix,
             row.customer_name,
@@ -348,6 +350,51 @@ def render_at_risk_table(
         )
     console.print(table)
     render_confirmation(f"{len(rows)} keys found.")
+
+
+def render_suspend_sweep_preview(
+    rows: list[ApiKeyListRow],
+    cutoff_date: date,
+) -> None:
+    """Story 3.3 UX-DR2 — StatusTable preview for ``suspend-sweep --dry-run``.
+
+    Column order mirrors ``render_at_risk_table`` minus the look-ahead
+    ``Days Left`` column — dry-run rows are already past cutoff, so the
+    column would read negative-days-overdue and only clutter the eye.
+    Status cell is always ``Text("to-suspend", style="yellow")``: the
+    would-be-suspended set is a semantic overlay on ``active`` rows, so
+    the colored label is hard-coded rather than routed through
+    ``_status_label``.
+
+    Callers must handle the empty case via ``render_empty_state``; this
+    renderer assumes ``rows`` is non-empty.
+    """
+    console = stdout_console()
+    table = Table(
+        title=f"Dry-run preview: keys to suspend at cutoff {cutoff_date.isoformat()}",
+        expand=False,
+    )
+    table.add_column("Prefix", justify="left", no_wrap=True)
+    table.add_column("Customer", justify="left")
+    table.add_column("Status", justify="left")
+    table.add_column("Price", justify="right", no_wrap=True)
+    table.add_column("Paid Until", justify="left", no_wrap=True)
+    for row in rows:
+        # Caller filters NULL paid_until before calling this renderer.
+        # Runtime guard (not ``assert``) so ``python -O`` doesn't strip it.
+        if row.paid_until is None:
+            continue
+        table.add_row(
+            row.key_prefix,
+            Text(row.customer_name),
+            Text("to-suspend", style="yellow"),
+            f"R$ {_format_brl(row.price_monthly)}/month",
+            _iso_date(row.paid_until),
+        )
+    console.print(table)
+    render_confirmation(
+        f"{len(rows)} key(s) would be suspended. Run without --dry-run to proceed."
+    )
 
 
 _REVENUE_REPORT_COUNT_LABELS: tuple[str, ...] = (

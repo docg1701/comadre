@@ -305,6 +305,28 @@
           -mmin +1440 -delete 2>/dev/null
           || logger -t comadre-cleanup 'audio cleanup failed — service may be down'
 
+    - name: "[Cron] Set CRON_TZ for billing-aware schedules"
+      ansible.builtin.cron:
+        name: "CRON_TZ"
+        env: true
+        value: "{{ billing_timezone | default('UTC') }}"
+
+    - name: "[Cron] Configure daily suspension sweep at 00:30 operator TZ"
+      ansible.builtin.cron:
+        name: "comadre-daily-suspension"
+        minute: "30"
+        hour: "0"
+        # /bin/bash -c + ``set -o pipefail`` so ``cmd | logger`` preserves the
+        # sweep's exit code (5 = DB error, 6 = config error). Cron's default
+        # POSIX /bin/sh pipeline returns the last-stage status (logger → 0),
+        # which would mask every sweep failure from cron's MTA. pipefail is a
+        # bash-ism — invoking /bin/bash explicitly is load-bearing.
+        job: >-
+          /bin/bash -c 'set -o pipefail;
+          cd ~/comadre &&
+          docker compose exec -T tts-service comadre-keys suspend-sweep 2>&1 |
+          logger -t comadre-suspension-sweep'
+
     # =========================================================================
     # Health Check
     # =========================================================================
@@ -339,6 +361,7 @@
           Voice Count:     {{ hc.voices | default([]) | length }}
           HTTPS URL:       https://{{ ansible_host }}
           UFW:             Active (22, 80, 443)
+          Suspension sweep: 00:30 {{ billing_timezone | default('UTC') }} (cron, zero-touch)
 
           Next steps — issue a customer API key from the host:
             docker compose exec tts-service comadre-keys register-customer \

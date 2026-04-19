@@ -37,6 +37,17 @@ all:
     # Daily restart hour (0-23)
     restart_hour: 3
 
+    # IANA timezone the daily suspension sweep (00:30 local) runs in. MUST match
+    # the BILLING_TIMEZONE env var in .env — drift between the two silently
+    # shifts the sweep's "today" computation relative to the cron schedule.
+    #
+    # Default UTC for operator-neutral, internationally predictable billing.
+    # Override to a local zone (e.g. "America/Sao_Paulo") only when you have
+    # contractually informed customers that their paid_until day-turnover is
+    # interpreted in that specific zone — changing this value after customers
+    # are onboarded shifts when their keys flip to 401 on the billing day.
+    billing_timezone: "UTC"
+
     # Kokoro model download URLs (auto-download on first startup)
     kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
     kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"

@@ -27,6 +27,7 @@ from comadre.keys.cli.output import (
     render_key_panel,
     render_revenue_report,
     render_show_json,
+    render_suspend_sweep_preview,
     stderr_console,
     stdout_console,
 )
@@ -1223,4 +1224,57 @@ class TestRenderRevenueReport:
         render_revenue_report(report)
         out = buf.getvalue()
         # The literal markup must survive — no Rich interpretation.
+        assert "[red]evil[/]" in out
+
+
+class TestRenderSuspendSweepPreview:
+    def test_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Story 3.3 AC7 — title, columns, yellow to-suspend badge, footer."""
+        from datetime import date
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        rows = [
+            _at_risk_row(key_prefix="Pq_abc12", paid_until="2026-04-04"),
+            _at_risk_row(
+                key_prefix="Mx_def34",
+                customer_name="Marcos Silva",
+                paid_until="2026-04-05",
+            ),
+        ]
+        render_suspend_sweep_preview(rows, cutoff_date=date(2026, 4, 6))
+        out = buf.getvalue()
+        assert "Dry-run preview: keys to suspend at cutoff 2026-04-06" in out
+        for header in ("Prefix", "Customer", "Status", "Price", "Paid Until"):
+            assert header in out
+        assert "to-suspend" in out
+        # Absence check: preview drops the look-ahead column.
+        assert "Days Left" not in out
+        assert "2 key(s) would be suspended. Run without --dry-run to proceed." in out
+
+    def test_markup_injection_guarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Operator-supplied ``customer_name`` must not be interpreted as markup."""
+        from datetime import date
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        hostile = ApiKeyListRow(
+            id="key_01hostile0000000000000000",
+            customer_id="cust_01abc",
+            customer_name="[red]evil[/]",
+            key_prefix="Hx_abc12",
+            status="active",
+            billing_mode="manual",
+            rate_limit_rpm=60,
+            price_monthly=149.0,
+            paid_until="2026-04-04",
+            created_at="2026-01-05T12:00:00Z",
+            last_used_at=None,
+            notes="",
+        )
+        render_suspend_sweep_preview([hostile], cutoff_date=date(2026, 4, 6))
+        out = buf.getvalue()
+        # The literal markup survives — no Rich interpretation.
         assert "[red]evil[/]" in out

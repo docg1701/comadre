@@ -134,9 +134,16 @@ class Settings(BaseSettings):
         description="Day-of-month for billing sweeps (1-28 to avoid month-end).",
     )
     billing_timezone: str = Field(
-        default="America/Sao_Paulo",
+        default="UTC",
         min_length=1,
-        description="IANA timezone for billing calculations.",
+        description=(
+            "IANA timezone used for billing-day calculations and the daily "
+            "suspension sweep's day-boundary. Default UTC for operator-neutral "
+            "predictability across international deployments; override per "
+            "deployment (e.g. America/Sao_Paulo) and communicate the chosen "
+            "zone to customers contractually since it governs when paid_until "
+            "expires and API keys flip to 401."
+        ),
     )
 
     @field_validator(

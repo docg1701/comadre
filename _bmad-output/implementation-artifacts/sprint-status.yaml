@@ -1,5 +1,5 @@
 # generated: 2026-04-16
-# last_updated: 2026-04-19 (story 3.2 → done, all review patches applied)
+# last_updated: 2026-04-19 (story 3.3 → done; code review applied 11 patches + UTC default flip)
 # project: comadre
 # project_key: NOKEY
 # tracking_system: file-system
@@ -82,7 +82,7 @@ development_status:
   epic-3: in-progress
   3-1-payment-tracking-mark-paid-suspend-reactivate: done
   3-2-at-risk-queries-revenue-reports: done
-  3-3-automated-suspension-sweep-cron: backlog
+  3-3-automated-suspension-sweep-cron: done
   3-4-system-health-command: backlog
   epic-3-retrospective: optional
 

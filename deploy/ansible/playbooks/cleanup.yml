@@ -63,6 +63,17 @@
         name: "comadre-audio-cleanup"
         state: absent
 
+    - name: "[Cron] Remove daily suspension sweep"
+      ansible.builtin.cron:
+        name: "comadre-daily-suspension"
+        state: absent
+
+    - name: "[Cron] Remove CRON_TZ envvar"
+      ansible.builtin.cron:
+        name: "CRON_TZ"
+        env: true
+        state: absent
+
     # =========================================================================
     # Remove Project Directory
     # =========================================================================
@@ -206,7 +217,7 @@
             ✓ Containers stopped and removed (tts-service replicas, caddy)
             ✓ Docker volumes removed (models, voices, audio, caddy-data, caddy-config)
             ✓ Docker images and build cache pruned
-            ✓ Cron jobs removed (daily-restart, audio-cleanup)
+            ✓ Cron jobs removed (daily-restart, audio-cleanup, daily-suspension, CRON_TZ)
             ✓ ~/comadre directory removed
 
           System-level components uninstalled:

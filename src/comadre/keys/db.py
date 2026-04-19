@@ -129,6 +129,27 @@ class SuspendKeyResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SuspensionSweepResult:
+    """Return payload from ``run_suspension_sweep``.
+
+    ``swept_key_ids`` is the full list of ``api_key.id`` values that flipped
+    from ``active`` to ``suspended``. ``swept_count`` is ``len(swept_key_ids)``
+    exposed separately so the CLI can log a count without materializing the
+    tuple. ``completed_at`` is the canonical ISO-UTC timestamp
+    (``%Y-%m-%dT%H:%M:%SZ``) the sweep wrote on its summary audit row —
+    returned so the CLI's ConfirmationLine shows the same timestamp that the
+    ``health`` command (Story 3.4) will later read from the audit log.
+    ``cutoff_date`` is the ``today`` the caller passed, echoed back so the
+    CLI can render it verbatim without re-parsing.
+    """
+
+    swept_key_ids: tuple[str, ...]
+    swept_count: int
+    completed_at: str
+    cutoff_date: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReactivateKeyResult:
     """Return payload from ``reactivate_key`` — refreshed ``KeyDetailRow`` only."""
 
@@ -1363,3 +1384,120 @@ def reactivate_key(
     if refreshed is None:
         raise RuntimeError(f"reactivate_key: row vanished after commit for {key_id!r}")
     return ReactivateKeyResult(key=refreshed)
+
+
+def run_suspension_sweep(
+    conn: sqlite3.Connection,
+    *,
+    today: date,
+    actor: str = "cron:suspension-sweep",
+) -> SuspensionSweepResult:
+    """Bulk-suspend manual-mode keys whose ``paid_until`` has elapsed (FR18).
+
+    Single-transaction sweep: one ``UPDATE api_key ... RETURNING`` over the
+    ``idx_api_key_sweep`` partial index, one ``log_event`` call per swept
+    row, and exactly one ``cron_suspend`` summary audit row — even on a
+    zero-row sweep, because FR43 requires the timestamp to be queryable
+    regardless of effect.
+
+    Predicate: ``billing_mode='manual' AND status='active'
+    AND paid_until IS NOT NULL AND paid_until < today``. Complimentary keys
+    and trial-window (NULL ``paid_until``) keys are therefore never touched.
+    Strict ``<`` matches FR18 — a key with ``paid_until == today`` is still
+    paid through today; the sweep catches it on the next morning.
+
+    ``actor`` defaults to the canonical ``cron:suspension-sweep`` string
+    because the audit trail names the *behavior*, not the triggering
+    identity (a human running this CLI manually is recovering from a failed
+    cron — the audit should read identically). Test fixtures override the
+    default to disambiguate seeded rows.
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE, per-key audit rows, and the summary row
+    either all commit or all roll back. Requires SQLite >= 3.35 for
+    ``UPDATE ... RETURNING`` (Python 3.11+ ships 3.37+).
+    """
+    from comadre.keys.audit import log_event
+
+    today_iso = today.isoformat()
+
+    with conn:
+        cursor = conn.execute(
+            "UPDATE api_key "
+            "SET status = 'suspended' "
+            "WHERE billing_mode = 'manual' "
+            "  AND status = 'active' "
+            "  AND paid_until IS NOT NULL "
+            "  AND paid_until < ? "
+            "RETURNING id, paid_until",
+            (today_iso,),
+        )
+        swept_rows = cursor.fetchall()
+        swept_key_ids = tuple(row["id"] for row in swept_rows)
+        swept_count = len(swept_key_ids)
+
+        # Sample once *after* the UPDATE so ``completed_at`` reflects the
+        # moment the state change became effective, then pin the same
+        # timestamp on every audit row the sweep writes. Sharing one
+        # ``occurred_at`` across per-key + summary rows keeps the sweep
+        # coherent as a single atomic event for forensic queries — ordering
+        # by (occurred_at, id) matches insertion order instead of
+        # interleaving the summary before its own detail rows.
+        completed_at = _utcnow_iso()
+
+        for row in swept_rows:
+            log_event(
+                conn,
+                actor=actor,
+                action="suspend_key",
+                target_type="api_key",
+                target_id=row["id"],
+                details={"paid_until": row["paid_until"], "cutoff_date": today_iso},
+                occurred_at=completed_at,
+            )
+
+        log_event(
+            conn,
+            actor=actor,
+            action="cron_suspend",
+            target_type="system",
+            target_id=None,
+            details={"swept_count": swept_count, "cutoff_date": today_iso},
+            occurred_at=completed_at,
+        )
+
+    _touch_auth_cache_sentinel(conn)
+
+    return SuspensionSweepResult(
+        swept_key_ids=swept_key_ids,
+        swept_count=swept_count,
+        completed_at=completed_at,
+        cutoff_date=today_iso,
+    )
+
+
+def get_last_sweep_timestamp(conn: sqlite3.Connection) -> str | None:
+    """Return the ISO-UTC timestamp of the most-recent completed suspension sweep.
+
+    Reads ``MAX(occurred_at)`` over ``audit_log`` rows with
+    ``action='cron_suspend' AND target_type='system'``. Returns ``None`` on
+    a fresh DB where the sweep has never run. Consumed by Story 3.4's
+    ``health`` command for FR43.
+
+    The compound predicate (action + target_type) guards against future
+    action-name collisions — if some later story introduces a per-key
+    ``cron_suspend`` audit row with ``target_type='api_key'``, the summary
+    row is still uniquely selected here.
+    """
+    # ORDER BY (occurred_at, id) DESC instead of MAX(occurred_at) so same-second
+    # ties break deterministically by insertion order. ``_utcnow_iso`` has
+    # second resolution; two sweeps in the same wall-second (manual + cron
+    # collision at 00:30:05) would otherwise produce an arbitrary winner.
+    row = conn.execute(
+        "SELECT occurred_at AS last_at FROM audit_log "
+        "WHERE action = 'cron_suspend' AND target_type = 'system' "
+        "ORDER BY occurred_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if row is None or row["last_at"] is None:
+        return None
+    return cast(str, row["last_at"])

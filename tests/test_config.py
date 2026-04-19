@@ -273,7 +273,7 @@ class TestRegistrySettings:
     ) -> None:
         monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
         settings = Settings()
-        assert settings.billing_timezone == "America/Sao_Paulo"
+        assert settings.billing_timezone == "UTC"
 
     def test_encryption_key_missing_rejected(
         self, monkeypatch: pytest.MonkeyPatch

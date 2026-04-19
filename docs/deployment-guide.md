@@ -39,7 +39,7 @@ all:
   vars:
     key_registry_encryption_key: "{{ lookup('env', 'KEY_REGISTRY_ENCRYPTION_KEY') }}"
     operator_contact_hint: "Contact ops@example.com for billing."
-    billing_timezone: "America/Sao_Paulo"
+    billing_timezone: "UTC"
     voices_local_dir: ""
     repo_url: "YOUR_REPO_URL"
     repo_branch: "master"
@@ -66,7 +66,7 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `ansible_user` | Yes | SSH user with key-based auth |
 | `key_registry_encryption_key` | Yes | Fernet key for encrypting tax IDs at rest (reads from `KEY_REGISTRY_ENCRYPTION_KEY` env var on the control machine). Maps to the `KEY_REGISTRY_ENCRYPTION_KEY` env var inside the container. |
 | `operator_contact_hint` | No | Customer-facing contact string echoed in 401 hints. Maps to `OPERATOR_CONTACT_HINT`. |
-| `billing_timezone` | No | IANA timezone for billing calculations (default: `America/Sao_Paulo`). Maps to `BILLING_TIMEZONE`. |
+| `billing_timezone` | No | IANA timezone for billing calculations and the daily suspension sweep day-boundary (default: `UTC`). Maps to `BILLING_TIMEZONE`. **This is a contractual input** — the zone you set here dictates when a customer's `paid_until` expires and their key flips to 401; communicate it formally to customers at contract time. Override to a local zone (e.g. `America/Sao_Paulo`) only when you have informed them. |
 | `repo_url` | Yes | Git repository URL |
 | `repo_branch` | No | Branch to deploy (default: `master`) |
 | `default_voice` | No | Default voice for TTS when none specified (default: `kokoro/pm_santa`) |

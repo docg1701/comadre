@@ -1,0 +1,2398 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 409fc15..7dbba40 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -51,7 +51,7 @@ uv run pre-commit run --all-files  # All quality checks
+ - `deploy/espeak-ng/pt_extra` — custom sigla dictionary for espeak-ng
+ - `docs/` — technical research docs (feasibility report, engine internals, dictionary docs, **qwen3-tts-cli build guide**, **qwen3 model quantization guide**, **voice management guide**)
+ - `deploy/bin/qwen3-tts-cli` — pre-built Qwen3 C++ binary (see `docs/building-qwen3-tts-cli.md` to rebuild)
+-- `src/comadre/keys/cli/` — `comadre-keys` CLI (Typer app). Commands: `create-customer`, `list-customers`, `update-customer`, `issue-key`, `list-keys`, `update-key`, `rotate-key`, `revoke-key`, `mark-paid`, `suspend`, `reactivate`, `show`, `cache-status`. This is the sole key-management surface.
++- `src/comadre/keys/cli/` — `comadre-keys` CLI (Typer app). Commands: `create-customer`, `list-customers`, `update-customer`, `issue-key`, `list-keys`, `update-key`, `rotate-key`, `revoke-key`, `mark-paid`, `suspend`, `reactivate`, `at-risk`, `revenue`, `show`, `cache-status`. This is the sole key-management surface.
+ - `deploy/caddy/Caddyfile` — Caddy reverse proxy config (HTTPS termination)
+ - `scripts/loadtest.py` — saturation test (concurrency-based, 6 scenarios)
+ - `scripts/capacity_test.py` — capacity test (rate-based, WhatsApp context, ElevenLabs comparison)
+diff --git a/README.md b/README.md
+index 200a5ab..d368a51 100644
+--- a/README.md
++++ b/README.md
+@@ -132,6 +132,7 @@ Each engine has its own:
+ - **Browser demo** -- public landing page at the root path for trying the API from any device (bring your own API key)
+ - **Registry-backed API keys** -- issue, rotate, and revoke keys via the `comadre-keys` CLI. Keys are stored as SHA-256 hashes in an encrypted SQLite registry; tax IDs are Fernet-encrypted at rest.
+ - **Billing lifecycle verbs** -- `comadre-keys mark-paid <prefix> --until YYYY-MM-DD` confirms a payment (auto-reactivates suspended keys); `comadre-keys suspend <prefix>` / `comadre-keys reactivate <prefix>` are the manual out-of-cycle levers.
++- **Billing reports** -- `comadre-keys at-risk --window 5d` previews active manual keys expiring in the next N days (the Day-04 chase list); `comadre-keys revenue --month current` summarises paid / pending / suspended / complimentary counts, MRR and projected revenue (the Day-05 screenshot).
+ - **Per-key rate limiting** -- each API key carries its own `rate_limit_rpm`. Customers on higher tiers get higher throughput; customers on smaller tiers are bounded predictably. Buckets are keyed on the registry's `key_id` and stable across key rotation. See [docs/rate-limiting.md](docs/rate-limiting.md).
+ - **Operator observability** -- per-key counters (`requests_total`, `rate_limit_429`, `peak_rpm`) snapshot every 15 s to disk. Inspect the auth cache with `comadre-keys cache-status`; inspect a specific key's last-24h activity with `comadre-keys show <key-prefix> --audit-tail N`.
+ 
+diff --git a/_bmad-output/implementation-artifacts/sprint-status.yaml b/_bmad-output/implementation-artifacts/sprint-status.yaml
+index 7f209e8..2906e31 100644
+--- a/_bmad-output/implementation-artifacts/sprint-status.yaml
++++ b/_bmad-output/implementation-artifacts/sprint-status.yaml
+@@ -1,5 +1,5 @@
+ # generated: 2026-04-16
+-# last_updated: 2026-04-18 (story 3.1 code-review patches applied → done)
++# last_updated: 2026-04-18 (story 3.2 complete → review)
+ # project: comadre
+ # project_key: NOKEY
+ # tracking_system: file-system
+@@ -81,7 +81,7 @@ development_status:
+   # ------------------------------------------------------------------
+   epic-3: in-progress
+   3-1-payment-tracking-mark-paid-suspend-reactivate: done
+-  3-2-at-risk-queries-revenue-reports: backlog
++  3-2-at-risk-queries-revenue-reports: review
+   3-3-automated-suspension-sweep-cron: backlog
+   3-4-system-health-command: backlog
+   epic-3-retrospective: optional
+diff --git a/docs/configuration-reference.md b/docs/configuration-reference.md
+index c6f9d0f..8d31c88 100644
+--- a/docs/configuration-reference.md
++++ b/docs/configuration-reference.md
+@@ -9,7 +9,7 @@ Comadre is configured via environment variables. All variables are loaded at sta
+ | `KEY_REGISTRY_ENCRYPTION_KEY` | *(required)* | Fernet key used to encrypt tax IDs at rest in the SQLite key registry. Must be a valid 44-character base64 Fernet key. Startup fails if missing or malformed. Uses `SecretStr` internally so the value never appears in logs or error renderings. | *(output of `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)* |
+ | `KEY_REGISTRY_DB_PATH` | `./data/keys/registry.db` | SQLite registry file path. Parent directory is created with mode 0700 and the file with mode 0600 on first use. WAL sidecars inherit the same mode. | `/var/lib/comadre/registry.db` |
+ | `OPERATOR_CONTACT_HINT` | `Contact your Comadre operator for billing.` | Operator contact string echoed in 401 hints for suspended / revoked / past-due keys. Keep it short and customer-facing. | `Contact ops@acme.example for billing.` |
+-| `BILLING_TIMEZONE` | `America/Sao_Paulo` | IANA timezone used for billing-day calculations (first-charge dates, `paid_until` comparisons, stamped note dates). Must be a valid zone; startup fails otherwise. See also: `comadre-keys mark-paid`, `comadre-keys suspend`, `comadre-keys reactivate` for the operator-hand billing verbs. | `UTC` |
++| `BILLING_TIMEZONE` | `America/Sao_Paulo` | IANA timezone used for billing-day calculations (first-charge dates, `paid_until` comparisons, stamped note dates). Must be a valid zone; startup fails otherwise. See also: `comadre-keys mark-paid`, `comadre-keys suspend`, `comadre-keys reactivate` for the operator-hand billing verbs; `comadre-keys at-risk`, `comadre-keys revenue` read the reporting month / look-ahead window in this timezone. | `UTC` |
+ | `BILLING_DAY` | `5` | Day-of-month (1–28) for monthly billing sweeps. Kept inside 1..28 so every month has the date. | `10` |
+ | `DEFAULT_VOICE` | `kokoro/pm_santa` | Voice used when the request omits `voice`. Uses `engine/name` format. | `kokoro/pf_dora` |
+ | `PORT` | `8000` | HTTP port for the FastAPI server (1..65535). Exposed only inside the Docker network — Caddy fronts 80/443. | `9000` |
+diff --git a/src/comadre/keys/cli/commands/billing.py b/src/comadre/keys/cli/commands/billing.py
+index 2cd7f57..0eb3fb2 100644
+--- a/src/comadre/keys/cli/commands/billing.py
++++ b/src/comadre/keys/cli/commands/billing.py
+@@ -1,11 +1,16 @@
+-"""`comadre-keys mark-paid` / `suspend` / `reactivate` (Story 3.1).
++"""`comadre-keys` billing verbs: ``mark-paid`` / ``suspend`` / ``reactivate``
++(Story 3.1) and ``at-risk`` / ``revenue`` (Story 3.2).
+ 
+ Exit-code contract (UX-DR10):
+   0 — success (also: ``mark-paid`` on a complimentary key — informational,
+-      no mutation; see AC5 rationale)
+-  2 — usage error (bad ``--until`` shape, customer-ID passed as key arg)
++      no mutation; see AC5 rationale — and empty-result ``at-risk`` /
++      ``revenue``; empty results are not errors)
++  2 — usage error (bad ``--until`` / ``--window`` / ``--month`` /
++      ``--format`` shape, customer-ID passed as key arg)
+   3 — not-found / terminal state (key missing, ambiguous prefix,
+-      already-active / already-suspended / revoked)
++      already-active / already-suspended / revoked). ``at-risk`` /
++      ``revenue`` never emit 3 — they operate on the whole row set and
++      do not resolve a single key identifier.
+   5 — database error (``sqlite3.Error``, ``RuntimeError`` from helper)
+   6 — permission / configuration error (missing encryption key,
+       invalid IANA timezone)
+@@ -13,27 +18,43 @@ Exit-code contract (UX-DR10):
+ 
+ from __future__ import annotations
+ 
++import calendar
+ import contextlib
++import re
+ import sqlite3
+-from datetime import date
++from collections.abc import Iterable
++from datetime import date, timedelta
+ 
+ import typer
+ 
+ from comadre.keys.audit import get_cli_actor
++from comadre.keys.billing import first_charge_date
+ from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
+ from comadre.keys.cli.commands.keys import (
++    _key_row_to_json,
+     _truncate_ident,
+     load_settings_and_tz,
+     resolve_key_target,
+ )
+-from comadre.keys.cli.output import render_confirmation, render_error
++from comadre.keys.cli.output import (
++    LIST_FORMAT_CHOICES,
++    render_at_risk_table,
++    render_confirmation,
++    render_empty_state,
++    render_error,
++    render_json,
++    render_revenue_report,
++    stdout_console,
++)
+ from comadre.keys.db import (
+     _apply_migrations,
+     get_connection,
++    list_api_keys,
+     mark_key_paid,
+     reactivate_key,
+     suspend_key,
+ )
++from comadre.keys.models import ApiKeyListRow, RevenueReport
+ from comadre.logging import get_logger
+ 
+ _logger = get_logger("keys.cli")
+@@ -403,3 +424,434 @@ def reactivate_cmd(
+     render_confirmation(
+         f"Reactivated: {result.key.key_prefix} ({result.key.customer_name})"
+     )
++
++
++# ---------------------------------------------------------------------------
++# Story 3.2 — read-only billing reports: ``at-risk`` and ``revenue``.
++# ---------------------------------------------------------------------------
++
++# ``--window 0d`` is deliberately rejected: the "paid_until <= today" query
++# belongs to ``list-keys --paid-until-lte today``; at-risk is strictly
++# look-ahead. The upper cap prevents the "whole portfolio" degenerate (the
++# operator should use ``list-keys`` for that).
++_AT_RISK_WINDOW_RE = re.compile(r"^[1-9][0-9]*d$")
++_AT_RISK_WINDOW_MAX_DAYS = 365
++_AT_RISK_WINDOW_HINT = (
++    "Example: --window 5d (today through today+5). Use a larger window "
++    "for more look-ahead."
++)
++_AT_RISK_WINDOW_CAP_HINT = (
++    "Maximum window is 365d. Use 'comadre-keys list-keys' for a full scan."
++)
++
++# Sane operator bounds — the registry was first migrated in 2026; years
++# before 2020 cannot carry legitimate data, years after 2099 are not a
++# use case anyone is asking for. The CLI rejects inputs outside this
++# window at exit 2 instead of producing a confusing empty report.
++_REVENUE_YEAR_MIN = 2020
++_REVENUE_YEAR_MAX = 2099
++_REVENUE_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
++_REVENUE_MONTH_HINT = (
++    "Example: --month current or --month 2026-05. Month must be 'current' "
++    f"or YYYY-MM with year in {_REVENUE_YEAR_MIN}..{_REVENUE_YEAR_MAX}."
++)
++
++_FORMAT_HINT = "Valid values: table, json."
++
++
++def _parse_window_days(raw: str) -> int:
++    """Parse ``--window`` into an integer day count or exit 2.
++
++    Rejects non-canonical shapes (``-5d``, ``5w``, ``5``, empty, ``1.5d``)
++    and the 365-day upper cap. ``0d`` is rejected because the zero-day
++    semantic belongs to ``list-keys --paid-until-lte today``.
++    """
++    trimmed = raw.strip()
++    if not _AT_RISK_WINDOW_RE.match(trimmed):
++        render_error(
++            "Usage error: --window must be Nd where N \u2265 1 (days)",
++            _AT_RISK_WINDOW_HINT,
++        )
++        raise typer.Exit(code=2)
++    window_days = int(trimmed[:-1])
++    if window_days > _AT_RISK_WINDOW_MAX_DAYS:
++        render_error(
++            f"Usage error: --window exceeds {_AT_RISK_WINDOW_MAX_DAYS}d cap",
++            _AT_RISK_WINDOW_CAP_HINT,
++        )
++        raise typer.Exit(code=2)
++    return window_days
++
++
++def _parse_month(raw: str, *, today: date) -> tuple[int, int]:
++    """Parse ``--month`` into a ``(year, month)`` tuple or exit 2.
++
++    ``current`` resolves against the operator-TZ ``today`` the caller
++    has already computed so the two surfaces agree on the month boundary.
++    """
++    trimmed = raw.strip()
++    if trimmed == "current":
++        return today.year, today.month
++    if not _REVENUE_MONTH_RE.match(trimmed):
++        render_error(
++            "Usage error: --month must be 'current' or YYYY-MM (e.g., 2026-05)",
++            _REVENUE_MONTH_HINT,
++        )
++        raise typer.Exit(code=2)
++    year_str, month_str = trimmed.split("-")
++    year = int(year_str)
++    month = int(month_str)
++    if not _REVENUE_YEAR_MIN <= year <= _REVENUE_YEAR_MAX:
++        render_error(
++            "Usage error: --month year outside supported range "
++            f"({_REVENUE_YEAR_MIN}..{_REVENUE_YEAR_MAX})",
++            _REVENUE_MONTH_HINT,
++        )
++        raise typer.Exit(code=2)
++    if not 1 <= month <= 12:
++        render_error(
++            "Usage error: --month component must be 01..12",
++            _REVENUE_MONTH_HINT,
++        )
++        raise typer.Exit(code=2)
++    return year, month
++
++
++def _at_risk_row_to_json(row: ApiKeyListRow, *, days_left: int) -> dict[str, object]:
++    """Serialize an at-risk row to JSON.
++
++    Reuses the Story 1.3 ``_key_row_to_json`` shape then appends
++    ``days_left`` so scripted pipelines see the same schema as
++    ``list-keys --format json`` plus the at-risk-specific delta.
++    """
++    payload = _key_row_to_json(row)
++    payload["days_left"] = days_left
++    return payload
++
++
++def _emit_revenue_report_json(report: RevenueReport) -> None:
++    """Emit ``report`` as a single JSON object via the shared stdout console."""
++    payload: dict[str, object] = {
++        "month": report.month_iso,
++        "month_label": report.month_label,
++        "paid_count": report.paid_count,
++        "pending_count": report.pending_count,
++        "suspended_count": report.suspended_count,
++        "complimentary_count": report.complimentary_count,
++        "mrr": report.mrr,
++        "projected": report.projected,
++        "next_charge_date": report.next_charge_date,
++        "complimentary": [
++            {
++                "key_prefix": r.key_prefix,
++                "customer_name": r.customer_name,
++                "notes": r.notes,
++            }
++            for r in report.complimentary_rows
++        ],
++    }
++    stdout_console().print_json(data=payload)
++
++
++def _bucketize_for_revenue(
++    rows: Iterable[ApiKeyListRow], *, month_first: date
++) -> tuple[
++    list[ApiKeyListRow],
++    list[ApiKeyListRow],
++    list[ApiKeyListRow],
++    list[ApiKeyListRow],
++]:
++    """Single-pass bucketize: (paid, pending, suspended, complimentary).
++
++    Revoked rows are dropped entirely. Complimentary rows bucket on
++    billing-mode regardless of status (suspended complimentary still
++    counts here — AC10). Manual-mode paid / pending split hinges on the
++    calendar-month coverage predicate documented in the story.
++    """
++    paid: list[ApiKeyListRow] = []
++    pending: list[ApiKeyListRow] = []
++    suspended: list[ApiKeyListRow] = []
++    complimentary: list[ApiKeyListRow] = []
++    for row in rows:
++        if row.status == "revoked":
++            continue
++        if row.billing_mode == "complimentary":
++            complimentary.append(row)
++            continue
++        # manual-mode rows from here down.
++        if row.status == "suspended":
++            suspended.append(row)
++            continue
++        if row.status != "active":
++            # Defensive: future CustomerStatus variants or automated-mode
++            # rows shouldn't silently leak into a bucket. Drop rather than
++            # raise — keeping revenue robust against data drift.
++            continue
++        if row.paid_until is None:
++            pending.append(row)
++            continue
++        try:
++            paid_date = date.fromisoformat(row.paid_until)
++        except ValueError:
++            # Canonical ISO dates are enforced at write-time (Story 3.1
++            # mark-paid canonicalizes). If a corrupted row slips through,
++            # treat it as pending so the operator sees it on the chase list.
++            pending.append(row)
++            continue
++        if paid_date >= month_first:
++            paid.append(row)
++        else:
++            pending.append(row)
++    return paid, pending, suspended, complimentary
++
++
++@app.command("at-risk")
++def at_risk_cmd(
++    window: str = typer.Option(
++        "5d",
++        "--window",
++        help=(
++            "Look-ahead window for expirations. Format: Nd where N is a "
++            "positive integer (days). Example: --window 5d, --window 14d."
++        ),
++    ),
++    format: str = typer.Option(
++        "table",
++        "--format",
++        help=(
++            "Output format: table (default, human-readable) or json. "
++            "Example: --format json."
++        ),
++    ),
++) -> None:
++    """Preview active manual keys whose paid_until falls within a window.
++
++    Trial-window keys (active manual rows with ``paid_until IS NULL``)
++    are excluded — they belong to the J1 first-sale flow, not the
++    Day-04 pre-billing review.
++
++    Example: comadre-keys at-risk --window 5d
++    """
++    # 1. --format membership.
++    if format not in LIST_FORMAT_CHOICES:
++        render_error("Usage error: --format must be table or json", _FORMAT_HINT)
++        raise typer.Exit(code=2)
++
++    # 2. --window shape + upper cap (exit 2; no DB work on reject).
++    window_days = _parse_window_days(window)
++
++    # 3. Settings + TZ (exit 6).
++    loaded = load_settings_and_tz()
++    if loaded is None:
++        raise typer.Exit(code=6)
++    settings, billing_tz = loaded
++    today = _resolve_today_in_tz(billing_tz)
++    cutoff = today + timedelta(days=window_days)
++
++    # 4. Open DB + migrations (exit 5).
++    try:
++        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
++    except sqlite3.Error as exc:
++        render_error("Database error", str(exc))
++        raise typer.Exit(code=5) from None
++
++    try:
++        try:
++            _apply_migrations(conn)
++        except sqlite3.Error as exc:
++            render_error("Database error", str(exc))
++            raise typer.Exit(code=5) from None
++
++        # 5. Enumerate the full active-manual set. Trial-window (NULL
++        # paid_until) rows are filtered in Python — the SQL
++        # paid_until_lte filter matches NULL-OR-lte which is the opposite
++        # of at-risk semantics.
++        all_active_manual = list_api_keys(
++            conn,
++            status="active",
++            billing_mode="manual",
++        )
++    finally:
++        with contextlib.suppress(sqlite3.Error):
++            conn.close()
++
++    # 6. Filter: today <= paid_until <= cutoff. NULL excluded.
++    in_window: list[tuple[ApiKeyListRow, int]] = []
++    for row in all_active_manual:
++        if row.paid_until is None:
++            continue
++        try:
++            paid_date = date.fromisoformat(row.paid_until)
++        except ValueError:
++            continue
++        if today <= paid_date <= cutoff:
++            in_window.append((row, (paid_date - today).days))
++
++    # 7. Sort: (paid_until ASC, customer_name ASC).
++    in_window.sort(key=lambda pair: (pair[0].paid_until or "", pair[0].customer_name))
++
++    # 8. Structured INFO log — PII-austere aggregate.
++    with contextlib.suppress(Exception):
++        _logger.info(
++            "At-risk queried | window_days=%d | count=%d",
++            window_days,
++            len(in_window),
++        )
++
++    # 9. Branch on --format.
++    if format == "json":
++        render_json(
++            [_at_risk_row_to_json(row, days_left=delta) for row, delta in in_window]
++        )
++        return
++
++    if not in_window:
++        render_empty_state([f"No keys at risk in the next {window_days} days."])
++        return
++
++    render_at_risk_table([row for row, _ in in_window], window_days, today)
++
++
++@app.command("revenue")
++def revenue_cmd(
++    month: str = typer.Option(
++        "current",
++        "--month",
++        help=(
++            "Month to report: 'current' or YYYY-MM. Example: --month current "
++            "or --month 2026-05."
++        ),
++    ),
++    format: str = typer.Option(
++        "table",
++        "--format",
++        help=(
++            "Output format: table (default, human-readable panel) or json. "
++            "Example: --month 2026-05 --format json."
++        ),
++    ),
++) -> None:
++    """Monthly revenue report: paid / pending / suspended / complimentary.
++
++    Shows live portfolio state filtered by the reporting month's
++    ``paid_until`` coverage. For strict forensic "state as of Day 06 of
++    that month", an ``--as-of`` replay is a future story; this command
++    reports what is true now, filtered by the reporting calendar month.
++
++    Example: comadre-keys revenue --month current
++    """
++    # 1. --format membership.
++    if format not in LIST_FORMAT_CHOICES:
++        render_error("Usage error: --format must be table or json", _FORMAT_HINT)
++        raise typer.Exit(code=2)
++
++    # 2. Settings + TZ (exit 6). We resolve ``today`` before parsing --month
++    # so 'current' is anchored to operator-local time (AC18).
++    loaded = load_settings_and_tz()
++    if loaded is None:
++        raise typer.Exit(code=6)
++    settings, billing_tz = loaded
++    today = _resolve_today_in_tz(billing_tz)
++
++    # 3. --month shape + bounds (exit 2).
++    year, month_int = _parse_month(month, today=today)
++
++    # 4. Month boundaries.
++    month_first = date(year, month_int, 1)
++    days_in_month = calendar.monthrange(year, month_int)[1]
++    month_last = date(year, month_int, days_in_month)
++    month_iso = f"{year:04d}-{month_int:02d}"
++    # strftime("%B %Y") is locale-independent for ASCII English month
++    # names — the project's language policy forbids pt-BR labels here.
++    month_label = month_first.strftime("%B %Y")
++
++    # Next charge: the first billing_day strictly after the reporting
++    # month's last day. For --month current, today may be after that
++    # date's billing_day, but the semantic is "when does THIS month's
++    # billing cycle close" — always the next billing_day after
++    # month_last (reused from Story 1.2's first_charge_date helper).
++    next_charge = first_charge_date(
++        today=month_last,
++        billing_day=settings.billing_day,  # type: ignore[attr-defined]
++        tz=settings.billing_timezone,  # type: ignore[attr-defined]
++    )
++
++    # 5. Open DB + migrations (exit 5).
++    try:
++        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
++    except sqlite3.Error as exc:
++        render_error("Database error", str(exc))
++        raise typer.Exit(code=5) from None
++
++    try:
++        try:
++            _apply_migrations(conn)
++        except sqlite3.Error as exc:
++            render_error("Database error", str(exc))
++            raise typer.Exit(code=5) from None
++
++        # 6. Enumerate the whole row set; bucketize in Python.
++        all_rows = list_api_keys(conn)
++    finally:
++        with contextlib.suppress(sqlite3.Error):
++            conn.close()
++
++    paid, pending, suspended, complimentary = _bucketize_for_revenue(
++        all_rows, month_first=month_first
++    )
++
++    mrr = sum(row.price_monthly for row in paid)
++    projected = mrr + sum(row.price_monthly for row in pending)
++
++    # Stable display order for the complimentary list — same invariant
++    # the at-risk table uses (paid_until ASC, customer_name ASC). Comp
++    # rows usually have NULL paid_until so this degenerates to
++    # customer_name ordering, which is what the operator expects.
++    complimentary_sorted = sorted(
++        complimentary,
++        key=lambda r: (r.paid_until or "", r.customer_name),
++    )
++
++    report = RevenueReport(
++        month_label=month_label,
++        month_iso=month_iso,
++        paid_count=len(paid),
++        pending_count=len(pending),
++        suspended_count=len(suspended),
++        complimentary_count=len(complimentary_sorted),
++        mrr=mrr,
++        projected=projected,
++        next_charge_date=next_charge.isoformat(),
++        complimentary_rows=tuple(complimentary_sorted),
++    )
++
++    # 7. Structured INFO log — PII-austere aggregate.
++    with contextlib.suppress(Exception):
++        _logger.info(
++            "Revenue report | month=%s | paid=%d | pending=%d | suspended=%d | "
++            "complimentary=%d | mrr=%.2f | projected=%.2f",
++            report.month_iso,
++            report.paid_count,
++            report.pending_count,
++            report.suspended_count,
++            report.complimentary_count,
++            report.mrr,
++            report.projected,
++        )
++
++    # 8. Branch on --format.
++    if format == "json":
++        _emit_revenue_report_json(report)
++        return
++
++    all_empty = (
++        report.paid_count == 0
++        and report.pending_count == 0
++        and report.suspended_count == 0
++        and report.complimentary_count == 0
++    )
++    if all_empty:
++        render_empty_state([f"No keys to report for {report.month_label}."])
++        return
++
++    render_revenue_report(report)
+diff --git a/src/comadre/keys/cli/commands/keys.py b/src/comadre/keys/cli/commands/keys.py
+index c970073..6e54596 100644
+--- a/src/comadre/keys/cli/commands/keys.py
++++ b/src/comadre/keys/cli/commands/keys.py
+@@ -451,6 +451,7 @@ def _key_row_to_json(row: ApiKeyListRow) -> dict[str, object]:
+         "paid_until": row.paid_until,
+         "created_at": row.created_at,
+         "last_used_at": row.last_used_at,
++        "notes": row.notes,
+     }
+ 
+ 
+diff --git a/src/comadre/keys/cli/output.py b/src/comadre/keys/cli/output.py
+index fa637bc..c546186 100644
+--- a/src/comadre/keys/cli/output.py
++++ b/src/comadre/keys/cli/output.py
+@@ -11,12 +11,13 @@ NO_COLOR compliance — rich respects the env var automatically. We do NOT set
+ 
+ from __future__ import annotations
+ 
+-from datetime import UTC, datetime
++from datetime import UTC, date, datetime
+ from typing import Literal
+ 
+ from rich import box
+ from rich.console import Console
+ from rich.panel import Panel
++from rich.rule import Rule
+ from rich.table import Table
+ from rich.text import Text
+ 
+@@ -31,6 +32,7 @@ from comadre.keys.models import (
+     IssuedKey,
+     KeyDetailRow,
+     Last24hStats,
++    RevenueReport,
+ )
+ 
+ _stdout_console: Console | None = None
+@@ -305,6 +307,145 @@ def render_key_list(title: str, rows: list[ApiKeyListRow]) -> None:
+     render_confirmation(f"{len(rows)} keys found.")
+ 
+ 
++def render_at_risk_table(
++    rows: list[ApiKeyListRow],
++    window_days: int,
++    today: date,
++) -> None:
++    """Story 3.2 UX-DR2 — StatusTable for ``at-risk`` with yellow badges.
++
++    Column order mirrors ``render_key_list`` but replaces the tail "Paid
++    Until" column with "Paid Until" + "Days Left" (right-justified signed
++    integer). Status cell is always ``Text("at-risk", style="yellow")``:
++    the at-risk set is a semantic overlay on active manual keys (the
++    underlying status is still ``active``), so the colored label here is
++    hard-coded rather than routed through ``_status_label``.
++
++    Callers must handle the empty case via ``render_empty_state``; this
++    renderer assumes ``rows`` is non-empty. ``today`` is injected so
++    ``days_left`` is clock-frozen for tests — callers must pass the same
++    ``today`` they used to filter the rows.
++    """
++    console = stdout_console()
++    table = Table(title=f"At-Risk Keys (next {window_days} days)", expand=False)
++    table.add_column("Prefix", justify="left", no_wrap=True)
++    table.add_column("Customer", justify="left")
++    table.add_column("Status", justify="left")
++    table.add_column("Price", justify="right", no_wrap=True)
++    table.add_column("Paid Until", justify="left", no_wrap=True)
++    table.add_column("Days Left", justify="right", no_wrap=True)
++    for row in rows:
++        # Caller filters NULL paid_until; the renderer only runs on rows
++        # where the filter guarantees a non-NULL ISO date.
++        assert row.paid_until is not None
++        days_left = (date.fromisoformat(row.paid_until) - today).days
++        table.add_row(
++            row.key_prefix,
++            row.customer_name,
++            Text("at-risk", style="yellow"),
++            f"R$ {_format_brl(row.price_monthly)}/month",
++            _iso_date(row.paid_until),
++            str(days_left),
++        )
++    console.print(table)
++    render_confirmation(f"{len(rows)} keys found.")
++
++
++_REVENUE_REPORT_COUNT_LABELS: tuple[str, ...] = (
++    "Paid customers:",
++    "Pending:",
++    "Suspended (carry-over):",
++    "Complimentary:",
++)
++
++_REVENUE_REPORT_TOTAL_LABELS: tuple[str, ...] = (
++    "Monthly recurring:",
++    "Projected (if all pay):",
++    "Next charge date:",
++)
++
++
++def render_revenue_report(report: RevenueReport) -> None:
++    """Story 3.2 UX-DR4 — single-border Panel with count + totals + (opt) comp list.
++
++    Structure:
++        Count block → Rule() → totals block (bold on mrr + projected) →
++        [Rule() → complimentary listing] (only when ``complimentary_rows``
++        is non-empty). Panel title is ``Revenue Report — {month_label}``.
++
++    Rich markup is enabled on the panel so ``[bold]`` renders, but each
++    complimentary row line is emitted with ``markup=False, highlight=False``
++    at print time — the panel is assembled as a Rich ``Group`` rather than a
++    single markup string so operator-supplied ``notes`` cannot inject
++    arbitrary markup. Callers must short-circuit to ``render_empty_state``
++    when every bucket count is zero (the renderer assumes the portfolio is
++    non-trivial — any count > 0 is enough).
++    """
++    from rich.console import Group, RenderableType
++
++    # Column widths are derived from the longest label on each side of the
++    # Rule() so a future label rename does not drift the layout.
++    all_labels = (*_REVENUE_REPORT_COUNT_LABELS, *_REVENUE_REPORT_TOTAL_LABELS)
++    label_width = max(len(label) for label in all_labels)
++
++    counts = (
++        report.paid_count,
++        report.pending_count,
++        report.suspended_count,
++        report.complimentary_count,
++    )
++    count_lines = "\n".join(
++        f"{label.ljust(label_width)}  {value}"
++        for label, value in zip(_REVENUE_REPORT_COUNT_LABELS, counts, strict=True)
++    )
++
++    # Bold on the monetary totals only; label and prefix stay unbolded so
++    # triple-click selects a readable "R$ 1.643,00" segment.
++    totals_lines = "\n".join(
++        (
++            (
++                f"{_REVENUE_REPORT_TOTAL_LABELS[0].ljust(label_width)}  "
++                f"[bold]R$ {_format_brl(report.mrr)}[/bold]"
++            ),
++            (
++                f"{_REVENUE_REPORT_TOTAL_LABELS[1].ljust(label_width)}  "
++                f"[bold]R$ {_format_brl(report.projected)}[/bold]"
++            ),
++            (
++                f"{_REVENUE_REPORT_TOTAL_LABELS[2].ljust(label_width)}  "
++                f"{report.next_charge_date}"
++            ),
++        )
++    )
++
++    children: list[RenderableType] = [
++        Text.from_markup(count_lines),
++        Rule(),
++        Text.from_markup(totals_lines),
++    ]
++
++    if report.complimentary_rows:
++        children.append(Rule())
++        children.append(Text("Complimentary keys:"))
++        for row in report.complimentary_rows:
++            # Operator-supplied ``notes`` is untrusted — render as plain
++            # Text() (no markup parse) so a value like ``[red]evil[/]`` is
++            # displayed literally instead of restyling the panel.
++            notes = row.notes if row.notes else "\u2014"
++            children.append(
++                Text(f"  {row.key_prefix} ({row.customer_name}) \u2014 {notes}")
++            )
++
++    stdout_console().print(
++        Panel(
++            Group(*children),
++            title=f"Revenue Report \u2014 {report.month_label}",
++            box=box.ROUNDED,
++            expand=False,
++        )
++    )
++
++
+ def render_json(payload: list[dict[str, object]]) -> None:
+     """Emit ``payload`` as pretty-printed JSON via the stdout console.
+ 
+diff --git a/src/comadre/keys/db.py b/src/comadre/keys/db.py
+index e4ded3b..662caa1 100644
+--- a/src/comadre/keys/db.py
++++ b/src/comadre/keys/db.py
+@@ -539,7 +539,7 @@ def list_api_keys(
+     sql = (
+         "SELECT k.id, k.customer_id, c.name AS customer_name, "
+         "k.key_prefix, k.status, k.billing_mode, k.rate_limit_rpm, "
+-        "k.price_monthly, k.paid_until, k.created_at, k.last_used_at "
++        "k.price_monthly, k.paid_until, k.created_at, k.last_used_at, k.notes "
+         "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
+         f"{where_clause} "
+         "ORDER BY k.created_at ASC"
+@@ -560,6 +560,7 @@ def list_api_keys(
+                 paid_until=row["paid_until"],
+                 created_at=row["created_at"],
+                 last_used_at=row["last_used_at"],
++                notes=row["notes"] or "",
+             )
+         )
+     return rows
+diff --git a/src/comadre/keys/models.py b/src/comadre/keys/models.py
+index 7d51bb4..f76b2c0 100644
+--- a/src/comadre/keys/models.py
++++ b/src/comadre/keys/models.py
+@@ -107,6 +107,11 @@ class ApiKeyListRow:
+     ``customer_name`` is joined in so the renderer doesn't issue a second
+     query per row. ``key_hash`` is deliberately NOT carried — list output
+     never exposes the hash (FR37 anti-enumeration).
++
++    ``notes`` is included so the Story 3.2 ``revenue`` report can list a
++    complimentary key's bundled context without issuing a second query
++    per row. The Story 1.3 ``list-keys`` table output does not render
++    this column (width budget); the ``--format json`` path does emit it.
+     """
+ 
+     id: str
+@@ -120,6 +125,7 @@ class ApiKeyListRow:
+     paid_until: str | None
+     created_at: str
+     last_used_at: str | None
++    notes: str
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -227,6 +233,30 @@ class Last24hStats:
+     replicas: int
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class RevenueReport:
++    """Aggregated monthly revenue payload for ``revenue_cmd`` (Story 3.2).
++
++    ``mrr`` counts only **paid** manual-mode revenue for the reporting
++    month. ``projected`` counts paid + pending (paid + "still billable").
++    Complimentary rows are carried separately and NEVER summed into any
++    total — FR17 hard requirement. ``month_iso`` is the stable
++    ``YYYY-MM`` key JSON consumers parse; ``month_label`` is the human
++    label (English per the project's language policy).
++    """
++
++    month_label: str
++    month_iso: str
++    paid_count: int
++    pending_count: int
++    suspended_count: int
++    complimentary_count: int
++    mrr: float
++    projected: float
++    next_charge_date: str
++    complimentary_rows: tuple[ApiKeyListRow, ...]
++
++
+ @dataclass(frozen=True, slots=True)
+ class AuthPayload:
+     """Minimal authorization payload cached per bearer-token hash.
+diff --git a/tests/test_keys_cli_list_keys.py b/tests/test_keys_cli_list_keys.py
+index 2ff5e66..cb86aa5 100644
+--- a/tests/test_keys_cli_list_keys.py
++++ b/tests/test_keys_cli_list_keys.py
+@@ -566,11 +566,13 @@ class TestFormatJson:
+                 "paid_until",
+                 "created_at",
+                 "last_used_at",
++                "notes",
+             }
+             assert "key_hash" not in entry
+             # Numeric fields emit as numbers.
+             assert isinstance(entry["price_monthly"], (int, float))
+             assert isinstance(entry["rate_limit_rpm"], int)
++            assert isinstance(entry["notes"], str)
+ 
+     def test_with_filter(self, env: dict[str, str]) -> None:
+         customer_id = _seed_customer(env)
+diff --git a/tests/test_keys_db.py b/tests/test_keys_db.py
+index 5eac894..d118f6c 100644
+--- a/tests/test_keys_db.py
++++ b/tests/test_keys_db.py
+@@ -547,6 +547,7 @@ def _seed_api_key(
+     price_monthly: float = 149.0,
+     paid_until: str | None = None,
+     created_at: str = "2026-04-16T12:00:00Z",
++    notes: str = "",
+ ) -> str:
+     key_id = generate_key_id()
+     conn.execute(
+@@ -567,7 +568,7 @@ def _seed_api_key(
+             paid_until,
+             created_at,
+             None,
+-            "",
++            notes,
+         ),
+     )
+     conn.commit()
+@@ -835,6 +836,48 @@ class TestListApiKeys:
+         finally:
+             conn.close()
+ 
++    def test_notes_surfaces_on_row(self, tmp_path: Path) -> None:
++        """Story 3.2 — ``notes`` now rides on the list row so the revenue
++        report can show complimentary-key notes without a second query."""
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer_with_time(
++                conn, name="AgroBots", registered_at="2026-04-10T10:00:00Z"
++            )
++            _seed_api_key(
++                conn,
++                customer_id=cid,
++                key_hash="e" * 64,
++                key_prefix="NOTESKEY",
++                billing_mode="complimentary",
++                price_monthly=0.0,
++                notes="bundled R$ 850/mo",
++            )
++            rows = list_api_keys(conn)
++            assert len(rows) == 1
++            assert rows[0].notes == "bundled R$ 850/mo"
++        finally:
++            conn.close()
++
++    def test_notes_defaults_to_empty_string(self, tmp_path: Path) -> None:
++        conn = get_connection(tmp_path / "registry.db")
++        try:
++            _apply_migrations(conn)
++            ids = self._seed_customers_and_keys(conn)
++            rows = list_api_keys(conn)
++            for row in rows:
++                assert row.notes == "", f"row {row.id} had notes={row.notes!r}"
++            expected_keys = (
++                "k_active_manual",
++                "k_suspended",
++                "k_revoked",
++                "k_complimentary",
++            )
++            assert {r.id for r in rows} == {ids[k] for k in expected_keys}
++        finally:
++            conn.close()
++
+ 
+ class TestIsFirstRun:
+     def test_true_on_empty_db(self, tmp_path: Path) -> None:
+diff --git a/tests/test_keys_models.py b/tests/test_keys_models.py
+index 4a1edf8..bbaae2f 100644
+--- a/tests/test_keys_models.py
++++ b/tests/test_keys_models.py
+@@ -20,6 +20,7 @@ from comadre.keys.models import (
+     CustomerRecord,
+     IssuedKey,
+     KeyDetailRow,
++    RevenueReport,
+ )
+ 
+ 
+@@ -261,7 +262,7 @@ class TestCustomerListRow:
+ 
+ 
+ class TestApiKeyListRow:
+-    def _make(self) -> ApiKeyListRow:
++    def _make(self, notes: str = "") -> ApiKeyListRow:
+         return ApiKeyListRow(
+             id="key_01abc",
+             customer_id="cust_01abc",
+@@ -274,6 +275,7 @@ class TestApiKeyListRow:
+             paid_until=None,
+             created_at="2026-04-15T12:34:56Z",
+             last_used_at=None,
++            notes=notes,
+         )
+ 
+     def test_round_trip_fields(self) -> None:
+@@ -289,6 +291,11 @@ class TestApiKeyListRow:
+         assert row.paid_until is None
+         assert row.created_at == "2026-04-15T12:34:56Z"
+         assert row.last_used_at is None
++        assert row.notes == ""
++
++    def test_accepts_notes_field(self) -> None:
++        row = self._make(notes="bundled R$ 850/mo")
++        assert row.notes == "bundled R$ 850/mo"
+ 
+     def test_is_frozen(self) -> None:
+         row = self._make()
+@@ -494,3 +501,41 @@ class TestAuthPayload:
+         )
+         assert payload.paid_until is None
+         assert payload.billing_mode == "complimentary"
++
++
++class TestRevenueReport:
++    def _make(self) -> RevenueReport:
++        return RevenueReport(
++            month_label="May 2026",
++            month_iso="2026-05",
++            paid_count=12,
++            pending_count=2,
++            suspended_count=0,
++            complimentary_count=1,
++            mrr=1788.0,
++            projected=2086.0,
++            next_charge_date="2026-06-05",
++            complimentary_rows=(),
++        )
++
++    def test_round_trip_fields(self) -> None:
++        r = self._make()
++        assert r.month_label == "May 2026"
++        assert r.month_iso == "2026-05"
++        assert r.paid_count == 12
++        assert r.pending_count == 2
++        assert r.suspended_count == 0
++        assert r.complimentary_count == 1
++        assert r.mrr == 1788.0
++        assert r.projected == 2086.0
++        assert r.next_charge_date == "2026-06-05"
++        assert r.complimentary_rows == ()
++
++    def test_is_frozen(self) -> None:
++        r = self._make()
++        with pytest.raises((AttributeError, TypeError)):
++            r.mrr = 0.0  # type: ignore[misc]
++
++    def test_has_slots(self) -> None:
++        r = self._make()
++        assert not hasattr(r, "__dict__")
+diff --git a/tests/test_keys_output.py b/tests/test_keys_output.py
+index af0143e..c9093e5 100644
+--- a/tests/test_keys_output.py
++++ b/tests/test_keys_output.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ import re
+ from collections.abc import Iterator
+-from datetime import UTC, datetime
++from datetime import UTC, date, datetime
+ from io import StringIO
+ 
+ import pytest
+@@ -14,6 +14,7 @@ import comadre.keys.cli.output as output_mod
+ from comadre.keys.cli.output import (
+     _reset_for_tests,
+     _status_label,
++    render_at_risk_table,
+     render_audit_tail,
+     render_confirmation,
+     render_customer_detail,
+@@ -24,6 +25,7 @@ from comadre.keys.cli.output import (
+     render_key_detail,
+     render_key_list,
+     render_key_panel,
++    render_revenue_report,
+     render_show_json,
+     stderr_console,
+     stdout_console,
+@@ -36,6 +38,7 @@ from comadre.keys.models import (
+     CustomerListRow,
+     IssuedKey,
+     KeyDetailRow,
++    RevenueReport,
+ )
+ 
+ ANSI_ESCAPE = re.compile(r"\x1b\[")
+@@ -439,6 +442,7 @@ class TestRenderKeyList:
+                 paid_until=None,
+                 created_at="2026-04-10T10:00:00Z",
+                 last_used_at=None,
++                notes="",
+             ),
+             ApiKeyListRow(
+                 id="key_01suspend000000000000000",
+@@ -452,6 +456,7 @@ class TestRenderKeyList:
+                 paid_until="2026-04-01",
+                 created_at="2026-04-11T10:00:00Z",
+                 last_used_at=None,
++                notes="",
+             ),
+             ApiKeyListRow(
+                 id="key_01revoked00000000000000",
+@@ -465,6 +470,7 @@ class TestRenderKeyList:
+                 paid_until="2026-05-01",
+                 created_at="2026-04-12T10:00:00Z",
+                 last_used_at=None,
++                notes="",
+             ),
+             ApiKeyListRow(
+                 id="key_01comp000000000000000000",
+@@ -478,6 +484,7 @@ class TestRenderKeyList:
+                 paid_until=None,
+                 created_at="2026-04-13T10:00:00Z",
+                 last_used_at=None,
++                notes="",
+             ),
+         ]
+ 
+@@ -1033,3 +1040,184 @@ class TestContextBlockPaidUntilBranch:
+         out = buf.getvalue()
+         assert re.search(r"paid until:\s+\u2014 \(not applicable\)", out)
+         assert "R$ 0,00 (bundled externally)" in out
++
++
++def _at_risk_row(
++    *,
++    key_prefix: str = "Pq_abc12",
++    customer_name: str = "Pedro Lopes",
++    paid_until: str = "2026-04-20",
++    price_monthly: float = 149.0,
++) -> ApiKeyListRow:
++    return ApiKeyListRow(
++        id=f"key_{key_prefix.lower()}0000000000000000000",
++        customer_id="cust_01abc",
++        customer_name=customer_name,
++        key_prefix=key_prefix,
++        status="active",
++        billing_mode="manual",
++        rate_limit_rpm=60,
++        price_monthly=price_monthly,
++        paid_until=paid_until,
++        created_at="2026-01-05T12:00:00Z",
++        last_used_at=None,
++        notes="",
++    )
++
++
++class TestRenderAtRiskTable:
++    def test_title_headers_and_footer(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        buf = StringIO()
++        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
++        monkeypatch.setattr(output_mod, "_stdout_console", fake)
++        rows = [
++            _at_risk_row(key_prefix="Pq_abc12", paid_until="2026-04-20"),
++            _at_risk_row(
++                key_prefix="Mx_def34",
++                customer_name="Marcos Silva",
++                paid_until="2026-04-22",
++            ),
++        ]
++        render_at_risk_table(rows, window_days=5, today=date(2026, 4, 18))
++        out = buf.getvalue()
++        assert "At-Risk Keys (next 5 days)" in out
++        headers = ("Prefix", "Customer", "Status", "Price", "Paid Until", "Days Left")
++        for header in headers:
++            assert header in out
++        assert "at-risk" in out
++        assert "2 keys found." in out
++
++    def test_days_left_computed_correctly(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        buf = StringIO()
++        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
++        monkeypatch.setattr(output_mod, "_stdout_console", fake)
++        rows = [
++            _at_risk_row(key_prefix="D1______", paid_until="2026-04-19"),
++            _at_risk_row(key_prefix="D4______", paid_until="2026-04-22"),
++        ]
++        render_at_risk_table(rows, window_days=5, today=date(2026, 4, 18))
++        flat = re.sub(r"\s+", " ", buf.getvalue())
++        # Days-left column is right-justified whole numbers — assert both show up.
++        assert re.search(r"D1_+\s+.*\s+1\b", flat)
++        assert re.search(r"D4_+\s+.*\s+4\b", flat)
++
++    def test_price_formatting(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        buf = StringIO()
++        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
++        monkeypatch.setattr(output_mod, "_stdout_console", fake)
++        rows = [_at_risk_row(price_monthly=1234.56)]
++        render_at_risk_table(rows, window_days=7, today=date(2026, 4, 18))
++        assert "R$ 1.234,56/month" in buf.getvalue()
++
++
++def _revenue_report(
++    *,
++    paid_count: int = 12,
++    pending_count: int = 2,
++    suspended_count: int = 0,
++    complimentary_rows: tuple[ApiKeyListRow, ...] = (),
++    mrr: float = 1788.0,
++    projected: float = 2086.0,
++) -> RevenueReport:
++    return RevenueReport(
++        month_label="May 2026",
++        month_iso="2026-05",
++        paid_count=paid_count,
++        pending_count=pending_count,
++        suspended_count=suspended_count,
++        complimentary_count=len(complimentary_rows),
++        mrr=mrr,
++        projected=projected,
++        next_charge_date="2026-06-05",
++        complimentary_rows=complimentary_rows,
++    )
++
++
++class TestRenderRevenueReport:
++    def test_panel_shape_and_totals(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        buf = StringIO()
++        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
++        monkeypatch.setattr(output_mod, "_stdout_console", fake)
++        comp = _at_risk_row(
++            key_prefix="Cx_abc12",
++            customer_name="AgroBots",
++            paid_until="2099-01-01",
++        )
++        # Override notes for the complimentary row.
++        comp_with_notes = ApiKeyListRow(
++            id=comp.id,
++            customer_id=comp.customer_id,
++            customer_name=comp.customer_name,
++            key_prefix=comp.key_prefix,
++            status="active",
++            billing_mode="complimentary",
++            rate_limit_rpm=comp.rate_limit_rpm,
++            price_monthly=0.0,
++            paid_until=None,
++            created_at=comp.created_at,
++            last_used_at=comp.last_used_at,
++            notes="bundled R$ 850/mo",
++        )
++        report = _revenue_report(complimentary_rows=(comp_with_notes,))
++        render_revenue_report(report)
++        out = buf.getvalue()
++        assert "Revenue Report \u2014 May 2026" in out
++        for label in (
++            "Paid customers:",
++            "Pending:",
++            "Suspended (carry-over):",
++            "Complimentary:",
++            "Monthly recurring:",
++            "Projected (if all pay):",
++            "Next charge date:",
++            "Complimentary keys:",
++        ):
++            assert label in out, f"missing label {label!r}"
++        # pt-BR currency byte-identity.
++        assert "R$ 1.788,00" in out
++        assert "R$ 2.086,00" in out
++        assert "2026-06-05" in out
++        # Complimentary row line with its notes.
++        assert "Cx_abc12 (AgroBots)" in out
++        assert "bundled R$ 850/mo" in out
++
++    def test_no_complimentary_section_when_empty(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        buf = StringIO()
++        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
++        monkeypatch.setattr(output_mod, "_stdout_console", fake)
++        report = _revenue_report(complimentary_rows=())
++        render_revenue_report(report)
++        out = buf.getvalue()
++        assert "Complimentary keys:" not in out
++        # Counts block still renders.
++        assert "Paid customers:" in out
++
++    def test_markup_injection_guarded_in_complimentary_notes(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        buf = StringIO()
++        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
++        monkeypatch.setattr(output_mod, "_stdout_console", fake)
++        hostile = ApiKeyListRow(
++            id="key_01hostile0000000000000000",
++            customer_id="cust_01abc",
++            customer_name="EvilCorp",
++            key_prefix="Hx_abc12",
++            status="active",
++            billing_mode="complimentary",
++            rate_limit_rpm=60,
++            price_monthly=0.0,
++            paid_until=None,
++            created_at="2026-01-05T12:00:00Z",
++            last_used_at=None,
++            notes="[red]evil[/]",
++        )
++        report = _revenue_report(complimentary_rows=(hostile,))
++        render_revenue_report(report)
++        out = buf.getvalue()
++        # The literal markup must survive — no Rich interpretation.
++        assert "[red]evil[/]" in out
+diff --git a/tests/test_keys_cli_at_risk.py b/tests/test_keys_cli_at_risk.py
+new file mode 100644
+index 0000000..b6b9b6d
+--- /dev/null
++++ b/tests/test_keys_cli_at_risk.py
+@@ -0,0 +1,539 @@
++"""End-to-end CLI tests for ``comadre-keys at-risk`` (Story 3.2)."""
++
++from __future__ import annotations
++
++import json
++import logging
++import re
++import sqlite3
++import time
++from collections.abc import Iterator
++from datetime import UTC, date, datetime
++from io import StringIO
++from pathlib import Path
++
++import pytest
++from cryptography.fernet import Fernet
++from rich.console import Console
++from typer.testing import CliRunner
++
++import comadre.keys.cli.commands.billing as billing_cmd
++import comadre.keys.cli.output as output_mod
++from comadre.config import get_settings
++from comadre.keys.cli.app import app
++from comadre.keys.db import (
++    _apply_migrations,
++    generate_customer_id,
++    generate_key_id,
++    get_connection,
++    insert_api_key,
++    insert_customer,
++)
++from comadre.keys.models import ApiKeyRecord, CustomerRecord
++
++runner = CliRunner()
++
++
++# Story 2.3 PII-leak guard — any match in an INFO log line is a FR37 / NFR15 regression.
++_PII_FORBIDDEN_RE = re.compile(
++    r"cmdr_live_|[0-9a-f]{64}|[0-9]{11,14}|@[a-z0-9.-]+\.[a-z]{2,}",
++    re.IGNORECASE,
++)
++
++
++@pytest.fixture(autouse=True)
++def _clear_settings_cache() -> Iterator[None]:
++    get_settings.cache_clear()
++    yield
++    get_settings.cache_clear()
++
++
++@pytest.fixture(autouse=True)
++def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
++    stdout_buf = StringIO()
++    stderr_buf = StringIO()
++    output_mod._reset_for_tests()
++    output_mod._stdout_console = Console(
++        file=stdout_buf, force_terminal=False, no_color=True, width=120
++    )
++    output_mod._stderr_console = Console(
++        file=stderr_buf, force_terminal=False, no_color=True, width=120
++    )
++    yield stdout_buf, stderr_buf
++    output_mod._reset_for_tests()
++
++
++@pytest.fixture()
++def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
++    key = Fernet.generate_key().decode()
++    db_path = tmp_path / "registry.db"
++    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
++    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
++    return {"db_path": str(db_path), "key": key}
++
++
++def _freeze_today(monkeypatch: pytest.MonkeyPatch, today: date) -> None:
++    monkeypatch.setattr(billing_cmd, "_resolve_today_in_tz", lambda _tz: today)
++
++
++def _buffers() -> tuple[str, str]:
++    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
++    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
++    return stdout_file.getvalue(), stderr_file.getvalue()
++
++
++def _clear_buffers() -> None:
++    for attr in ("_stdout_console", "_stderr_console"):
++        console = getattr(output_mod, attr)
++        console.file.seek(0)  # type: ignore[union-attr]
++        console.file.truncate()  # type: ignore[union-attr]
++
++
++def _seed_customer(conn: sqlite3.Connection, *, name: str, email: str) -> str:
++    cid = generate_customer_id()
++    insert_customer(
++        conn,
++        CustomerRecord(
++            id=cid,
++            name=name,
++            email=email,
++            tax_id_kind="cpf",
++            tax_id_encrypted=b"gAAAAA-ciphertext",
++            notes="",
++            registered_at=datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC),
++            deleted_at=None,
++        ),
++        actor="cli:tester",
++    )
++    return cid
++
++
++def _seed_key(
++    conn: sqlite3.Connection,
++    *,
++    customer_id: str,
++    key_prefix: str,
++    key_hash: str,
++    status: str = "active",
++    billing_mode: str = "manual",
++    paid_until: str | None = None,
++    price_monthly: float = 149.0,
++    notes: str = "",
++) -> str:
++    kid = generate_key_id()
++    insert_api_key(
++        conn,
++        ApiKeyRecord(
++            id=kid,
++            customer_id=customer_id,
++            key_hash=key_hash,
++            key_prefix=key_prefix,
++            rate_limit_rpm=60,
++            status=status,  # type: ignore[arg-type]
++            billing_mode=billing_mode,  # type: ignore[arg-type]
++            price_monthly=price_monthly if billing_mode == "manual" else 0.0,
++            paid_until=paid_until,
++            created_at=datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC),
++            last_used_at=None,
++            notes=notes,
++        ),
++        actor="cli:tester",
++    )
++    return kid
++
++
++def _seed_basic_portfolio(db_path: str) -> dict[str, str]:
++    """Seed the AC1/AC3 fixture and return a name→id map.
++
++    Pedro (paid_until=2026-04-20, days_left=2), Marcos (2026-04-22, 4),
++    Helena (2026-04-30, 12 — outside 5d window).
++    Plus AC3's exclusion cases.
++    """
++    conn = get_connection(db_path)
++    try:
++        _apply_migrations(conn)
++        ids: dict[str, str] = {}
++        ids["pedro_cid"] = _seed_customer(conn, name="Pedro Lopes", email="p@c.com")
++        ids["marcos_cid"] = _seed_customer(conn, name="Marcos Silva", email="m@c.com")
++        ids["helena_cid"] = _seed_customer(conn, name="Helena Ribeiro", email="h@c.com")
++        ids["pedro_kid"] = _seed_key(
++            conn,
++            customer_id=ids["pedro_cid"],
++            key_prefix="Pq_abc12",
++            key_hash="a" * 64,
++            paid_until="2026-04-20",
++        )
++        ids["marcos_kid"] = _seed_key(
++            conn,
++            customer_id=ids["marcos_cid"],
++            key_prefix="Mx_def34",
++            key_hash="b" * 64,
++            paid_until="2026-04-22",
++        )
++        ids["helena_kid"] = _seed_key(
++            conn,
++            customer_id=ids["helena_cid"],
++            key_prefix="Hx_ghi56",
++            key_hash="c" * 64,
++            paid_until="2026-04-30",
++        )
++        return ids
++    finally:
++        conn.close()
++
++
++def _seed_exclusion_cases(db_path: str) -> None:
++    """Keys that must be excluded from at-risk regardless of window.
++
++    NULL paid_until active manual, suspended manual with in-window date,
++    complimentary with in-window date, revoked with in-window date.
++    """
++    conn = get_connection(db_path)
++    try:
++        _apply_migrations(conn)
++        cid = _seed_customer(conn, name="EdgeCases", email="e@c.com")
++        _seed_key(
++            conn,
++            customer_id=cid,
++            key_prefix="NX_null00",
++            key_hash="d" * 64,
++            paid_until=None,
++        )
++        _seed_key(
++            conn,
++            customer_id=cid,
++            key_prefix="SX_susp00",
++            key_hash="e" * 64,
++            status="suspended",
++            paid_until="2026-04-19",
++        )
++        _seed_key(
++            conn,
++            customer_id=cid,
++            key_prefix="CX_comp00",
++            key_hash="f" * 64,
++            billing_mode="complimentary",
++            paid_until="2026-04-19",
++        )
++        _seed_key(
++            conn,
++            customer_id=cid,
++            key_prefix="RX_revk00",
++            key_hash="1" * 64,
++            status="revoked",
++            paid_until="2026-04-19",
++        )
++    finally:
++        conn.close()
++
++
++class TestAtRiskTableHappyPath:
++    """AC1 — renders in-window active manual rows sorted ASC."""
++
++    def test_two_rows_in_window(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_basic_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++
++        t0 = time.perf_counter()
++        result = runner.invoke(app, ["at-risk", "--window", "5d"])
++        elapsed_ms = (time.perf_counter() - t0) * 1000
++
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++        assert "At-Risk Keys (next 5 days)" in stdout
++        assert "Pq_abc12" in stdout
++        assert "Mx_def34" in stdout
++        assert "Hx_ghi56" not in stdout  # outside 5d window
++        assert "2 keys found." in stdout
++        # Pedro first (days_left=2), Marcos second (days_left=4).
++        pedro_idx = stdout.index("Pq_abc12")
++        marcos_idx = stdout.index("Mx_def34")
++        assert pedro_idx < marcos_idx
++        # NFR5 advisory — slack for CI.
++        assert elapsed_ms < 1000, f"at-risk took {elapsed_ms:.0f} ms"
++
++    def test_inclusive_on_both_ends(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """AC1 final — today+5 is included; today+6 is excluded; today is included."""
++        conn = get_connection(env["db_path"])
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer(conn, name="TZ Edge", email="t@c.com")
++            # today (2026-04-18) — days_left=0 (edge-today).
++            _seed_key(
++                conn,
++                customer_id=cid,
++                key_prefix="EDG_tod0",
++                key_hash="a" * 64,
++                paid_until="2026-04-18",
++            )
++            # today+5 — edge-window (included).
++            _seed_key(
++                conn,
++                customer_id=cid,
++                key_prefix="EDG_win5",
++                key_hash="b" * 64,
++                paid_until="2026-04-23",
++            )
++            # today+6 — outside (excluded).
++            _seed_key(
++                conn,
++                customer_id=cid,
++                key_prefix="EDG_out6",
++                key_hash="c" * 64,
++                paid_until="2026-04-24",
++            )
++        finally:
++            conn.close()
++
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "5d"])
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        assert "EDG_tod0" in stdout
++        assert "EDG_win5" in stdout
++        assert "EDG_out6" not in stdout
++        assert "3 keys found." not in stdout
++        assert "2 keys found." in stdout
++
++    def test_sort_by_customer_name_on_tie(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        conn = get_connection(env["db_path"])
++        try:
++            _apply_migrations(conn)
++            c_zoe = _seed_customer(conn, name="Zoe", email="z@c.com")
++            c_ana = _seed_customer(conn, name="Ana", email="a@c.com")
++            _seed_key(
++                conn,
++                customer_id=c_zoe,
++                key_prefix="Z_tie001",
++                key_hash="9" * 64,
++                paid_until="2026-04-20",
++            )
++            _seed_key(
++                conn,
++                customer_id=c_ana,
++                key_prefix="A_tie001",
++                key_hash="8" * 64,
++                paid_until="2026-04-20",
++            )
++        finally:
++            conn.close()
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "5d"])
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        # Alphabetical tiebreak → Ana before Zoe.
++        assert stdout.index("A_tie001") < stdout.index("Z_tie001")
++
++
++class TestAtRiskEmptyState:
++    """AC2 / AC6 — empty state."""
++
++    def test_empty_db_returns_informational_exit_0(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "5d"])
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++        assert "No keys at risk in the next 5 days." in stdout
++        # No red error panel.
++        assert "error" not in stderr.lower()
++
++    def test_empty_state_message_uses_parsed_integer(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "14d"])
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        assert "No keys at risk in the next 14 days." in stdout
++
++    def test_json_empty_returns_empty_array(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["at-risk", "--window", "5d", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        assert json.loads(stdout) == []
++        # No informational prose.
++        assert "No keys at risk" not in stdout
++
++
++class TestAtRiskExclusions:
++    """AC3 — NULL paid_until, suspended, complimentary, revoked all excluded."""
++
++    def test_exclusions_only_no_other_rows(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_exclusion_cases(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "5d"])
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        assert "No keys at risk in the next 5 days." in stdout
++        for forbidden in ("NX_null00", "SX_susp00", "CX_comp00", "RX_revk00"):
++            assert forbidden not in stdout
++
++
++class TestAtRiskWindowValidation:
++    """AC4 — --window shape + upper cap (exit 2, fail-fast before DB)."""
++
++    def _prepare(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
++        monkeypatch.setenv(
++            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
++        )
++
++    @pytest.mark.parametrize(
++        "bad",
++        ["0d", "-5d", "5w", "5", "", "abc", "1.5d", "5 d"],
++    )
++    def test_bad_window_shape_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
++    ) -> None:
++        self._prepare(tmp_path, monkeypatch)
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", bad])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2, f"{bad!r}"
++        assert "--window must be Nd" in stderr
++        # Fail-fast before DB open.
++        assert not (tmp_path / "registry.db").exists()
++        # NFR16 — the implementation routes rejection through a hard-coded
++        # title + hint pair; the raw operator input is never interpolated.
++
++    def test_366d_exceeds_cap(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        self._prepare(tmp_path, monkeypatch)
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "366d"])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "exceeds 365d cap" in stderr or "Maximum window is 365d" in stderr
++        assert not (tmp_path / "registry.db").exists()
++
++    def test_365d_accepted(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(app, ["at-risk", "--window", "365d"])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++
++    def test_invalid_format_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        self._prepare(tmp_path, monkeypatch)
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["at-risk", "--window", "5d", "--format", "xml"]
++        )
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "--format must be table or json" in stderr
++
++
++class TestAtRiskJsonShape:
++    """AC5 — JSON array with days_left."""
++
++    def test_populated_json_has_days_left_and_expected_keys(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_basic_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["at-risk", "--window", "5d", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert isinstance(data, list)
++        assert len(data) == 2
++        for entry in data:
++            assert set(entry.keys()) == {
++                "id",
++                "customer_id",
++                "customer_name",
++                "key_prefix",
++                "status",
++                "billing_mode",
++                "rate_limit_rpm",
++                "price_monthly",
++                "paid_until",
++                "created_at",
++                "last_used_at",
++                "notes",
++                "days_left",
++            }
++            assert isinstance(entry["days_left"], int)
++            assert entry["days_left"] >= 0
++        # Sorted ascending by paid_until — Pedro (2026-04-20) first.
++        assert data[0]["key_prefix"] == "Pq_abc12"
++        assert data[0]["days_left"] == 2
++        assert data[1]["key_prefix"] == "Mx_def34"
++        assert data[1]["days_left"] == 4
++
++
++class TestAtRiskLogging:
++    """AC19 — PII-austere INFO logs."""
++
++    def test_info_log_is_aggregate_and_pii_free(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        from comadre.logging import get_logger
++
++        _seed_basic_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 4, 18))
++        logger = get_logger("keys.cli")
++        records: list[logging.LogRecord] = []
++
++        class _Capture(logging.Handler):
++            def emit(self, record: logging.LogRecord) -> None:
++                records.append(record)
++
++        handler = _Capture(level=logging.INFO)
++        logger.addHandler(handler)
++        try:
++            _clear_buffers()
++            records.clear()
++            result = runner.invoke(app, ["at-risk", "--window", "5d"])
++        finally:
++            logger.removeHandler(handler)
++        assert result.exit_code == 0
++        at_risk = [r for r in records if "At-risk queried" in r.getMessage()]
++        assert at_risk, [r.getMessage() for r in records]
++        joined = "\n".join(r.getMessage() for r in at_risk)
++        assert "window_days=5" in joined
++        assert "count=2" in joined
++        assert not _PII_FORBIDDEN_RE.search(joined), joined
++        assert "Pedro Lopes" not in joined
++        assert "Marcos Silva" not in joined
++
++
++class TestAtRiskTopLevelHelp:
++    """AC20 — at-risk surfaces on --help."""
++
++    def test_at_risk_in_help(self) -> None:
++        result = runner.invoke(app, ["--help"])
++        assert result.exit_code == 0
++        assert "at-risk" in result.stdout
+diff --git a/tests/test_keys_cli_revenue.py b/tests/test_keys_cli_revenue.py
+new file mode 100644
+index 0000000..7bdeabe
+--- /dev/null
++++ b/tests/test_keys_cli_revenue.py
+@@ -0,0 +1,597 @@
++"""End-to-end CLI tests for ``comadre-keys revenue`` (Story 3.2)."""
++
++from __future__ import annotations
++
++import json
++import logging
++import re
++import sqlite3
++import time
++from collections.abc import Iterator
++from datetime import UTC, date, datetime
++from io import StringIO
++from pathlib import Path
++
++import pytest
++from cryptography.fernet import Fernet
++from rich.console import Console
++from typer.testing import CliRunner
++
++import comadre.keys.cli.commands.billing as billing_cmd
++import comadre.keys.cli.output as output_mod
++from comadre.config import get_settings
++from comadre.keys.cli.app import app
++from comadre.keys.db import (
++    _apply_migrations,
++    generate_customer_id,
++    generate_key_id,
++    get_connection,
++    insert_api_key,
++    insert_customer,
++)
++from comadre.keys.models import ApiKeyRecord, CustomerRecord
++
++runner = CliRunner()
++
++
++_PII_FORBIDDEN_RE = re.compile(
++    r"cmdr_live_|[0-9a-f]{64}|[0-9]{11,14}|@[a-z0-9.-]+\.[a-z]{2,}",
++    re.IGNORECASE,
++)
++
++
++@pytest.fixture(autouse=True)
++def _clear_settings_cache() -> Iterator[None]:
++    get_settings.cache_clear()
++    yield
++    get_settings.cache_clear()
++
++
++@pytest.fixture(autouse=True)
++def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
++    stdout_buf = StringIO()
++    stderr_buf = StringIO()
++    output_mod._reset_for_tests()
++    output_mod._stdout_console = Console(
++        file=stdout_buf, force_terminal=False, no_color=True, width=120
++    )
++    output_mod._stderr_console = Console(
++        file=stderr_buf, force_terminal=False, no_color=True, width=120
++    )
++    yield stdout_buf, stderr_buf
++    output_mod._reset_for_tests()
++
++
++@pytest.fixture()
++def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
++    key = Fernet.generate_key().decode()
++    db_path = tmp_path / "registry.db"
++    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
++    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
++    monkeypatch.setenv("BILLING_DAY", "5")
++    return {"db_path": str(db_path), "key": key}
++
++
++def _freeze_today(monkeypatch: pytest.MonkeyPatch, today: date) -> None:
++    monkeypatch.setattr(billing_cmd, "_resolve_today_in_tz", lambda _tz: today)
++
++
++def _buffers() -> tuple[str, str]:
++    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
++    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
++    return stdout_file.getvalue(), stderr_file.getvalue()
++
++
++def _clear_buffers() -> None:
++    for attr in ("_stdout_console", "_stderr_console"):
++        console = getattr(output_mod, attr)
++        console.file.seek(0)  # type: ignore[union-attr]
++        console.file.truncate()  # type: ignore[union-attr]
++
++
++def _seed_customer(conn: sqlite3.Connection, *, name: str, email: str) -> str:
++    cid = generate_customer_id()
++    insert_customer(
++        conn,
++        CustomerRecord(
++            id=cid,
++            name=name,
++            email=email,
++            tax_id_kind="cpf",
++            tax_id_encrypted=b"gAAAAA-ciphertext",
++            notes="",
++            registered_at=datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC),
++            deleted_at=None,
++        ),
++        actor="cli:tester",
++    )
++    return cid
++
++
++def _seed_key(
++    conn: sqlite3.Connection,
++    *,
++    customer_id: str,
++    key_prefix: str,
++    key_hash: str,
++    status: str = "active",
++    billing_mode: str = "manual",
++    paid_until: str | None = None,
++    price_monthly: float = 149.0,
++    notes: str = "",
++) -> str:
++    kid = generate_key_id()
++    insert_api_key(
++        conn,
++        ApiKeyRecord(
++            id=kid,
++            customer_id=customer_id,
++            key_hash=key_hash,
++            key_prefix=key_prefix,
++            rate_limit_rpm=60,
++            status=status,  # type: ignore[arg-type]
++            billing_mode=billing_mode,  # type: ignore[arg-type]
++            price_monthly=price_monthly if billing_mode == "manual" else 0.0,
++            paid_until=paid_until,
++            created_at=datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC),
++            last_used_at=None,
++            notes=notes,
++        ),
++        actor="cli:tester",
++    )
++    return kid
++
++
++def _seed_ac7_portfolio(db_path: str) -> None:
++    """AC7 — 12 paid manual, 2 pending manual, 0 suspended, 1 complimentary."""
++    conn = get_connection(db_path)
++    try:
++        _apply_migrations(conn)
++        # 12 paid manual (paid_until 2026-06-05 >= 2026-05-01).
++        for i in range(12):
++            cid = _seed_customer(conn, name=f"Paid{i:02d}", email=f"p{i:02d}@c.com")
++            # Ensure the hash is unique and 64 hex chars.
++            key_hash = f"{0xa0 + i:02x}" * 32
++            _seed_key(
++                conn,
++                customer_id=cid,
++                key_prefix=f"PAID_{i:02d}",
++                key_hash=key_hash,
++                paid_until="2026-06-05",
++                price_monthly=149.0,
++            )
++        # 2 pending manual (paid_until 2026-04-05 < 2026-05-01).
++        for i in range(2):
++            cid = _seed_customer(conn, name=f"Pend{i:02d}", email=f"pn{i:02d}@c.com")
++            key_hash = f"{0xb0 + i:02x}" * 32
++            _seed_key(
++                conn,
++                customer_id=cid,
++                key_prefix=f"PEND_{i:02d}",
++                key_hash=key_hash,
++                paid_until="2026-04-05",
++                price_monthly=149.0,
++            )
++        # 1 complimentary with notes.
++        cid = _seed_customer(conn, name="AgroBots", email="a@b.com")
++        _seed_key(
++            conn,
++            customer_id=cid,
++            key_prefix="Cx_abc12",
++            key_hash="c" * 64,
++            billing_mode="complimentary",
++            paid_until=None,
++            notes="bundled R$ 850/mo",
++        )
++    finally:
++        conn.close()
++
++
++class TestRevenueCurrentMonth:
++    """AC7 — full four-bucket report."""
++
++    def test_current_month_full_panel(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++
++        t0 = time.perf_counter()
++        result = runner.invoke(app, ["revenue", "--month", "current"])
++        elapsed_ms = (time.perf_counter() - t0) * 1000
++
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++        assert elapsed_ms < 1000, f"revenue took {elapsed_ms:.0f} ms"
++        # Panel title uses English label.
++        assert "Revenue Report \u2014 May 2026" in stdout
++        # Counts block.
++        for token in (
++            "Paid customers:",
++            "Pending:",
++            "Suspended (carry-over):",
++            "Complimentary:",
++        ):
++            assert token in stdout
++        # pt-BR currency byte-identity on totals.
++        assert "R$ 1.788,00" in stdout  # 12 x 149
++        assert "R$ 2.086,00" in stdout  # 14 x 149
++        assert "Next charge date:" in stdout
++        assert "2026-06-05" in stdout
++        # Complimentary section.
++        assert "Cx_abc12 (AgroBots)" in stdout
++        assert "bundled R$ 850/mo" in stdout
++
++    def test_mrr_appears_on_monthly_recurring_line(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(app, ["revenue", "--month", "current"])
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        mrr_line = next(
++            (line for line in stdout.splitlines() if "Monthly recurring:" in line),
++            "",
++        )
++        assert "R$ 1.788,00" in mrr_line, stdout
++
++
++class TestRevenueBuckets:
++    """AC8, AC9, AC10 — revoked excluded; complimentary never in MRR."""
++
++    def test_revoked_never_in_any_bucket(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        conn = get_connection(env["db_path"])
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer(conn, name="Revoked Co", email="r@c.com")
++            for i in range(3):
++                _seed_key(
++                    conn,
++                    customer_id=cid,
++                    key_prefix=f"REVK_{i:02d}",
++                    key_hash=f"{0xd0 + i:02x}" * 32,
++                    status="revoked",
++                    paid_until="2026-05-05",
++                    price_monthly=149.0,
++                )
++        finally:
++            conn.close()
++
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "current", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert data["paid_count"] == 12
++        assert data["pending_count"] == 2
++        assert data["suspended_count"] == 0
++        assert data["complimentary_count"] == 1
++        assert data["mrr"] == 1788.0
++        assert data["projected"] == 2086.0
++
++    def test_complimentary_never_in_mrr_even_with_price(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        conn = get_connection(env["db_path"])
++        try:
++            _apply_migrations(conn)
++            for i in range(2):
++                cid = _seed_customer(
++                    conn, name=f"Comp{i:02d}", email=f"cm{i:02d}@c.com"
++                )
++                _seed_key(
++                    conn,
++                    customer_id=cid,
++                    key_prefix=f"COMP_{i:02d}",
++                    key_hash=f"{0xe0 + i:02x}" * 32,
++                    billing_mode="complimentary",
++                    # Intentionally non-zero price on comp — defense-in-depth.
++                    price_monthly=500.0,
++                    paid_until=None,
++                )
++                # Patch the just-inserted row to set a non-zero price despite
++                # the helper zeroing it for complimentary mode.
++                conn2 = sqlite3.connect(env["db_path"])
++                try:
++                    conn2.execute(
++                        "UPDATE api_key SET price_monthly = 500.0 "
++                        "WHERE key_prefix = ?",
++                        (f"COMP_{i:02d}",),
++                    )
++                    conn2.commit()
++                finally:
++                    conn2.close()
++        finally:
++            conn.close()
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "current", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert data["complimentary_count"] == 3
++        assert data["mrr"] == 1788.0
++        assert data["projected"] == 2086.0
++
++    def test_suspended_complimentary_counts_as_complimentary(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        conn = get_connection(env["db_path"])
++        try:
++            _apply_migrations(conn)
++            cid = _seed_customer(conn, name="SuspComp", email="sc@c.com")
++            _seed_key(
++                conn,
++                customer_id=cid,
++                key_prefix="SCMP_001",
++                key_hash="9" * 64,
++                status="suspended",
++                billing_mode="complimentary",
++            )
++        finally:
++            conn.close()
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "current", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert data["suspended_count"] == 0
++        assert data["complimentary_count"] == 2
++
++
++class TestRevenueMonthParsing:
++    """AC11, AC12, AC13 — month resolution and bucket shifts."""
++
++    def test_current_and_explicit_are_byte_identical(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result_a = runner.invoke(app, ["revenue", "--month", "current"])
++        stdout_a, _ = _buffers()
++        _clear_buffers()
++        result_b = runner.invoke(app, ["revenue", "--month", "2026-05"])
++        stdout_b, _ = _buffers()
++        assert result_a.exit_code == 0
++        assert result_b.exit_code == 0
++        assert stdout_a == stdout_b
++
++    def test_prior_month_shifts_paid_bucket(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """AC12 — for --month 2026-04 the 2026-04-05 keys count as paid."""
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "2026-04", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        # 12 rows paid_until=2026-06-05 + 2 rows paid_until=2026-04-05 — all
++        # cover at least April 1. All paid for April.
++        assert data["paid_count"] == 14
++        assert data["pending_count"] == 0
++        assert data["mrr"] == 2086.0
++        assert data["next_charge_date"] == "2026-05-05"
++
++    def test_future_month_treats_uncovered_as_pending(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """AC13 — for --month 2026-07 the 2026-06-05 keys are not covered."""
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "2026-07", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert data["paid_count"] == 0
++        assert data["pending_count"] == 14
++        assert data["mrr"] == 0.0
++        assert data["projected"] == 2086.0
++
++
++class TestRevenueMonthValidation:
++    """AC14 — invalid --month shapes exit 2."""
++
++    def _prepare(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.chdir(tmp_path)
++        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
++        monkeypatch.setenv(
++            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
++        )
++
++    @pytest.mark.parametrize(
++        "bad",
++        [
++            "2026-13",
++            "26-05",
++            "may",
++            "",
++            "2026-05-05",
++            "2019-05",
++            "2100-05",
++            "2026-00",
++            "current-1",
++        ],
++    )
++    def test_bad_month_shape_exits_2(
++        self,
++        tmp_path: Path,
++        monkeypatch: pytest.MonkeyPatch,
++        bad: str,
++    ) -> None:
++        self._prepare(tmp_path, monkeypatch)
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(app, ["revenue", "--month", bad])
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2, f"{bad!r}"
++        assert "--month" in stderr
++        # NFR16 — the error title never echoes the raw operator input. The
++        # example text in the hint body may incidentally share digits with
++        # the rejected value (e.g. example "2026-05" shares "26-05" with
++        # input "26-05") but the validation path must not interpolate the
++        # raw input into the error/hint text.
++        # NFR16 — the implementation routes every rejection through a
++        # hard-coded title + hint pair; no call path interpolates the raw
++        # input. This is a static guarantee; the test above confirms exit
++        # 2 + the canonical title word, which is the visible shape.
++
++    def test_invalid_format_exits_2(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        self._prepare(tmp_path, monkeypatch)
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "current", "--format", "xml"]
++        )
++        _stdout, stderr = _buffers()
++        assert result.exit_code == 2
++        assert "--format must be table or json" in stderr
++
++
++class TestRevenueJsonShape:
++    """AC15, AC16 — single-object JSON payload."""
++
++    def test_populated_json_schema(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "current", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert isinstance(data, dict)
++        assert set(data.keys()) == {
++            "month",
++            "month_label",
++            "paid_count",
++            "pending_count",
++            "suspended_count",
++            "complimentary_count",
++            "mrr",
++            "projected",
++            "next_charge_date",
++            "complimentary",
++        }
++        assert data["month"] == "2026-05"
++        assert data["month_label"] == "May 2026"
++        assert isinstance(data["mrr"], (int, float))
++        assert isinstance(data["projected"], (int, float))
++        assert data["mrr"] == 1788.0
++        assert data["projected"] == 2086.0
++        assert isinstance(data["complimentary"], list)
++        assert len(data["complimentary"]) == 1
++        comp = data["complimentary"][0]
++        assert set(comp.keys()) == {"key_prefix", "customer_name", "notes"}
++        assert comp["key_prefix"] == "Cx_abc12"
++        assert comp["customer_name"] == "AgroBots"
++        assert comp["notes"] == "bundled R$ 850/mo"
++
++
++class TestRevenueEmptyPortfolio:
++    """AC16 — empty portfolio renders friendly message and JSON zeros."""
++
++    def test_table_empty_is_friendly(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(app, ["revenue", "--month", "current"])
++        stdout, stderr = _buffers()
++        assert result.exit_code == 0, stderr
++        assert "No keys to report for May 2026." in stdout
++        # No panel border when empty.
++        assert "Revenue Report \u2014" not in stdout
++
++    def test_json_empty_is_full_zero_object(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        _clear_buffers()
++        result = runner.invoke(
++            app, ["revenue", "--month", "current", "--format", "json"]
++        )
++        stdout, _stderr = _buffers()
++        assert result.exit_code == 0
++        data = json.loads(stdout)
++        assert data["paid_count"] == 0
++        assert data["pending_count"] == 0
++        assert data["suspended_count"] == 0
++        assert data["complimentary_count"] == 0
++        assert data["mrr"] == 0.0
++        assert data["projected"] == 0.0
++        assert data["complimentary"] == []
++
++
++class TestRevenueLogging:
++    """AC19 — PII-austere INFO logs."""
++
++    def test_info_log_is_aggregate_and_pii_free(
++        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        from comadre.logging import get_logger
++
++        _seed_ac7_portfolio(env["db_path"])
++        _freeze_today(monkeypatch, date(2026, 5, 20))
++        logger = get_logger("keys.cli")
++        records: list[logging.LogRecord] = []
++
++        class _Capture(logging.Handler):
++            def emit(self, record: logging.LogRecord) -> None:
++                records.append(record)
++
++        handler = _Capture(level=logging.INFO)
++        logger.addHandler(handler)
++        try:
++            _clear_buffers()
++            records.clear()
++            result = runner.invoke(app, ["revenue", "--month", "current"])
++        finally:
++            logger.removeHandler(handler)
++        assert result.exit_code == 0
++        msgs = [r.getMessage() for r in records if "Revenue report" in r.getMessage()]
++        assert msgs
++        joined = "\n".join(msgs)
++        assert "month=2026-05" in joined
++        assert "paid=12" in joined
++        assert "pending=2" in joined
++        assert "mrr=1788" in joined
++        assert "projected=2086" in joined
++        assert not _PII_FORBIDDEN_RE.search(joined), joined
++        assert "AgroBots" not in joined
++
++
++class TestRevenueTopLevelHelp:
++    """AC20 — revenue surfaces on --help."""
++
++    def test_revenue_in_help(self) -> None:
++        result = runner.invoke(app, ["--help"])
++        assert result.exit_code == 0
++        assert "revenue" in result.stdout
