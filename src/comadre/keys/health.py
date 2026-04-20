@@ -38,10 +38,13 @@ from comadre.keys.formatters import format_seconds_ago
 
 Severity = Literal["ok", "info", "warn", "fail"]
 
-# Story 3.4 ↔ Story 4.3 handshake: flipped to ``False`` when 4.3 ships the
-# backup playbook so ``_check_last_backup`` starts emitting warn/fail. While
-# ``True`` the backup row stays ``info`` and never affects ``is_healthy``.
-_BACKUP_NOT_IMPLEMENTED_INFO = True
+# Story 3.4 ↔ Story 4.3 handshake: Story 4.3 shipped the backup playbook
+# on 2026-04-20 so this constant flipped from ``True`` to ``False`` —
+# ``_check_last_backup`` now emits warn/ok instead of staying at
+# ``info`` forever. Kept as a named constant for symmetry with the
+# Story 3.4 forcing-function tests and for a quick operator rollback
+# surface if the backup playbook is ever regressed.
+_BACKUP_NOT_IMPLEMENTED_INFO = False
 
 # The sweep is considered fresh within 48 h (Story 3.4 spec §2). The cron
 # fires daily at 00:30 operator-TZ; a 48 h threshold tolerates one missed
@@ -392,10 +395,13 @@ def _check_last_backup(
 ) -> HealthCheck:
     """Look for the most-recent backup artefact.
 
-    Today (``_BACKUP_NOT_IMPLEMENTED_INFO=True``) this always returns
-    ``info`` — the backup playbook (Story 4.3) has not shipped. When 4.3
-    lands and flips the constant, ``allow_warn=True`` re-enables the warn
-    branch for stale / absent backups.
+    With ``allow_warn=True`` (the Story 4.3 default) this returns ``warn``
+    when no archive is present or the newest is older than
+    ``staleness_warn_seconds``, and ``ok`` otherwise. The legacy
+    ``allow_warn=False`` path keeps the Story 3.4 "forward-leaning info"
+    shape and is retained as a rollback surface (via
+    ``_BACKUP_NOT_IMPLEMENTED_INFO``) should backups ever need to be
+    disabled mid-lifecycle.
     """
     matches: list[Path] = []
     try:
@@ -415,9 +421,24 @@ def _check_last_backup(
             )
         # A backup file somehow exists (manual or early adoption of 4.3).
         # Report the mtime but stay at info severity until the constant
-        # flip enables warn/fail branches.
-        newest = max(matches, key=lambda p: p.stat().st_mtime)
-        mtime_epoch = int(newest.stat().st_mtime)
+        # flip enables warn/fail branches. Filter stat-races out so a
+        # concurrent retention sweep cannot raise FileNotFoundError.
+        legacy_survivors: list[tuple[Path, float]] = []
+        for match in matches:
+            try:
+                legacy_survivors.append((match, match.stat().st_mtime))
+            except OSError:
+                continue
+        if not legacy_survivors:
+            return HealthCheck(
+                label="Last backup",
+                value="never (Story 4.3 not yet shipped)",
+                severity="info",
+                detail=None,
+                data={"available_after_story_4_3": False},
+            )
+        newest, newest_mtime = max(legacy_survivors, key=lambda item: item[1])
+        mtime_epoch = int(newest_mtime)
         mtime_iso = datetime.fromtimestamp(mtime_epoch, UTC).strftime(_ISO_UTC_FORMAT)
         age = int(
             (_utcnow() - datetime.fromtimestamp(mtime_epoch, UTC)).total_seconds()
@@ -435,8 +456,17 @@ def _check_last_backup(
             },
         )
 
-    # Story 4.3 — reserved warn path (exercised only after the constant flip).
-    if not matches:  # pragma: no cover
+    # Story 4.3 — warn / ok branches (active since the constant flipped).
+    # Snapshot mtimes up-front so a concurrent retention sweep deleting an
+    # archive between glob() and stat() can't raise FileNotFoundError out of
+    # this check. Survivors-only, pick the newest.
+    survivors: list[tuple[Path, float]] = []
+    for match in matches:
+        try:
+            survivors.append((match, match.stat().st_mtime))
+        except OSError:
+            continue
+    if not survivors:
         return HealthCheck(
             label="Last backup",
             value="never",
@@ -444,15 +474,11 @@ def _check_last_backup(
             detail="run backup-keys.yml",
             data={"available_after_story_4_3": True, "path": None},
         )
-    newest = max(matches, key=lambda p: p.stat().st_mtime)  # pragma: no cover
-    mtime_epoch = int(newest.stat().st_mtime)  # pragma: no cover
-    mtime_iso = datetime.fromtimestamp(mtime_epoch, UTC).strftime(  # pragma: no cover
-        _ISO_UTC_FORMAT
-    )
-    age = int(  # pragma: no cover
-        (_utcnow() - datetime.fromtimestamp(mtime_epoch, UTC)).total_seconds()
-    )
-    if age > staleness_warn_seconds:  # pragma: no cover
+    newest, newest_mtime = max(survivors, key=lambda item: item[1])
+    mtime_epoch = int(newest_mtime)
+    mtime_iso = datetime.fromtimestamp(mtime_epoch, UTC).strftime(_ISO_UTC_FORMAT)
+    age = int((_utcnow() - datetime.fromtimestamp(mtime_epoch, UTC)).total_seconds())
+    if age > staleness_warn_seconds:
         return HealthCheck(
             label="Last backup",
             value=f"{mtime_iso} ({format_seconds_ago(age)})",
@@ -465,7 +491,7 @@ def _check_last_backup(
                 "age_seconds": age,
             },
         )
-    return HealthCheck(  # pragma: no cover
+    return HealthCheck(
         label="Last backup",
         value=f"{mtime_iso} ({format_seconds_ago(age)})",
         severity="ok",

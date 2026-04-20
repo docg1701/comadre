@@ -1,6 +1,9 @@
 FROM python:3.12-slim
 
-# System dependencies: ffmpeg (with AAC), libsndfile, build deps for espeak-ng
+# System dependencies: ffmpeg (with AAC), libsndfile, build deps for espeak-ng,
+# plus openssl (AES-256-CBC envelope for backup/restore playbooks — Story 4.3)
+# and the sqlite3 CLI (operator-debug convenience on a disaster-recovery day;
+# not invoked by any playbook or Python code).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -12,6 +15,8 @@ RUN apt-get update && \
         g++ \
         make \
         libsonic-dev \
+        openssl \
+        sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Build espeak-ng from source — pinned 2026-03-24, includes PR #2344 pt-BR improvements

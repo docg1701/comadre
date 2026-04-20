@@ -305,6 +305,55 @@ class TestRegistrySettings:
         assert settings.key_registry_encryption_key is not None
 
 
+class TestBackupPassphrase:
+    """Story 4.3 — ``BACKUP_PASSPHRASE`` field semantics."""
+
+    def test_default_empty_at_boot(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        """Empty passphrase boots OK so the service survives pre-bootstrap upgrades."""
+        monkeypatch.delenv("BACKUP_PASSPHRASE", raising=False)
+        settings = Settings()
+        assert settings.backup_passphrase.get_secret_value() == ""
+
+    def test_empty_explicit_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("BACKUP_PASSPHRASE", "")
+        settings = Settings()
+        assert settings.backup_passphrase.get_secret_value() == ""
+
+    def test_short_passphrase_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("BACKUP_PASSPHRASE", "too-short")
+        with pytest.raises(ValidationError) as exc_info:
+            Settings()
+        errors = exc_info.value.errors()
+        assert any("at least 16 characters" in err.get("msg", "") for err in errors)
+
+    def test_passphrase_with_16_chars_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("BACKUP_PASSPHRASE", "x" * 16)
+        settings = Settings()
+        assert settings.backup_passphrase.get_secret_value() == "x" * 16
+
+    def test_passphrase_with_32_chars_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("BACKUP_PASSPHRASE", "a" * 32)
+        settings = Settings()
+        assert len(settings.backup_passphrase.get_secret_value()) == 32
+
+    def test_secret_str_masks_in_repr(
+        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
+    ) -> None:
+        monkeypatch.setenv("BACKUP_PASSPHRASE", "super-secret-passphrase-not-visible")
+        settings = Settings()
+        assert "super-secret-passphrase-not-visible" not in repr(settings)
+
+
 class TestGetSettings:
     """Tests for the get_settings cached function."""
 

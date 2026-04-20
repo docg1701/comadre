@@ -121,6 +121,18 @@ def _write_marker(db_path: str, *, content: str | None = None) -> Path:
     return marker
 
 
+def _write_backup(db_path: str) -> Path:
+    """Drop a fresh ``*.backup-*.tar.gz.enc`` stub next to the DB.
+
+    Story 4.3: the ``Last backup`` health row now demands a fresh archive
+    to stay ``ok`` (warn otherwise). Every test that expects ``is_healthy``
+    true must seed one via this helper.
+    """
+    archive = Path(f"{db_path}.backup-2026-04-20T02-00-00Z.tar.gz.enc")
+    archive.write_bytes(b"encrypted-stub")
+    return archive
+
+
 def _seed_real_registry(db_path: str) -> None:
     """Seed a small realistic registry: customers, keys, audit trail."""
     conn = get_connection(db_path)
@@ -243,6 +255,7 @@ class TestTableMode:
         _seed_real_registry(env["db_path"])
         _write_marker(env["db_path"])
         _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
         result = runner.invoke(app, ["health"])
         assert result.exit_code == 0, _buffers()
         stdout, _ = _buffers()
@@ -271,6 +284,7 @@ class TestJsonMode:
         _seed_real_registry(env["db_path"])
         _write_marker(env["db_path"])
         _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0, _buffers()
         stdout, _ = _buffers()
@@ -297,6 +311,7 @@ class TestJsonMode:
         _seed_real_registry(env["db_path"])
         _write_marker(env["db_path"])
         _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0
         payload = json.loads(_buffers()[0])
@@ -349,6 +364,7 @@ class TestMarkerRendering:
             env["db_path"],
             content="schedule=30 0 * * *\ncron_tz=America/Sao_Paulo",
         )
+        _write_backup(env["db_path"])
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0
         payload = json.loads(_buffers()[0])

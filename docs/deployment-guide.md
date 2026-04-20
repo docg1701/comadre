@@ -527,6 +527,57 @@ Tombstoned customers are skipped by design — their ciphertext is a zero-length
 
 Story 4.6 (LGPD documentation & breach runbook) consolidates these procedures into a full operator handbook once it lands; this section is the interim reference.
 
+### Backup & restore
+
+Story 4.3 ships two ansible playbooks — `backup-keys.yml` and `restore-keys.yml` — that together close the 24-hour RPO loop on the key registry. A nightly cron (installed by `bootstrap.yml` at **02:00** in the operator's `billing_timezone`) runs the backup automatically; restore is operator-invoked on demand with an explicit `backup_file` argument. Both playbooks drive the work inside the `tts-service` container; no new CLI verb is added.
+
+**One-time setup.** Generate a long passphrase and export it before the first `bootstrap.yml` run:
+
+```bash
+export COMADRE_BACKUP_PASSPHRASE="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+ansible-playbook deploy/ansible/playbooks/bootstrap.yml \
+  -i deploy/ansible/inventory/production.yml \
+  -e "ansible_become_password=$SUDO_PASS"
+```
+
+Bootstrap asserts the passphrase is ≥ 16 characters, writes it into `~/comadre/.env` as `BACKUP_PASSPHRASE`, and installs the `comadre-keys-backup` cron entry at 02:00 operator TZ. **Store the passphrase in your password manager** — losing it renders every archive unreadable (AES-256-CBC + PBKDF2 with no recovery surface). Every future `bootstrap.yml` run must have the same env var exported.
+
+**Manual backup (ad-hoc).** The cron handles nightly work; invoke manually only before a risky operation (migration, key rotation, `delete-customer --hard`) or to test the path:
+
+```bash
+ansible-playbook deploy/ansible/playbooks/backup-keys.yml \
+  -i deploy/ansible/inventory/production.yml \
+  -e "ansible_become_password=$SUDO_PASS"
+```
+
+The archive lands at `/var/lib/comadre/registry.db.backup-<UTC-ISO>.tar.gz.enc` inside the `comadre-registry` named volume at mode `0600`. The summary task prints the archive path + size + retention policy + an SCP hint for off-VPS archival. Archives older than `backup_retention_days` (default **14**) are pruned on every run.
+
+**Restore drill.** The restore is Destroy-tier at the playbook layer (it replaces the live DB file) and requires an explicit `backup_file`. There is no auto-discovery — passing the path is the UX safeguard:
+
+```bash
+ansible-playbook deploy/ansible/playbooks/restore-keys.yml \
+  -i deploy/ansible/inventory/production.yml \
+  -e "ansible_become_password=$SUDO_PASS \
+      backup_file=/var/lib/comadre/registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
+```
+
+The playbook decrypts + verifies the archive while the service is still running, stops `tts-service` briefly (caddy 503s during the window; ≤ 30 s typical), swaps the DB file via a helper alpine container with the registry volume mounted, restarts the service, and polls `/health` until `healthy`. Expected end-to-end wall clock: < 10 minutes for ≤ 10 000 customers (NFR21).
+
+**Archived key ≠ live `.env`.** If the archive was captured under a pre-rotation encryption key and the operator has since run `rotate-encryption-key`, the archived tax-ID ciphertexts only decrypt under the archived key. The restore playbook detects this divergence and prints a `WARN` line with the archived key value. It does NOT write to `.env` — the operator is in the loop for that swap:
+
+1. Edit `~/comadre/.env` — replace `KEY_REGISTRY_ENCRYPTION_KEY` with the archived value printed by the playbook.
+2. `docker compose restart tts-service` to pick up the new env value.
+
+Until the swap, every `comadre-keys export-customer` call fails with `InvalidToken`.
+
+**Off-VPS archival.** The 14-day on-VPS retention is local belt-and-braces; a single-disk failure loses every archive alongside the DB itself. Rotate archives to cold storage at least weekly via the SCP hint printed by the backup playbook's summary task. Destination is operator-specific (password-manager attachment, encrypted USB, object storage with client-side encryption). Story 4.6 will document the recommended recipe; until then, any of the above is acceptable — the key invariant is "a copy of the archive exists off the VPS".
+
+**Disaster-recovery drill (optional).** To validate the end-to-end round-trip on a disposable second VPS:
+
+1. Bootstrap the drill VPS with the same passphrase, `rsync` a recent archive from the production DB parent directory.
+2. `ansible-playbook restore-keys.yml -e "backup_file=/path/to/archive.tar.gz.enc ..."`.
+3. Compare `comadre-keys list-customers` against production's latest snapshot.
+
 ## Firewall (UFW)
 
 The bootstrap playbook installs and configures UFW with minimal rules:

@@ -53,6 +53,17 @@
           print(Fernet.generate_key().decode())')"
         success_msg: "Key registry encryption key is configured."
 
+    - name: "[Prereq] Validate backup passphrase is configured"
+      ansible.builtin.assert:
+        that:
+          - backup_passphrase | default('') | length >= 16
+        fail_msg: >-
+          COMADRE_BACKUP_PASSPHRASE environment variable is not set or is
+          shorter than 16 characters. Generate a fresh passphrase with:
+          export COMADRE_BACKUP_PASSPHRASE="$(python -c 'import secrets;
+          print(secrets.token_urlsafe(32))')"
+        success_msg: "Backup passphrase is configured ({{ backup_passphrase | length }} chars)."
+
     - name: "[Prereq] Validate repository URL is configured"
       ansible.builtin.assert:
         that:
@@ -260,6 +271,7 @@
         content: |
           KEY_REGISTRY_ENCRYPTION_KEY={{ key_registry_encryption_key }}
           KEY_REGISTRY_DB_PATH=/var/lib/comadre/registry.db
+          BACKUP_PASSPHRASE={{ backup_passphrase }}
           OPERATOR_CONTACT_HINT={{ operator_contact_hint | default('') }}
           DEFAULT_VOICE={{ default_voice }}
           DOMAIN={{ domain }}
@@ -338,6 +350,35 @@
         content: |-
           schedule=30 0 * * *
           cron_tz={{ billing_timezone | default('UTC') }}
+        mode: "0600"
+
+    - name: "[Cron] Configure nightly key-registry backup at 02:00 operator TZ"
+      ansible.builtin.cron:
+        name: "comadre-keys-backup"
+        minute: "0"
+        hour: "{{ backup_hour | default(2) }}"
+        # /bin/bash -c + ``set -o pipefail`` so ``cmd | logger`` preserves the
+        # playbook's exit code through the pipe. Matches the suspension-sweep
+        # cron pattern.
+        job: >-
+          /bin/bash -c 'set -o pipefail;
+          cd ~/comadre &&
+          ansible-playbook -i deploy/ansible/inventory/production.yml
+          deploy/ansible/playbooks/backup-keys.yml 2>&1 |
+          logger -t comadre-keys-backup'
+
+    # Forward-compat marker for Story 4.4's ansible-layer health.yml probe
+    # that will assert "comadre-keys-backup cron is installed". Story 4.3
+    # does NOT add a new ``comadre-keys health`` row keyed on this marker —
+    # the ``Last backup`` freshness row already covers the backup-liveness
+    # signal the in-container CLI reports.
+    - name: "[Cron] Write health marker for comadre-keys-backup"
+      ansible.builtin.copy:
+        dest: "~/comadre/data/keys/registry.db.backup-cron-installed"
+        content: |-
+          schedule=0 {{ backup_hour | default(2) }} * * *
+          cron_tz={{ billing_timezone | default('UTC') }}
+          retention_days={{ backup_retention_days | default(14) }}
         mode: "0600"
 
     # =========================================================================

@@ -76,6 +76,19 @@
         name: "comadre-daily-suspension"
         state: absent
 
+    # Remove the backup cron marker before the cron itself, same ordering
+    # rule as the suspension sweep: if cron removal fails partway, the
+    # reality-consistent signal is "not installed", not "installed".
+    - name: "[Cron] Remove health marker for comadre-keys-backup"
+      ansible.builtin.file:
+        path: "~/comadre/data/keys/registry.db.backup-cron-installed"
+        state: absent
+
+    - name: "[Cron] Remove nightly key-registry backup"
+      ansible.builtin.cron:
+        name: "comadre-keys-backup"
+        state: absent
+
     - name: "[Cron] Remove CRON_TZ envvar"
       ansible.builtin.cron:
         name: "CRON_TZ"
@@ -225,7 +238,7 @@
             ✓ Containers stopped and removed (tts-service replicas, caddy)
             ✓ Docker volumes removed (models, voices, audio, caddy-data, caddy-config)
             ✓ Docker images and build cache pruned
-            ✓ Cron jobs removed (daily-restart, audio-cleanup, daily-suspension, CRON_TZ)
+            ✓ Cron jobs removed (daily-restart, audio-cleanup, daily-suspension, keys-backup, CRON_TZ)
             ✓ ~/comadre directory removed
 
           System-level components uninstalled:

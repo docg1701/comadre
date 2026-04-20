@@ -205,6 +205,9 @@ class TestFullHealthyReport:
                 )
             _write_marker(db_path)
             _write_snapshot(db_path)
+            # Story 4.3: the backup row now demands a fresh archive to stay ok.
+            archive = tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
+            archive.write_bytes(b"encrypted-stub")
             report = _collect(conn, db_path)
         finally:
             conn.close()
@@ -542,36 +545,70 @@ class TestCronMarkerCheck:
 
 
 class TestBackupCheck:
-    def test_info_only_today_without_backup(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "registry.db"
-        conn = get_connection(db_path)
-        try:
-            _apply_migrations(conn)
-            report = _collect(conn, db_path)
-        finally:
-            conn.close()
-        check = _check_by_label(report, "Last backup")
-        assert check.severity == "info"
-        assert check.data is not None
-        assert check.data["available_after_story_4_3"] is False
+    """Story 4.3 — the constant flipped to ``False``; warn/ok branches active."""
 
-    def test_info_only_today_even_with_existing_backup_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_warn_when_no_backup_present(self, tmp_path: Path) -> None:
         db_path = tmp_path / "registry.db"
         conn = get_connection(db_path)
         try:
             _apply_migrations(conn)
-            # Simulate a forward-leaning backup file.
-            (tmp_path / "registry.db.backup-2026-04-19.tar.gz.enc").write_bytes(
-                b"encrypted-stub"
-            )
             report = _collect(conn, db_path)
         finally:
             conn.close()
         check = _check_by_label(report, "Last backup")
-        # Still info today — WARN branch is gated behind the constant flip.
-        assert check.severity == "info"
+        assert check.severity == "warn"
+        assert check.value == "never"
+        assert check.detail == "run backup-keys.yml"
+        assert check.data is not None
+        assert check.data["available_after_story_4_3"] is True
+        assert check.data["path"] is None
+
+    def test_ok_when_fresh_backup_present(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            archive = tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
+            archive.write_bytes(b"encrypted-stub")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last backup")
+        assert check.severity == "ok"
+        assert check.data is not None
+        assert check.data["available_after_story_4_3"] is True
+
+    def test_warn_when_backup_is_stale(self, tmp_path: Path) -> None:
+        """Freshness threshold is 48h — backdate past it to force warn."""
+        import os
+
+        db_path = tmp_path / "registry.db"
+        archive = tmp_path / "registry.db.backup-2026-04-15T02-00-00Z.tar.gz.enc"
+        archive.write_bytes(b"encrypted-stub")
+        ancient = time.time() - (72 * 3600)
+        os.utime(archive, (ancient, ancient))
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        check = _check_by_label(report, "Last backup")
+        assert check.severity == "warn"
+        assert "expected within 48h" in (check.detail or "")
+
+    def test_is_healthy_flips_false_on_missing_backup(self, tmp_path: Path) -> None:
+        """The whole report goes un-healthy when the backup row is warn."""
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        assert report.is_healthy is False
+        backup = _check_by_label(report, "Last backup")
+        assert backup.severity == "warn"
 
 
 class TestAuthCacheCheck:
@@ -635,10 +672,13 @@ class TestAggregation:
                     target_id=None,
                     details={"swept_count": 0},
                 )
+            # Story 4.3: backup row now requires a fresh archive to stay ok.
+            archive = tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
+            archive.write_bytes(b"encrypted-stub")
             report = _collect(conn, db_path)
         finally:
             conn.close()
-        # No warn/fail on a clean run → healthy even though Last backup is info.
+        # No warn/fail on a clean run → healthy even though Auth cache is info.
         assert report.is_healthy is True
 
 

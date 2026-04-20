@@ -123,6 +123,17 @@ class Settings(BaseSettings):
             'print(Fernet.generate_key().decode())"`.'
         ),
     )
+    backup_passphrase: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "Passphrase for AES-256 encryption of nightly backup tarballs. "
+            "Consumed only by the backup/restore ansible playbooks; NOT read "
+            "by the FastAPI app or any comadre-keys CLI verb. Must be at "
+            "least 16 characters when set; empty is accepted at service boot "
+            "so a deployment that has not yet run bootstrap.yml with "
+            "COMADRE_BACKUP_PASSPHRASE exported can still start the auth path."
+        ),
+    )
     operator_contact_hint: str = Field(
         default="Contact your Comadre operator for billing.",
         description="Operator contact string shown in CLI error hints.",
@@ -179,6 +190,27 @@ class Settings(BaseSettings):
             raise ValueError(
                 "KEY_REGISTRY_ENCRYPTION_KEY must be a valid Fernet key"
             ) from exc
+        return v
+
+    @field_validator("backup_passphrase")
+    @classmethod
+    def _validate_backup_passphrase_length(cls, v: SecretStr) -> SecretStr:
+        """Accept empty (deferred-bootstrap OK) or length >= 16 chars.
+
+        Empty-at-boot is by design (Story 4.3): the passphrase is consumed
+        only by the backup/restore playbooks, not the FastAPI app or any
+        CLI verb. Forcing it to be required at boot would make the upgrade
+        path chicken-and-egg (service won't start → can't run bootstrap →
+        service won't start). The playbooks themselves enforce the length
+        check via ``ansible.builtin.assert``.
+        """
+        secret = v.get_secret_value()
+        if secret and len(secret) < 16:
+            raise ValueError(
+                "BACKUP_PASSPHRASE must be at least 16 characters when set; "
+                "leave empty to defer configuration until bootstrap.yml runs "
+                "with COMADRE_BACKUP_PASSPHRASE exported."
+            )
         return v
 
 

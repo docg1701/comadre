@@ -1,0 +1,280 @@
+---
+# Comadre Key-Registry Restore Playbook (Story 4.3 — FR41, NFR21)
+#
+# Restores a previously-captured ``{KEY_REGISTRY_DB_PATH}.backup-*.tar.gz.enc``
+# archive onto the live key registry. The service is stopped briefly during
+# the DB-file swap so WAL sidecars don't straddle the boundary, then
+# restarted and polled until ``/health`` reports healthy.
+#
+#   export COMADRE_BACKUP_PASSPHRASE="<passphrase used at backup time>"
+#   ansible-playbook playbooks/restore-keys.yml -i inventory/production.yml \
+#     -e "ansible_become_password=YOUR_SUDO_PASS
+#         backup_file=/var/lib/comadre/registry.db.backup-<ts>.tar.gz.enc"
+#
+# The ``backup_file`` argument is REQUIRED. It is the container-side path
+# to the archive (inside the comadre-registry named volume). No auto-
+# discovery — passing the path explicitly is a Destroy-tier UX safeguard.
+#
+# This playbook is IDEMPOTENT: running it twice with the same ``backup_file``
+# produces the same end state (same DB bits, mode 0600, WAL mode on).
+#
+# If the archived encryption key differs from the live ``.env`` value
+# (common after ``rotate-encryption-key``), the playbook WARNS and echoes
+# the archived key. It never writes to ``.env`` — the operator is in the
+# loop for that swap.
+
+- name: Restore Comadre key registry
+  hosts: comadre_vps
+  gather_facts: false
+
+  tasks:
+    # =========================================================================
+    # Prerequisites
+    # =========================================================================
+
+    - name: "[Prereq] Verify SSH connectivity"
+      ansible.builtin.ping:
+
+    - name: "[Prereq] Validate backup_file argument"
+      ansible.builtin.assert:
+        that:
+          - backup_file is defined
+          - backup_file | length > 0
+        fail_msg: >-
+          Pass the path to a backup archive:
+          ansible-playbook restore-keys.yml -e "backup_file=/var/lib/comadre/registry.db.backup-<ts>.tar.gz.enc ..."
+        success_msg: "Restoring from {{ backup_file }}"
+
+    - name: "[Prereq] Validate backup passphrase is configured"
+      ansible.builtin.assert:
+        that:
+          - backup_passphrase | default('') | length >= 16
+        fail_msg: >-
+          COMADRE_BACKUP_PASSPHRASE environment variable is not set or is
+          shorter than 16 characters. Export the passphrase that was used
+          to create the archive.
+
+    - name: "[Prereq] Verify ~/comadre exists"
+      ansible.builtin.stat:
+        path: "~/comadre"
+      register: comadre_dir_stat
+
+    - name: "[Prereq] Fail if ~/comadre is missing"
+      ansible.builtin.assert:
+        that:
+          - comadre_dir_stat.stat.exists
+          - comadre_dir_stat.stat.isdir
+        fail_msg: "~/comadre directory not found. Bootstrap must run first."
+
+    - name: "[Prereq] Verify tts-service container is running"
+      ansible.builtin.command:
+        cmd: docker compose ps -q tts-service
+        chdir: "~/comadre"
+      register: tts_service_ps
+      changed_when: false
+      failed_when: tts_service_ps.stdout | length == 0
+
+    - name: "[Prereq] Verify backup archive is readable inside container"
+      ansible.builtin.command:
+        cmd: >-
+          docker compose exec -T tts-service bash -c
+          'test -r "{{ backup_file }}" && echo ok'
+        chdir: "~/comadre"
+      register: archive_readable
+      changed_when: false
+      failed_when: archive_readable.stdout | trim != "ok"
+
+    # =========================================================================
+    # Decrypt, Verify, Stage (while service is still running)
+    # =========================================================================
+    #
+    # Stage directory is inside the named volume at
+    # ``/var/lib/comadre/.restore-staging/`` so it survives across
+    # ``docker compose exec`` calls and is visible to the helper container
+    # that performs the swap after the service stops.
+
+    - name: "[Stage] Decrypt + untar + integrity-check"
+      ansible.builtin.command:
+        cmd: >-
+          docker compose exec -T tts-service
+          bash -c '{{ _stage_script }}'
+        chdir: "~/comadre"
+      vars:
+        _stage_script: |
+          set -euo pipefail
+          umask 077
+          DB_PATH="${KEY_REGISTRY_DB_PATH:-/var/lib/comadre/registry.db}"
+          DB_DIR="$(dirname "$DB_PATH")"
+          STAGING="$DB_DIR/.restore-staging"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          chmod 0700 "$STAGING"
+          openssl enc -d -aes-256-cbc -pbkdf2 \
+            -in "{{ backup_file }}" \
+            -out "$STAGING/bundle.tar.gz" \
+            -pass env:BACKUP_PASSPHRASE
+          tar -C "$STAGING" -xzf "$STAGING/bundle.tar.gz"
+          test -f "$STAGING/registry.db" \
+            || { echo "Archive missing registry.db" >&2; exit 1; }
+          test -f "$STAGING/encryption-key.txt" \
+            || { echo "Archive missing encryption-key.txt" >&2; exit 1; }
+          python -c "
+          import sqlite3, sys
+          conn = sqlite3.connect(sys.argv[1])
+          result = conn.execute('PRAGMA integrity_check').fetchone()[0]
+          conn.close()
+          sys.exit(0 if result == 'ok' else 1)
+          " "$STAGING/registry.db"
+          ARCHIVED_KEY="$(cat "$STAGING/encryption-key.txt")"
+          if [ "$ARCHIVED_KEY" != "$KEY_REGISTRY_ENCRYPTION_KEY" ]; then
+              echo "KEY_DIVERGES"
+              echo "ARCHIVED_KEY=$ARCHIVED_KEY"
+          else
+              echo "KEY_MATCHES"
+          fi
+          rm -f "$STAGING/bundle.tar.gz"
+          echo "stage OK"
+      register: stage_result
+      changed_when: true
+
+    - name: "[Stage] Detect archived-vs-live key divergence"
+      ansible.builtin.set_fact:
+        key_diverges: "{{ 'KEY_DIVERGES' in stage_result.stdout }}"
+        archived_key_line: >-
+          {{ stage_result.stdout_lines
+             | select('match', '^ARCHIVED_KEY=')
+             | list | first | default('') }}
+
+    # =========================================================================
+    # Stop Service
+    # =========================================================================
+
+    - name: "[Service] Stop tts-service"
+      community.docker.docker_compose_v2:
+        project_src: "~/comadre"
+        services:
+          - tts-service
+        state: stopped
+
+    # =========================================================================
+    # DB Swap (helper container — tts-service is stopped)
+    # =========================================================================
+    #
+    # Uses the alpine helper-container pattern proven in
+    # ``bootstrap.yml:227-251`` (voice deployment). The comadre-registry
+    # volume is mounted at /var/lib/comadre and a single ``sh -c`` script:
+    #   1. Removes stale WAL/SHM sidecars (invalidated by the swap).
+    #   2. Moves the staged registry.db into place.
+    #   3. chmod 0600 (NFR13).
+    # WAL mode re-verification is deferred to the service-start step; the
+    # tts-service container's ``get_connection`` already enforces
+    # ``journal_mode=WAL`` on every open.
+
+    - name: "[Restore] Swap DB file via helper container"
+      block:
+        - name: "[Restore] Remove stale helper container from prior run"
+          community.docker.docker_container:
+            name: comadre-restore-helper
+            state: absent
+
+        - name: "[Restore] Create helper container for volume access"
+          community.docker.docker_container:
+            name: comadre-restore-helper
+            image: alpine:3.21
+            command: "sh -c '{{ _swap_script }}'"
+            volumes:
+              - "comadre-registry:/var/lib/comadre"
+            state: started
+            auto_remove: false
+          vars:
+            _swap_script: |
+              set -eu
+              umask 077
+              DB_PATH="/var/lib/comadre/registry.db"
+              STAGING="/var/lib/comadre/.restore-staging"
+              rm -f "$DB_PATH-wal" "$DB_PATH-shm"
+              mv "$STAGING/registry.db" "$DB_PATH"
+              chmod 0600 "$DB_PATH"
+              rm -rf "$STAGING"
+              echo "swap OK"
+
+        - name: "[Restore] Wait for helper container to finish"
+          community.docker.docker_container_info:
+            name: comadre-restore-helper
+          register: helper_info
+          until: >-
+            helper_info.container.State.Status | default('') == 'exited'
+          retries: 60
+          delay: 1
+
+        - name: "[Restore] Verify helper container exit code"
+          ansible.builtin.assert:
+            that:
+              - helper_info.container.State.ExitCode == 0
+            fail_msg: >-
+              DB-swap helper container exited non-zero.
+              Inspect with: docker logs comadre-restore-helper
+
+      always:
+        - name: "[Restore] Remove helper container"
+          community.docker.docker_container:
+            name: comadre-restore-helper
+            state: absent
+
+    # =========================================================================
+    # Restart Service + Health Wait
+    # =========================================================================
+
+    - name: "[Service] Start tts-service"
+      community.docker.docker_compose_v2:
+        project_src: "~/comadre"
+        state: present
+
+    - name: "[Health] Wait for service to become healthy"
+      ansible.builtin.uri:
+        url: "https://{{ domain | default('localhost') }}/health"
+        validate_certs: false
+        return_content: true
+      register: health_check
+      until: >-
+        health_check.status == 200
+        and (health_check.json.status | default('')) == "healthy"
+      retries: 180
+      delay: 10
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+
+    - name: "[Summary] Report restore status"
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          Comadre Key-Registry Restore — Complete
+          ============================================
+
+          Archive:        {{ backup_file }}
+          Service:        healthy
+          Key divergence: {{ 'YES — action required below' if key_diverges else 'no (archived key matches live .env)' }}
+
+          {% if key_diverges %}
+          WARNING: The archive's encryption key differs from the current
+          ``.env`` value. tax_id ciphertexts in the restored DB were
+          encrypted under the archived key and will NOT decrypt under the
+          live key until ``.env`` is updated.
+
+          {{ archived_key_line }}
+
+          To complete the restore, on the host:
+            1. Edit ~/comadre/.env — replace KEY_REGISTRY_ENCRYPTION_KEY
+               with the ARCHIVED_KEY value printed above.
+            2. docker compose restart tts-service
+
+          Until that swap, ``comadre-keys export-customer`` will fail with
+          ``InvalidToken`` on every row.
+          {% endif %}
+
+          Post-restore smoke check:
+            docker compose exec tts-service comadre-keys list-customers | head
+
+          ============================================
