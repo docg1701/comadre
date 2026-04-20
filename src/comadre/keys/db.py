@@ -44,6 +44,42 @@ UpdateKeyField = Literal["notes", "price", "rpm"]
 
 
 @dataclass(frozen=True, slots=True)
+class CustomerExportRow:
+    """Active-customer export payload — includes the encrypted tax-ID blob.
+
+    Surfaced exclusively for ``export-customer`` (Story 4.1); every other
+    read path goes through ``get_customer_detail`` which deliberately
+    omits the ciphertext. Tombstoned customers are treated as missing
+    (``deleted_at IS NULL`` filter), matching ``get_customer`` /
+    ``get_customer_detail``.
+    """
+
+    id: str
+    name: str
+    email: str
+    tax_id_kind: TaxIdKind
+    tax_id_encrypted: bytes
+    notes: str
+    registered_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteCustomerResult:
+    """Return payload from ``delete_customer_hard`` (Story 4.1).
+
+    ``keys_purged`` is the count of ``api_key`` rows DELETEd in the same
+    transaction as the customer-tombstone UPDATE (and one ``delete_customer``
+    audit row). ``customer_name`` is captured PRE-purge so the ConfirmationLine
+    can render ``Deleted: cust_... (Marcos Silva) — 2 keys purged`` —
+    post-purge the name column reads empty string.
+    """
+
+    customer_id: str
+    customer_name: str
+    keys_purged: int
+
+
+@dataclass(frozen=True, slots=True)
 class UpdateCustomerResult:
     """Return payload from ``update_customer``.
 
@@ -392,6 +428,36 @@ def get_customer(
     )
 
 
+def get_customer_with_cipher(
+    conn: sqlite3.Connection,
+    customer_id: str,
+) -> CustomerExportRow | None:
+    """Return the export payload for ``customer_id``, or ``None`` if missing.
+
+    Tombstoned customers (``deleted_at IS NOT NULL``) are treated as
+    missing. Used only by ``export-customer`` (Story 4.1) — the
+    ciphertext BLOB must NEVER be returned by a general-purpose helper
+    that callers might repurpose for logs / panels / caches.
+    """
+    row = conn.execute(
+        "SELECT id, name, email, tax_id_kind, tax_id_encrypted, notes, "
+        "registered_at FROM customer "
+        "WHERE id = ? AND deleted_at IS NULL",
+        (customer_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return CustomerExportRow(
+        id=row["id"],
+        name=row["name"],
+        email=row["email"],
+        tax_id_kind=cast(TaxIdKind, row["tax_id_kind"]),
+        tax_id_encrypted=bytes(row["tax_id_encrypted"]),
+        notes=row["notes"] or "",
+        registered_at=row["registered_at"],
+    )
+
+
 def update_customer(
     conn: sqlite3.Connection,
     customer_id: str,
@@ -484,6 +550,91 @@ def update_customer(
             f"update_customer: row vanished after commit for {customer_id!r}"
         )
     return UpdateCustomerResult(customer=refreshed, updated_fields=fields_sorted)
+
+
+def delete_customer_hard(
+    conn: sqlite3.Connection,
+    customer_id: str,
+    *,
+    actor: str,
+) -> DeleteCustomerResult | None:
+    """Hard-delete ``customer_id`` + all associated keys in one transaction.
+
+    Returns ``None`` when the customer is missing or already tombstoned —
+    the CLI maps ``None`` to exit 3. Otherwise:
+
+    1. ``DELETE FROM api_key WHERE customer_id = ?`` (rowcount = keys_purged).
+    2. ``UPDATE customer SET name = '', email = '', tax_id_encrypted = X'',
+       notes = '', deleted_at = <utcnow-iso>`` for the matching id.
+    3. ``log_event(..., action='delete_customer', target_type='customer',
+       target_id=customer_id, details={'keys_purged': N, 'tax_id_kind': kind})``
+       — no personal data in ``details`` (defense-in-depth: audit.py's
+       ``_FORBIDDEN_DETAIL_KEYS`` blocks ``name``/``email``/``cpf``/``cnpj``
+       / ``tax_id`` already; this helper never attempts to pass them).
+
+    Callers MUST NOT wrap in ``with conn:``. The helper owns the
+    transaction so the DELETE, the UPDATE, and the audit write either
+    all commit or all roll back.
+
+    ``customer_name`` and ``tax_id_kind`` are captured BEFORE the
+    UPDATE so the return payload + audit row both carry the pre-purge
+    signal (the name is part of the operator's ConfirmationLine; the
+    kind is non-PII metadata FR38 permits).
+
+    Empty-string / zero-length-BLOB writes satisfy the NOT NULL
+    constraints on ``name`` / ``email`` / ``tax_id_encrypted``; the
+    canonical tombstone signal stays ``deleted_at IS NOT NULL`` (no v002
+    migration needed).
+    """
+    from comadre.keys.audit import log_event
+
+    with conn:
+        row = conn.execute(
+            "SELECT name, tax_id_kind FROM customer "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (customer_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        customer_name = row["name"]
+        tax_id_kind = row["tax_id_kind"]
+
+        # Step 1 — DELETE every associated api_key. ``rowcount`` is the
+        # authoritative key-purge count for the ConfirmationLine + audit.
+        cursor = conn.execute(
+            "DELETE FROM api_key WHERE customer_id = ?",
+            (customer_id,),
+        )
+        keys_purged = cursor.rowcount
+
+        # Step 2 — scrub PII on the customer row + stamp deleted_at.
+        now_iso = _utcnow_iso()
+        conn.execute(
+            "UPDATE customer SET name = '', email = '', "
+            "tax_id_encrypted = X'', notes = '', deleted_at = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (now_iso, customer_id),
+        )
+
+        # Step 3 — one audit row. ``_FORBIDDEN_DETAIL_KEYS`` would
+        # reject name/email/tax_id/cpf/cnpj — we pass only structural
+        # metadata permitted by FR38.
+        log_event(
+            conn,
+            actor=actor,
+            action="delete_customer",
+            target_type="customer",
+            target_id=customer_id,
+            details={"keys_purged": keys_purged, "tax_id_kind": tax_id_kind},
+        )
+
+    _touch_auth_cache_sentinel(conn)
+
+    return DeleteCustomerResult(
+        customer_id=customer_id,
+        customer_name=customer_name,
+        keys_purged=keys_purged,
+    )
 
 
 def list_customers(

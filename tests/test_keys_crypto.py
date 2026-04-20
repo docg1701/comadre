@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
 
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.crypto import (
+    decrypt_tax_id,
     encrypt_tax_id,
     strip_tax_id,
     validate_cnpj,
@@ -166,6 +167,53 @@ class TestEncryptTaxId:
         ciphertext = encrypt_tax_id(canonical, secret)
         plaintext = Fernet(key_bytes).decrypt(ciphertext).decode()
         assert plaintext == canonical
+
+
+class TestDecryptTaxId:
+    """Story 4.1 — dual primitive: decrypt round-trips encrypt_tax_id."""
+
+    def test_round_trip_cpf(self) -> None:
+        key_bytes = Fernet.generate_key()
+        secret = SecretStr(key_bytes.decode())
+        canonical = "12345678909"
+        ciphertext = encrypt_tax_id(canonical, secret)
+        assert decrypt_tax_id(ciphertext, secret) == canonical
+
+    def test_round_trip_numeric_cnpj(self) -> None:
+        key_bytes = Fernet.generate_key()
+        secret = SecretStr(key_bytes.decode())
+        canonical = "12345678000195"
+        ciphertext = encrypt_tax_id(canonical, secret)
+        assert decrypt_tax_id(ciphertext, secret) == canonical
+
+    def test_round_trip_alphanumeric_cnpj(self) -> None:
+        key_bytes = Fernet.generate_key()
+        secret = SecretStr(key_bytes.decode())
+        canonical = "12ABC345XY0189"
+        ciphertext = encrypt_tax_id(canonical, secret)
+        assert decrypt_tax_id(ciphertext, secret) == canonical
+
+    def test_invalid_token_on_tampered_ciphertext(self) -> None:
+        key_bytes = Fernet.generate_key()
+        secret = SecretStr(key_bytes.decode())
+        ciphertext = encrypt_tax_id("12345678909", secret)
+        # Flip the last byte. Fernet's HMAC catches any ciphertext
+        # modification, even a single bit.
+        tampered = ciphertext[:-1] + bytes([ciphertext[-1] ^ 0x01])
+        with pytest.raises(InvalidToken):
+            decrypt_tax_id(tampered, secret)
+
+    def test_invalid_token_on_key_mismatch(self) -> None:
+        key_a = SecretStr(Fernet.generate_key().decode())
+        key_b = SecretStr(Fernet.generate_key().decode())
+        ciphertext = encrypt_tax_id("12345678909", key_a)
+        with pytest.raises(InvalidToken):
+            decrypt_tax_id(ciphertext, key_b)
+
+    def test_invalid_token_on_empty_bytes(self) -> None:
+        secret = SecretStr(Fernet.generate_key().decode())
+        with pytest.raises(InvalidToken):
+            decrypt_tax_id(b"", secret)
 
 
 class TestAntiEnumeration:

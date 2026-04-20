@@ -137,6 +137,7 @@ Each engine has its own:
 - **Per-key rate limiting** -- each API key carries its own `rate_limit_rpm`. Customers on higher tiers get higher throughput; customers on smaller tiers are bounded predictably. Buckets are keyed on the registry's `key_id` and stable across key rotation. See [docs/rate-limiting.md](docs/rate-limiting.md).
 - **Operator observability** -- per-key counters (`requests_total`, `rate_limit_429`, `peak_rpm`) snapshot every 15 s to disk. Inspect the auth cache with `comadre-keys cache-status`; inspect a specific key's last-24h activity with `comadre-keys show <key-prefix> --audit-tail N`.
 - **System health** -- `comadre-keys health` renders a single panel that covers DB integrity and `0600` permissions, schema-version parity, customer / key counts, last suspension-sweep age, cron-installed status, backup liveness (forward-leaning, info-only until backups ship), and auth-cache replica telemetry. Pipe `comadre-keys health --format json` into a Nagios / Prometheus textfile monitor — exit 0 on healthy, exit 7 on any warning or failure.
+- **LGPD data operations** -- `comadre-keys export-customer <cust_id> --format json|yaml` emits the customer's stored data (decrypted tax ID, name, email, notes, associated key prefixes) as a machine-readable document for Art. 18 II/V access responses. `comadre-keys delete-customer <cust_id> --hard` irreversibly purges the customer's personal data and all their API keys in a single transaction, preserving the tombstone row and audit trail per Art. 18 VI.
 
 ## Requirements
 

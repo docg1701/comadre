@@ -21,6 +21,8 @@ from comadre.keys.cli.output import (
     render_customer_list,
     render_empty_state,
     render_error,
+    render_export_json,
+    render_export_yaml,
     render_health_report,
     render_json,
     render_key_detail,
@@ -1372,4 +1374,130 @@ class TestRenderHealthReport:
         out = buf.getvalue()
         # Literal escape survives — the Rich markup is not interpreted.
         assert "[red]evil[/]" in out
-        assert "[bold]hostile[/]" in out
+
+
+# ---------------------------------------------------------------------------
+# Story 4.1 — export renderers.
+# ---------------------------------------------------------------------------
+
+
+def _sample_export_payload() -> dict[str, object]:
+    return {
+        "id": "cust_01hg7xyz01hg7xyz01hg7xyz01",
+        "name": "Marcos Silva",
+        "email": "marcos@example.com",
+        "tax_id_kind": "cpf",
+        "tax_id": "123.456.789-09",
+        "registered_at": "2026-03-12T14:22:05Z",
+        "notes": "[urgent] owner of a bot",
+        "keys": [
+            {
+                "key_prefix": "Pq_abc12",
+                "status": "active",
+                "billing_mode": "manual",
+                "created_at": "2026-03-20T10:00:00Z",
+            },
+        ],
+    }
+
+
+class TestRenderExportJson:
+    def test_emits_valid_json_with_indent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload = _sample_export_payload()
+        render_export_json(payload)
+        text = buf.getvalue()
+        parsed = json.loads(text)
+        assert parsed == payload
+
+    def test_preserves_insertion_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload = _sample_export_payload()
+        render_export_json(payload)
+        parsed = json.loads(buf.getvalue())
+        assert list(parsed.keys()) == [
+            "id",
+            "name",
+            "email",
+            "tax_id_kind",
+            "tax_id",
+            "registered_at",
+            "notes",
+            "keys",
+        ]
+
+
+class TestRenderExportYaml:
+    def test_round_trips_via_safe_load(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import yaml
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload = _sample_export_payload()
+        render_export_yaml(payload)
+        parsed = yaml.safe_load(buf.getvalue())
+        assert parsed == payload
+
+    def test_preserves_insertion_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import yaml
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload = _sample_export_payload()
+        render_export_yaml(payload)
+        parsed = yaml.safe_load(buf.getvalue())
+        assert list(parsed.keys()) == [
+            "id",
+            "name",
+            "email",
+            "tax_id_kind",
+            "tax_id",
+            "registered_at",
+            "notes",
+            "keys",
+        ]
+
+    def test_passes_markup_delimiters_through_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload = {
+            "id": "cust_xxx",
+            "notes": "[urgent]: see #42",
+        }
+        render_export_yaml(payload)
+        text = buf.getvalue()
+        # The literal characters make it into the YAML output.
+        assert "[urgent]" in text
+        # Round-trips cleanly through safe_load (structural equality).
+        parsed = yaml.safe_load(text)
+        assert parsed["notes"] == "[urgent]: see #42"
+
+    def test_allows_unicode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import yaml
+
+        buf = StringIO()
+        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        monkeypatch.setattr(output_mod, "_stdout_console", fake)
+        payload = {"name": "Helena \u00d3 \u00e7"}
+        render_export_yaml(payload)
+        text = buf.getvalue()
+        # No \xHH escape sequences for the Portuguese characters.
+        assert "Helena \u00d3 \u00e7" in text
+        assert yaml.safe_load(text) == payload

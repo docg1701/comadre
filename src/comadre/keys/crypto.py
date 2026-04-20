@@ -9,6 +9,12 @@ all-same-digit inputs and incorrect check digits.
 Anti-enumeration (FR37, NFR16): `InvalidTaxIdError` NEVER receives the raw
 input. The rejected value exists only in the caller's local scope and is
 dropped when the exception propagates.
+
+The dual primitives `encrypt_tax_id` / `decrypt_tax_id` are the only code
+paths in this repository that touch `cryptography.fernet.Fernet`. Every
+other module that needs a decrypted tax ID routes through `decrypt_tax_id`
+so the "one storage-boundary module" invariant holds (architecture §Fernet
+Encryption Pattern).
 """
 
 from __future__ import annotations
@@ -70,3 +76,22 @@ def encrypt_tax_id(canonical: str, key: SecretStr) -> bytes:
     """Fernet-encrypt the stripped, uppercased tax ID. Returns ciphertext bytes."""
     fernet = Fernet(key.get_secret_value().encode())
     return fernet.encrypt(canonical.encode())
+
+
+def decrypt_tax_id(ciphertext: bytes, key: SecretStr) -> str:
+    """Fernet-decrypt a tax ID stored via ``encrypt_tax_id``.
+
+    Returns the canonical stripped+uppercased form — the same shape
+    ``encrypt_tax_id`` accepts. Callers that need to display the tax ID
+    (e.g., ``export-customer``) format the canonical form via
+    ``format_tax_id_display`` before emission; the decrypted string
+    never leaves the caller's local scope otherwise.
+
+    Raises ``cryptography.fernet.InvalidToken`` on ciphertext tampering,
+    truncation, or key mismatch. Callers SHOULD NOT attempt to recover
+    from ``InvalidToken`` by sniffing the bytes — propagate it as a
+    database / configuration error (exit 5 / 6), never as a soft-fail
+    that displays a placeholder tax ID.
+    """
+    fernet = Fernet(key.get_secret_value().encode())
+    return fernet.decrypt(ciphertext).decode()

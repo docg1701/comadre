@@ -16,11 +16,13 @@ from comadre.keys.db import (
     count_active_customers,
     count_keys_by_status,
     count_tombstones,
+    delete_customer_hard,
     generate_customer_id,
     generate_key_id,
     get_connection,
     get_customer,
     get_customer_detail,
+    get_customer_with_cipher,
     get_key_detail,
     get_key_detail_by_id,
     insert_api_key,
@@ -342,6 +344,50 @@ class TestGetCustomer:
             )
             conn.commit()
             assert get_customer(conn, cid) is None
+        finally:
+            conn.close()
+
+
+class TestGetCustomerWithCipher:
+    """Story 4.1 — ciphertext-carrying read for export-customer."""
+
+    def test_returns_export_row_with_ciphertext(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+
+            row = get_customer_with_cipher(conn, cid)
+            assert row is not None
+            assert row.id == cid
+            assert row.name == "Helena Ribeiro"
+            assert row.email == "helena@clinica.com"
+            assert row.tax_id_kind == "cpf"
+            assert row.tax_id_encrypted == b"gAAAAA-ciphertext-blob"
+            assert row.notes == ""
+            assert row.registered_at == "2026-04-16T12:00:00Z"
+        finally:
+            conn.close()
+
+    def test_returns_none_for_missing_id(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert get_customer_with_cipher(conn, "cust_missingxxxxxxx") is None
+        finally:
+            conn.close()
+
+    def test_treats_tombstone_as_missing(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            conn.execute(
+                "UPDATE customer SET deleted_at = ? WHERE id = ?",
+                ("2026-04-20T00:00:00Z", cid),
+            )
+            conn.commit()
+            assert get_customer_with_cipher(conn, cid) is None
         finally:
             conn.close()
 
@@ -1097,6 +1143,7 @@ class TestListCommandsDoNotWrite:
             count_tombstones(conn)
             count_active_customers(conn)
             count_keys_by_status(conn)
+            get_customer_with_cipher(conn, cid)
 
             after = {
                 "customer": _count_rows(conn, "customer"),
@@ -3767,5 +3814,280 @@ class TestAuthCacheSentinelTouched:
             assert sentinel.exists()
             mode = stat.S_IMODE(sentinel.stat().st_mode)
             assert mode == 0o600
+        finally:
+            conn.close()
+
+    def test_delete_customer_hard_touches_sentinel(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            cid, _kid = _seed_customer_and_key(conn)
+            before = self._advance_sentinel_past_now(db_path)
+
+            delete_customer_hard(conn, cid, actor="cli:tester")
+
+            after = self._read_sentinel_mtime_ns(db_path)
+            assert after > before
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Story 4.1 — delete_customer_hard (LGPD hard-delete)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteCustomerHard:
+    """Hard-delete customer + keys + scrub PII in a single transaction."""
+
+    def _audit_rows_for(
+        self, conn: sqlite3.Connection, target_id: str
+    ) -> list[sqlite3.Row]:
+        rows = conn.execute(
+            "SELECT id, action, target_type, target_id, actor, details_json "
+            "FROM audit_log WHERE target_id = ? ORDER BY id ASC",
+            (target_id,),
+        ).fetchall()
+        return list(rows)
+
+    def test_happy_path_returns_result_and_purges_rows(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid, kid = _seed_customer_and_key(conn, key_hash="a" * 64)
+
+            # Seed a second key so keys_purged == 2.
+            insert_api_key(
+                conn,
+                ApiKeyRecord(
+                    id=generate_key_id(),
+                    customer_id=cid,
+                    key_hash="b" * 64,
+                    key_prefix="SecondKey",
+                    rate_limit_rpm=120,
+                    status="active",
+                    billing_mode="manual",
+                    price_monthly=199.0,
+                    paid_until=None,
+                    created_at=datetime(2026, 4, 16, 13, 0, 0, tzinfo=UTC),
+                    last_used_at=None,
+                    notes="",
+                ),
+                actor="cli:tester",
+            )
+
+            result = delete_customer_hard(conn, cid, actor="cli:tester")
+            assert result is not None
+            assert result.customer_id == cid
+            assert result.customer_name == "Helena Ribeiro"
+            assert result.keys_purged == 2
+
+            # Customer row scrubbed; tombstone stamped.
+            row = conn.execute(
+                "SELECT name, email, tax_id_encrypted, notes, deleted_at "
+                "FROM customer WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["name"] == ""
+            assert row["email"] == ""
+            assert row["tax_id_encrypted"] == b""
+            assert row["notes"] == ""
+            assert row["deleted_at"] is not None
+
+            # Every api_key row gone.
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM api_key WHERE customer_id = ?",
+                (cid,),
+            ).fetchone()[0]
+            assert remaining == 0
+
+            # One new delete_customer audit row; no PII in details.
+            audit = self._audit_rows_for(conn, cid)
+            delete_rows = [r for r in audit if r["action"] == "delete_customer"]
+            assert len(delete_rows) == 1
+            assert delete_rows[0]["target_type"] == "customer"
+            assert delete_rows[0]["actor"] == "cli:tester"
+            details = json.loads(str(delete_rows[0]["details_json"]))
+            assert details == {"keys_purged": 2, "tax_id_kind": "cpf"}
+
+            # Pre-existing audit rows for the customer still present
+            # (create_customer; issue_key rows live under the key ids).
+            actions = [r["action"] for r in audit]
+            assert "create_customer" in actions
+
+            # The key ids' audit rows (issue_key) stay intact — FR38
+            # retention. We look them up by the DELETEd key ids.
+            key_audit = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE target_id = ?",
+                (kid,),
+            ).fetchone()[0]
+            assert key_audit >= 1
+        finally:
+            conn.close()
+
+    def test_zero_keys_customer_still_tombstones(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+
+            result = delete_customer_hard(conn, cid, actor="cli:tester")
+            assert result is not None
+            assert result.keys_purged == 0
+
+            row = conn.execute(
+                "SELECT name, deleted_at FROM customer WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["name"] == ""
+            assert row["deleted_at"] is not None
+
+            audit = self._audit_rows_for(conn, cid)
+            delete_rows = [r for r in audit if r["action"] == "delete_customer"]
+            assert len(delete_rows) == 1
+            details = json.loads(str(delete_rows[0]["details_json"]))
+            assert details == {"keys_purged": 0, "tax_id_kind": "cpf"}
+        finally:
+            conn.close()
+
+    def test_cnpj_customer_records_correct_kind_in_audit(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = generate_customer_id()
+            insert_customer(
+                conn,
+                CustomerRecord(
+                    id=cid,
+                    name="Acme LTDA",
+                    email="billing@acme.com",
+                    tax_id_kind="cnpj",
+                    tax_id_encrypted=b"gAAAAA-ciphertext",
+                    notes="",
+                    registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+                    deleted_at=None,
+                ),
+                actor="cli:tester",
+            )
+
+            result = delete_customer_hard(conn, cid, actor="cli:tester")
+            assert result is not None
+
+            audit = self._audit_rows_for(conn, cid)
+            delete_rows = [r for r in audit if r["action"] == "delete_customer"]
+            details = json.loads(str(delete_rows[0]["details_json"]))
+            assert details == {"keys_purged": 0, "tax_id_kind": "cnpj"}
+        finally:
+            conn.close()
+
+    def test_missing_customer_returns_none(self, tmp_path: Path) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            assert (
+                delete_customer_hard(
+                    conn, "cust_missingxxxxxxxxxxxxxx", actor="cli:tester"
+                )
+                is None
+            )
+            # No audit row written for a non-existent target.
+            assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+    def test_tombstoned_customer_is_opaque(self, tmp_path: Path) -> None:
+        """Re-running delete on an already-purged row returns None."""
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            first = delete_customer_hard(conn, cid, actor="cli:tester")
+            assert first is not None
+
+            second = delete_customer_hard(conn, cid, actor="cli:tester")
+            assert second is None
+
+            # Only one delete_customer audit row exists — the re-run did not
+            # write a duplicate.
+            audit = self._audit_rows_for(conn, cid)
+            delete_rows = [r for r in audit if r["action"] == "delete_customer"]
+            assert len(delete_rows) == 1
+        finally:
+            conn.close()
+
+    def test_rolls_back_when_audit_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid, kid = _seed_customer_and_key(conn)
+
+            before_keys = conn.execute(
+                "SELECT COUNT(*) FROM api_key WHERE customer_id = ?", (cid,)
+            ).fetchone()[0]
+            before_audit_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_log"
+            ).fetchone()[0]
+
+            def _boom(*_args: object, **_kw: object) -> None:
+                raise ValueError("forced audit failure")
+
+            import comadre.keys.audit as audit_module
+
+            monkeypatch.setattr(audit_module, "log_event", _boom)
+
+            with pytest.raises(ValueError):
+                delete_customer_hard(conn, cid, actor="cli:tester")
+
+            # api_key rows restored via transaction rollback.
+            after_keys = conn.execute(
+                "SELECT COUNT(*) FROM api_key WHERE customer_id = ?", (cid,)
+            ).fetchone()[0]
+            assert after_keys == before_keys
+
+            # Customer row un-touched.
+            row = conn.execute(
+                "SELECT name, email, tax_id_encrypted, deleted_at "
+                "FROM customer WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["name"] == "Helena Ribeiro"
+            assert row["email"] == "helena@clinica.com"
+            assert row["tax_id_encrypted"] != b""
+            assert row["deleted_at"] is None
+
+            # No new audit row.
+            after_audit = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+            assert after_audit == before_audit_count
+
+            # Key row still there — prove by id.
+            remaining = conn.execute(
+                "SELECT id FROM api_key WHERE id = ?", (kid,)
+            ).fetchone()
+            assert remaining is not None
+        finally:
+            conn.close()
+
+    def test_audit_details_dict_passes_forbidden_keys_guard(
+        self, tmp_path: Path
+    ) -> None:
+        """Defense-in-depth: the details dict the helper constructs
+        contains no PII keys that ``_FORBIDDEN_DETAIL_KEYS`` blocks.
+        """
+        from comadre.keys.audit import _FORBIDDEN_DETAIL_KEYS
+
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            cid = _seed_customer(conn)
+            delete_customer_hard(conn, cid, actor="cli:tester")
+
+            audit = self._audit_rows_for(conn, cid)
+            delete_rows = [r for r in audit if r["action"] == "delete_customer"]
+            details = json.loads(str(delete_rows[0]["details_json"]))
+            for key in details:
+                assert key.lower() not in _FORBIDDEN_DETAIL_KEYS
         finally:
             conn.close()

@@ -477,6 +477,34 @@ Revocation is terminal — subsequent requests return 401. Issue a fresh key wit
 
 See [monetization.md](monetization.md) for the full CLI reference and lifecycle reasoning.
 
+### LGPD operator procedures
+
+Brazilian LGPD (Art. 18) gives customers the right to access the personal data Comadre holds about them and to request irreversible deletion. Two CLI verbs implement the operator side of that contract:
+
+**Data-subject access request (Art. 18 II / V).** Emit a machine-readable document with the customer's name, email, decrypted tax ID (formatted), notes, and associated key prefixes:
+
+```bash
+comadre-keys export-customer <cust_id> --format json > /tmp/export.json
+# or for a human-readable deliverable:
+comadre-keys export-customer <cust_id> --format yaml > /tmp/export.yaml
+```
+
+The export is non-mutating — no DB rows change, no audit row is written. Forward the resulting document to the subject via the agreed channel (email, client portal, etc.).
+
+**Deletion request (Art. 18 VI).** Permanently purge the customer's personal data and every associated API key. The command deletes all `api_key` rows, scrubs `name` / `email` / `tax_id_encrypted` / `notes` on the customer row, and stamps `deleted_at` — the tombstone row and audit-log history remain to support later ANPD inquiries (FR38 retention contract):
+
+```bash
+# Interactive (requires typing "y" at the prompt)
+comadre-keys delete-customer <cust_id> --hard
+
+# Scripted (skip the prompt — use in automation)
+comadre-keys delete-customer <cust_id> --hard --yes
+```
+
+`--hard` is required. After deletion, `list-customers` no longer shows the customer; `list-customers --deleted` shows the tombstone with blank name/email columns as a signal that the row was purged.
+
+Story 4.6 (LGPD documentation & breach runbook) consolidates these procedures into a full operator handbook once it lands; this section is the interim reference.
+
 ## Firewall (UFW)
 
 The bootstrap playbook installs and configures UFW with minimal rules:

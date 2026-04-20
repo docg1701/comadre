@@ -2,9 +2,13 @@
 
 Exit-code contract (UX-DR10):
   0 — success
-  2 — usage error (Typer rejects / mutex violation / bad email)
+  2 — usage error (Typer rejects / mutex violation / bad email /
+      --hard missing / --format invalid / confirm-abort)
+  3 — not-found (tombstoned or missing customer on show / update-customer /
+      export-customer / delete-customer)
   4 — validation error (tax-ID checksum)
-  5 — database error (sqlite3.Error)
+  5 — database error (sqlite3.Error / fernet InvalidToken on export
+      decrypt — the only path where decrypt can fail operationally)
   6 — permission / configuration error (missing encryption key, etc.)
 """
 
@@ -12,12 +16,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sqlite3
 from datetime import UTC, datetime
 from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import click
 import typer
+from cryptography.fernet import InvalidToken
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from comadre.config import get_settings
@@ -27,6 +34,7 @@ from comadre.keys.audit import get_cli_actor
 from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
+    EXPORT_FORMAT_CHOICES,
     LIST_FORMAT_CHOICES,
     render_audit_tail,
     render_confirmation,
@@ -34,12 +42,16 @@ from comadre.keys.cli.output import (
     render_customer_list,
     render_empty_state,
     render_error,
+    render_export_json,
+    render_export_yaml,
     render_json,
     render_key_detail,
     render_last_24h_stats,
     render_show_json,
+    stderr_console,
 )
 from comadre.keys.crypto import (
+    decrypt_tax_id,
     encrypt_tax_id,
     strip_tax_id,
     validate_cnpj,
@@ -49,15 +61,20 @@ from comadre.keys.db import (
     UpdateCustomerResult,
     _apply_migrations,
     count_tombstones,
+    delete_customer_hard,
     generate_customer_id,
     get_connection,
+    get_customer,
+    get_customer_with_cipher,
     insert_customer,
     is_first_run,
+    list_api_keys,
     list_audit_events,
     list_customers,
     resolve_show_target,
     update_customer,
 )
+from comadre.keys.formatters import format_tax_id_display
 from comadre.keys.models import (
     AuditEventRow,
     CustomerDetailRow,
@@ -874,4 +891,347 @@ def update_customer_cmd(
     suffix = _update_confirmation_suffix(result.updated_fields)
     render_confirmation(
         f"Updated: {result.customer.id} ({result.customer.name}) \u2014 {suffix}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# `export-customer` — LGPD Art. 18 II/V machine-readable export (Story 4.1).
+# ---------------------------------------------------------------------------
+
+_CUSTOMER_ID_PATTERN = re.compile(r"^cust_[0-9a-z]{26}$")
+
+_EXPORT_NOT_FOUND_HINT = "Run 'comadre-keys list-customers' to see registered records."
+_EXPORT_BAD_ID_HINT = (
+    "Customer IDs have the shape cust_<26-char-ULID>. "
+    "Use list-customers to find the right id."
+)
+_EXPORT_FORMAT_HINT = "Valid values: json, yaml."
+_EXPORT_DECRYPT_HINT = (
+    "Check KEY_REGISTRY_ENCRYPTION_KEY matches the deployment-time key. "
+    "If the key has changed, restore the previous value or run "
+    "rotate-encryption-key (Story 4.2)."
+)
+
+
+@app.command("export-customer")
+def export_customer_cmd(
+    customer_id: str = typer.Argument(
+        ...,
+        metavar="CUSTOMER_ID",
+        help=(
+            "Customer ID to export (from create-customer / list-customers). "
+            "Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
+        ),
+    ),
+    format: str = typer.Option(
+        "json",
+        "--format",
+        help=(
+            "Output format: json (default, machine-readable) or yaml "
+            "(human-readable for data-subject access response). "
+            "Example: --format yaml."
+        ),
+    ),
+) -> None:
+    """Export a customer's stored data to stdout for LGPD Art. 18 II/V response.
+
+    Example: comadre-keys export-customer cust_01j8xr3e4c5m7kn9p2qt8vwy
+             comadre-keys export-customer cust_01j8xr3e4c5m7kn9p2qt8vwy --format yaml
+    """
+    # 1. Literal flag validation.
+    if format not in EXPORT_FORMAT_CHOICES:
+        render_error(
+            "Usage error: --format must be json or yaml",
+            _EXPORT_FORMAT_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Customer ID shape validation — pre-DB so typos / pasted secrets
+    # never open a connection.
+    if not _CUSTOMER_ID_PATTERN.match(customer_id):
+        render_error(
+            "Usage error: invalid customer id",
+            _EXPORT_BAD_ID_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 3. Settings ladder (exit 6).
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _missing_key_hint,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _missing_key_hint,
+        )
+        raise typer.Exit(code=6)
+
+    # 4. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 5. Fetch the export row (+ associated keys).
+        try:
+            row = get_customer_with_cipher(conn, customer_id)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        if row is None:
+            render_error(
+                f"Not found: no customer matches '{customer_id}'",
+                _EXPORT_NOT_FOUND_HINT,
+            )
+            raise typer.Exit(code=3)
+
+        try:
+            keys = list_api_keys(conn, customer_id=customer_id)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    # 6. Decrypt (exit 5 on InvalidToken — env-var swap is the only
+    # operational cause). The decrypted string lives only in the local
+    # scope until it is embedded in the payload dict below.
+    try:
+        canonical = decrypt_tax_id(
+            row.tax_id_encrypted, settings.key_registry_encryption_key
+        )
+    except InvalidToken:
+        render_error(
+            "Database error: tax-ID ciphertext failed to decrypt",
+            _EXPORT_DECRYPT_HINT,
+        )
+        raise typer.Exit(code=5) from None
+
+    # 7. Format the tax ID for display; build the export payload. Insertion
+    # order is the AC1 field-order contract: id → name → email →
+    # tax_id_kind → tax_id → registered_at → notes → keys.
+    tax_id_display = format_tax_id_display(canonical, row.tax_id_kind)
+    payload: dict[str, object] = {
+        "id": row.id,
+        "name": row.name,
+        "email": row.email,
+        "tax_id_kind": row.tax_id_kind,
+        "tax_id": tax_id_display,
+        "registered_at": row.registered_at,
+        "notes": row.notes,
+        "keys": [
+            {
+                "key_prefix": k.key_prefix,
+                "status": k.status,
+                "billing_mode": k.billing_mode,
+                "created_at": k.created_at,
+            }
+            for k in keys
+        ],
+    }
+
+    # 8. PII-austere INFO log. Never tax_id / name / email / ciphertext.
+    _logger.info(
+        "Customer exported | id=%s | key_count=%d | format=%s",
+        row.id,
+        len(keys),
+        format,
+    )
+
+    # 9. Render branch.
+    if format == "json":
+        render_export_json(payload)
+    else:
+        render_export_yaml(payload)
+
+
+# ---------------------------------------------------------------------------
+# `delete-customer --hard` — LGPD Art. 18 VI irreversible purge (Story 4.1).
+# ---------------------------------------------------------------------------
+
+_DELETE_CUSTOMER_HARD_REQUIRED_HINT = (
+    "Re-run with --hard to acknowledge the irreversible purge. "
+    "See --help for the full effect."
+)
+_DELETE_CUSTOMER_NOT_FOUND_HINT = (
+    "Run 'comadre-keys list-customers' to see registered records."
+)
+
+
+@app.command("delete-customer")
+def delete_customer_cmd(
+    customer_id: str = typer.Argument(
+        ...,
+        metavar="CUSTOMER_ID",
+        help=(
+            "Customer ID to permanently purge. Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
+        ),
+    ),
+    hard: bool = typer.Option(
+        False,
+        "--hard",
+        help=(
+            "Required acknowledgement flag. The customer record's personal "
+            "data (name, email, encrypted tax ID, notes) is irreversibly "
+            "purged; every associated API key is deleted; the tombstone "
+            "row + audit-log entries are preserved. LGPD Art. 18 VI."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Skip the interactive confirmation prompt (for scripting).",
+    ),
+) -> None:
+    """Permanently purge a customer's personal data and all their API keys (LGPD).
+
+    Example: comadre-keys delete-customer cust_01j8xr3e4c5m7kn9p2qt8vwy --hard
+             comadre-keys delete-customer cust_01j8xr3e4c5m7kn9p2qt8vwy --hard --yes
+    """
+    # 1. --hard required-flag check (exit 2 BEFORE any DB / settings work).
+    if not hard:
+        render_error(
+            "Usage error: --hard is required for delete-customer",
+            _DELETE_CUSTOMER_HARD_REQUIRED_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Customer ID shape validation (exit 2).
+    if not _CUSTOMER_ID_PATTERN.match(customer_id):
+        render_error(
+            "Usage error: invalid customer id",
+            _EXPORT_BAD_ID_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 3. Settings ladder (exit 6).
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _missing_key_hint,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _missing_key_hint,
+        )
+        raise typer.Exit(code=6)
+
+    # 4. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 5. Pre-flight lookup — exit 3 BEFORE prompting. Confirming
+        # deletion of a nonexistent row is worse UX than a clean
+        # not-found.
+        try:
+            existing = get_customer(conn, customer_id)
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        if existing is None:
+            render_error(
+                f"Customer not found: {customer_id}",
+                _DELETE_CUSTOMER_NOT_FOUND_HINT,
+            )
+            raise typer.Exit(code=3)
+
+        customer_name = existing.name
+        try:
+            pre_keys = len(list_api_keys(conn, customer_id=customer_id))
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 6. Confirmation gate (UX-DR11).
+        if not yes:
+            try:
+                typer.confirm(
+                    (
+                        f"This will permanently delete customer "
+                        f"{customer_name} and all associated keys "
+                        f"({pre_keys} key(s)). This action cannot be "
+                        f"undone. Encrypted tax ID will be purged. Continue?"
+                    ),
+                    default=False,
+                    abort=True,
+                    err=True,
+                )
+            except click.exceptions.Abort:
+                stderr_console().print("Aborted.")
+                raise typer.Exit(code=2) from None
+
+        # 7. Helper call.
+        try:
+            result = delete_customer_hard(conn, customer_id, actor=get_cli_actor())
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    if result is None:
+        # Concurrent tombstone between pre-flight and helper — unreachable
+        # in single-writer CLI, but guarded for completeness.
+        render_error(
+            f"Customer not found: {customer_id}",
+            _DELETE_CUSTOMER_NOT_FOUND_HINT,
+        )
+        raise typer.Exit(code=3)
+
+    # 8. PII-austere INFO log.
+    _logger.info(
+        "Customer purged | id=%s | keys_purged=%d",
+        result.customer_id,
+        result.keys_purged,
+    )
+
+    # 9. ConfirmationLine (UX-DR7).
+    render_confirmation(
+        f"Deleted: {result.customer_id} ({result.customer_name}) "
+        f"\u2014 {result.keys_purged} keys purged"
     )
