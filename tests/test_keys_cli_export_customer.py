@@ -355,6 +355,30 @@ class TestExportCustomerConfigErrors:
         assert result.exit_code == 6
         assert "KEY_REGISTRY_ENCRYPTION_KEY" in stderr
 
+    def test_db_open_error_exits_5(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC17 — a `sqlite3.Error` on DB open maps to exit 5 with "Database error"."""
+        _seed_customer_with_cpf(env["db_path"], env["key"])
+        # Monkeypatch the connection helper imported into the customers module
+        # so it raises a concrete sqlite3 error. Must patch the call-site symbol
+        # (re-bound via `from ... import get_connection`) rather than the source
+        # module, so the CLI body sees the stub.
+        import comadre.keys.cli.commands.customers as customers_mod
+
+        def _boom(_: str) -> sqlite3.Connection:
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(customers_mod, "get_connection", _boom)
+
+        _clear_buffers()
+        cid = "cust_01hg7xyzxyzxyzxyzxyzxyzxyz"
+        result = runner.invoke(app, ["export-customer", cid])
+        _, stderr = _buffers()
+        assert result.exit_code == 5
+        assert "Database error" in stderr
+        assert "unable to open database file" in stderr
+
     def test_corrupted_ciphertext_exits_5(self, env: dict[str, str]) -> None:
         cid = _seed_customer_with_cpf(env["db_path"], env["key"])
         # Manually corrupt the ciphertext blob.

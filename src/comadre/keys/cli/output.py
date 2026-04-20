@@ -950,7 +950,8 @@ def render_export_yaml(payload: dict[str, object]) -> None:
     """
     import yaml
 
-    stdout_console().file.write(
+    file = stdout_console().file
+    file.write(
         yaml.safe_dump(
             payload,
             allow_unicode=True,
@@ -958,6 +959,12 @@ def render_export_yaml(payload: dict[str, object]) -> None:
             default_flow_style=False,
         )
     )
+    # Flush explicitly: ``Console.print_json`` routes through Rich's buffer
+    # flush, but the direct ``file.write`` above skips that discipline.
+    # Without this, a SIGPIPE from a short-reading downstream (e.g. ``| head``)
+    # can abort the interpreter before the at-exit flush, leaving the LGPD
+    # deliverable truncated on disk.
+    file.flush()
 
 
 def _reset_for_tests() -> None:

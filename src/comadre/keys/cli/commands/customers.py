@@ -898,7 +898,7 @@ def update_customer_cmd(
 # `export-customer` — LGPD Art. 18 II/V machine-readable export (Story 4.1).
 # ---------------------------------------------------------------------------
 
-_CUSTOMER_ID_PATTERN = re.compile(r"^cust_[0-9a-z]{26}$")
+_CUSTOMER_ID_PATTERN = re.compile(r"\Acust_[0-9a-z]{26}\Z")
 
 _EXPORT_NOT_FOUND_HINT = "Run 'comadre-keys list-customers' to see registered records."
 _EXPORT_BAD_ID_HINT = (
@@ -1015,24 +1015,25 @@ def export_customer_cmd(
         with contextlib.suppress(sqlite3.Error):
             conn.close()
 
-    # 6. Decrypt (exit 5 on InvalidToken — env-var swap is the only
-    # operational cause). The decrypted string lives only in the local
+    # 6. Decrypt + format (exit 5 on InvalidToken / non-UTF8 plaintext /
+    # wrong-length canonical — env-var swap or ciphertext tampering are the
+    # only operational causes). The decrypted string lives only in the local
     # scope until it is embedded in the payload dict below.
     try:
         canonical = decrypt_tax_id(
             row.tax_id_encrypted, settings.key_registry_encryption_key
         )
-    except InvalidToken:
+        tax_id_display = format_tax_id_display(canonical, row.tax_id_kind)
+    except (InvalidToken, UnicodeDecodeError, ValueError):
         render_error(
             "Database error: tax-ID ciphertext failed to decrypt",
             _EXPORT_DECRYPT_HINT,
         )
         raise typer.Exit(code=5) from None
 
-    # 7. Format the tax ID for display; build the export payload. Insertion
-    # order is the AC1 field-order contract: id → name → email →
-    # tax_id_kind → tax_id → registered_at → notes → keys.
-    tax_id_display = format_tax_id_display(canonical, row.tax_id_kind)
+    # 7. Build the export payload. Insertion order is the AC1 field-order
+    # contract: id → name → email → tax_id_kind → tax_id → registered_at
+    # → notes → keys.
     payload: dict[str, object] = {
         "id": row.id,
         "name": row.name,

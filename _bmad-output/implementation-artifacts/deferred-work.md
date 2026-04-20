@@ -2,6 +2,13 @@
 
 Items surfaced during code reviews that were judged real but non-gating for the current story. Re-triage when picking up a related story or a hardening pass.
 
+## Deferred from: code review of story-4-1 (2026-04-19)
+
+- **AC3 performance test for 1000-customer / 2000-key DB never automated.** Design is O(K) with `idx_api_key_customer` (v001_initial.sql:43); NFR35 <1s budget almost certainly holds but is only checked at deployment-time (Task 10 VPS smoke). Add a single benchmark fixture under `tests/test_keys_cli_export_customer.py` when an NFR-benchmarking pass lands. [`tests/test_keys_cli_export_customer.py`]
+- **AC14 sub-claim untested: `show --audit-tail 1000` returns exit 3 against a tombstoned customer.** Guaranteed by Story 1.2's tombstone-opacity contract in `get_customer_detail` (not 4.1 regression territory), but the cross-verb smoke linking LGPD delete → `show` opacity is only verified compositely. Consider one integration test in a future audit-hardening story. [`tests/test_keys_cli_delete_customer.py`]
+- **AC21 end-to-end round-trip (create → issue → export → delete → list --deleted → audit survival) not covered by a single chained smoke test.** Each leg is tested in isolation across `test_keys_cli_export_customer.py` + `test_keys_cli_delete_customer.py`; operator-VPS Task 10 is the intended end-to-end coverage. Add a single chained `pytest` if a future regression warrants it. [multiple test files]
+- **Scope §5/§6 ladder drift: LGPD verbs inline `get_settings()` + encryption-key check instead of calling the shared `load_settings_and_tz` helper.** Drift is rational — LGPD verbs don't need billing TZ, so coupling to TZ validation would be incorrect. Revisit if a consolidated settings-ladder refactor lands. No user-visible difference today; same exit-6 mapping and same hint strings. [`src/comadre/keys/cli/commands/customers.py:959-979, 1133-1153`]
+
 ## Deferred from: code review of story-3-4 (2026-04-19)
 
 - **Marker `cron_tz` vs app's `BILLING_TIMEZONE` drift not cross-validated.** `_check_cron_marker` surfaces `CRON_TZ` as written by `bootstrap.yml` but never compares against the runtime `BILLING_TIMEZONE` env var. CLAUDE.md flags this drift as a known gotcha; surfacing it in `health` would catch the exact misconfiguration operators are most likely to hit. Out of 3.4 scope; candidate for a future hardening pass or a dedicated "config drift" check. [`src/comadre/keys/health.py:344-389`]
