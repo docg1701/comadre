@@ -29,6 +29,7 @@ from comadre.keys.db import (
 from comadre.keys.health import (
     HealthCheck,
     HealthReport,
+    _check_backup_cron_marker,
     _marker_parse,
     collect_health_report,
     health_report_to_json,
@@ -121,6 +122,24 @@ def _write_marker(
     return marker
 
 
+def _write_backup_cron_marker(
+    db_path: Path,
+    *,
+    schedule: str = "0 2 * * *",
+    cron_tz: str = "UTC",
+    retention_days: str = "14",
+    content: str | None = None,
+) -> Path:
+    marker = Path(f"{db_path}.backup-cron-installed")
+    if content is None:
+        content = (
+            f"schedule={schedule}\ncron_tz={cron_tz}\nretention_days={retention_days}\n"
+        )
+    marker.write_text(content, encoding="utf-8")
+    marker.chmod(0o600)
+    return marker
+
+
 def _write_snapshot(
     db_path: Path,
     *,
@@ -204,6 +223,7 @@ class TestFullHealthyReport:
                     details={"swept_count": 0, "cutoff_date": "2026-04-18"},
                 )
             _write_marker(db_path)
+            _write_backup_cron_marker(db_path)
             _write_snapshot(db_path)
             # Story 4.3: the backup row now demands a fresh archive to stay ok.
             archive = tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
@@ -213,8 +233,8 @@ class TestFullHealthyReport:
             conn.close()
 
         assert report.is_healthy is True
-        # 8 fixed checks.
-        assert len(report.checks) == 8
+        # 9 fixed checks (Story 4.4 added "Backup cron").
+        assert len(report.checks) == 9
         labels = [c.label for c in report.checks]
         assert labels == [
             "Database",
@@ -223,6 +243,7 @@ class TestFullHealthyReport:
             "Keys",
             "Last suspension sweep",
             "Cron",
+            "Backup cron",
             "Last backup",
             "Auth cache",
         ]
@@ -544,6 +565,200 @@ class TestCronMarkerCheck:
         assert check.severity == "ok"
 
 
+class TestBackupCronMarker:
+    """Story 4.4 — ``Backup cron`` row consumes the bootstrap.yml marker."""
+
+    def test_warn_when_marker_missing(self, tmp_path: Path) -> None:
+        check = _check_backup_cron_marker(tmp_path / "missing.marker")
+        assert check.label == "Backup cron"
+        assert check.severity == "warn"
+        assert check.value == "Not installed"
+        assert check.detail is not None
+        assert "bootstrap.yml" in check.detail
+        assert check.data == {"installed": False}
+
+    def test_ok_when_marker_well_formed(self, tmp_path: Path) -> None:
+        marker = tmp_path / "registry.db.backup-cron-installed"
+        marker.write_text(
+            "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=14\n",
+            encoding="utf-8",
+        )
+        check = _check_backup_cron_marker(marker)
+        assert check.severity == "ok"
+        assert "comadre-keys-backup at 0 2 * * *" in check.value
+        assert "CRON_TZ=UTC" in check.value
+        assert "retention=14d" in check.value
+        assert check.data == {
+            "installed": True,
+            "schedule": "0 2 * * *",
+            "tz": "UTC",
+            "retention_days": 14,
+        }
+
+    def test_warn_on_missing_retention_days_field(self, tmp_path: Path) -> None:
+        """All three fields must be present; missing retention_days → warn."""
+        marker = tmp_path / "marker"
+        marker.write_text("schedule=0 2 * * *\ncron_tz=UTC\n", encoding="utf-8")
+        check = _check_backup_cron_marker(marker)
+        assert check.severity == "warn"
+        assert check.value == "Marker present but unparseable"
+        assert check.data == {"installed": True, "parsed": False}
+
+    def test_warn_on_garbage_marker(self, tmp_path: Path) -> None:
+        marker = tmp_path / "marker"
+        marker.write_text("just some garbage\n", encoding="utf-8")
+        check = _check_backup_cron_marker(marker)
+        assert check.severity == "warn"
+        assert check.value == "Marker present but unparseable"
+
+    def test_ok_with_alternate_tz_and_retention(self, tmp_path: Path) -> None:
+        marker = tmp_path / "marker"
+        marker.write_text(
+            "schedule=15 3 * * *\ncron_tz=America/Sao_Paulo\nretention_days=30\n",
+            encoding="utf-8",
+        )
+        check = _check_backup_cron_marker(marker)
+        assert check.severity == "ok"
+        assert "15 3 * * *" in check.value
+        assert "America/Sao_Paulo" in check.value
+        assert "retention=30d" in check.value
+        assert check.data["retention_days"] == 30
+
+    def test_warn_on_non_integer_retention_days(self, tmp_path: Path) -> None:
+        """retention_days=banana must not render as green ``retention=bananad``."""
+        marker = tmp_path / "marker"
+        marker.write_text(
+            "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=banana\n",
+            encoding="utf-8",
+        )
+        check = _check_backup_cron_marker(marker)
+        assert check.severity == "warn"
+        assert "retention_days is not an integer" in check.value
+        assert check.data["retention_days"] == "banana"
+
+    def test_warn_on_non_positive_retention_days(self, tmp_path: Path) -> None:
+        """retention_days must be > 0 — zero and negatives flip to warn."""
+        for bad in ("0", "-7"):
+            marker = tmp_path / f"marker-{bad}"
+            marker.write_text(
+                f"schedule=0 2 * * *\ncron_tz=UTC\nretention_days={bad}\n",
+                encoding="utf-8",
+            )
+            check = _check_backup_cron_marker(marker)
+            assert check.severity == "warn", bad
+            assert "must be positive" in check.value
+
+    def test_warn_when_marker_path_is_a_directory(self, tmp_path: Path) -> None:
+        """is_file() guard — directories must not be read_text()'d."""
+        marker = tmp_path / "marker-dir"
+        marker.mkdir()
+        check = _check_backup_cron_marker(marker)
+        assert check.severity == "warn"
+        assert check.value == "Marker path is not a regular file"
+        assert check.data == {
+            "installed": True,
+            "parsed": False,
+            "regular_file": False,
+        }
+
+
+class TestCollectHealthReportBackupCronWiring:
+    """Story 4.4 — collect_health_report wires the new check into the tuple."""
+
+    def test_backup_cron_row_present_between_cron_and_last_backup(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            with conn:
+                log_event(
+                    conn,
+                    actor="cron:suspension-sweep",
+                    action="cron_suspend",
+                    target_type="system",
+                    target_id=None,
+                    details={"swept_count": 0},
+                )
+            _write_marker(db_path)
+            _write_backup_cron_marker(db_path)
+            archive = tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
+            archive.write_bytes(b"encrypted-stub")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        labels = [c.label for c in report.checks]
+        assert labels.index("Backup cron") == labels.index("Cron") + 1
+        assert labels.index("Last backup") == labels.index("Backup cron") + 1
+        backup_cron = _check_by_label(report, "Backup cron")
+        assert backup_cron.severity == "ok"
+        assert report.is_healthy is True
+
+    def test_backup_cron_row_default_marker_path_derives_from_db_path(
+        self, tmp_path: Path
+    ) -> None:
+        """No backup_cron_marker_path kwarg → derive ``<db>.backup-cron-installed``."""
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            _write_backup_cron_marker(db_path)
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        backup_cron = _check_by_label(report, "Backup cron")
+        assert backup_cron.severity == "ok"
+
+    def test_backup_cron_row_missing_marker_flips_is_healthy_false(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            # Seed everything else so only Backup cron + Last backup warn.
+            with conn:
+                log_event(
+                    conn,
+                    actor="cron:suspension-sweep",
+                    action="cron_suspend",
+                    target_type="system",
+                    target_id=None,
+                    details={"swept_count": 0},
+                )
+            _write_marker(db_path)
+            archive = tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc"
+            archive.write_bytes(b"encrypted-stub")
+            report = _collect(conn, db_path)
+        finally:
+            conn.close()
+        backup_cron = _check_by_label(report, "Backup cron")
+        assert backup_cron.severity == "warn"
+        assert backup_cron.value == "Not installed"
+        assert report.is_healthy is False
+
+    def test_backup_cron_marker_path_kwarg_overrides_default(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "registry.db"
+        conn = get_connection(db_path)
+        try:
+            _apply_migrations(conn)
+            custom = tmp_path / "custom.marker"
+            custom.write_text(
+                "schedule=0 4 * * *\ncron_tz=UTC\nretention_days=7\n",
+                encoding="utf-8",
+            )
+            report = _collect(conn, db_path, backup_cron_marker_path=str(custom))
+        finally:
+            conn.close()
+        backup_cron = _check_by_label(report, "Backup cron")
+        assert backup_cron.severity == "ok"
+        assert "0 4 * * *" in backup_cron.value
+        assert "retention=7d" in backup_cron.value
+
+
 class TestBackupCheck:
     """Story 4.3 — the constant flipped to ``False``; warn/ok branches active."""
 
@@ -661,6 +876,7 @@ class TestAggregation:
         try:
             _apply_migrations(conn)
             _write_marker(db_path)
+            _write_backup_cron_marker(db_path)
             # With marker present but no sweep, "Last suspension sweep" is
             # warn — so we deliberately seed a sweep to keep it info-free.
             with conn:
@@ -799,8 +1015,9 @@ class TestPerformance:
             conn.close()
 
         assert elapsed_ms < 500, f"collect took {elapsed_ms:.1f} ms (>500 ms)"
-        # Sanity: report still has the 8 canonical checks.
-        assert len(report.checks) == 8
+        # Sanity: report still has the 9 canonical checks (Story 4.4 added
+        # "Backup cron").
+        assert len(report.checks) == 9
 
 
 class TestReadOnly:

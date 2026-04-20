@@ -295,6 +295,59 @@
         remove_orphans: true
 
     # =========================================================================
+    # File-Permission Enforcement (Story 4.4 — FR42, NFR13)
+    # =========================================================================
+    # Belt-and-braces on top of src/comadre/keys/db.py::_chmod_0600 +
+    # get_connection's parent.mkdir(mode=0o700). The Python connection
+    # layer already enforces these modes on every connection open; the
+    # tasks below make bootstrap.yml self-evidently FR42 / NFR13
+    # fulfilling without requiring the reader to inspect Python.
+    # Idempotent: chmod is a no-op when the mode already matches.
+    # The shell-out goes through ``docker compose exec`` because the
+    # registry path lives in a named Docker volume — host-side
+    # ``ansible.builtin.file:`` cannot reach it without docker-engine
+    # internals.
+
+    - name: "[FS] Wait for service lifespan to materialise registry.db"
+      # First-boot runs of the service download the Kokoro + Qwen3 models
+      # from HuggingFace before the FastAPI lifespan opens the first
+      # connection; the DB file only appears AFTER that. 150 × 2 s = 300 s
+      # absorbs a slow-link model pull without aborting bootstrap.
+      ansible.builtin.command:
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service test -f /var/lib/comadre/registry.db
+      register: db_present
+      retries: 150
+      delay: 2
+      until: db_present.rc == 0
+      changed_when: false
+
+    - name: "[FS] Enforce 0600 on registry.db"
+      # Primary DB file is REQUIRED — failure must surface loudly
+      # (previous ``bash -c '...; true'`` formulation silently masked
+      # permission-denied / wrong-uid / readonly-volume errors and
+      # reported green).
+      ansible.builtin.command:
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service chmod 600 /var/lib/comadre/registry.db
+      changed_when: false
+
+    - name: "[FS] Enforce 0600 on WAL/SHM sidecars (best-effort)"
+      # WAL and SHM sidecars only exist after the first write; tolerate
+      # their absence on a freshly-created DB with no write transaction.
+      # Only the ``[ -e "$f" ]`` branch chmods — every real failure for
+      # a present sidecar still surfaces.
+      ansible.builtin.command:
+        cmd: >-
+          docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
+          'for f in /var/lib/comadre/registry.db-wal /var/lib/comadre/registry.db-shm; do
+          if [ -e "$f" ]; then chmod 600 "$f"; fi; done'
+      changed_when: false
+
+    - name: "[FS] Enforce 0700 on registry parent directory"
+      ansible.builtin.command:
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service chmod 700 /var/lib/comadre
+      changed_when: false
+
+    # =========================================================================
     # Cron Jobs
     # =========================================================================
 

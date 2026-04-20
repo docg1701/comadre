@@ -133,6 +133,21 @@ def _write_backup(db_path: str) -> Path:
     return archive
 
 
+def _write_backup_cron_marker(db_path: str) -> Path:
+    """Drop the ``<db>.backup-cron-installed`` marker bootstrap.yml writes.
+
+    Story 4.4: the ``Backup cron`` health row now demands the marker to
+    stay ``ok`` (warn otherwise). Every healthy-path test must seed it.
+    """
+    marker = Path(f"{db_path}.backup-cron-installed")
+    marker.write_text(
+        "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=14\n",
+        encoding="utf-8",
+    )
+    marker.chmod(0o600)
+    return marker
+
+
 def _seed_real_registry(db_path: str) -> None:
     """Seed a small realistic registry: customers, keys, audit trail."""
     conn = get_connection(db_path)
@@ -256,6 +271,7 @@ class TestTableMode:
         _write_marker(env["db_path"])
         _write_snapshot(env["db_path"])
         _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
         result = runner.invoke(app, ["health"])
         assert result.exit_code == 0, _buffers()
         stdout, _ = _buffers()
@@ -285,6 +301,7 @@ class TestJsonMode:
         _write_marker(env["db_path"])
         _write_snapshot(env["db_path"])
         _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0, _buffers()
         stdout, _ = _buffers()
@@ -312,6 +329,7 @@ class TestJsonMode:
         _write_marker(env["db_path"])
         _write_snapshot(env["db_path"])
         _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0
         payload = json.loads(_buffers()[0])
@@ -322,7 +340,7 @@ class TestJsonMode:
             "fail_count",
             "checks",
         }
-        assert len(payload["checks"]) == 8
+        assert len(payload["checks"]) == 9
         labels = {c["label"] for c in payload["checks"]}
         assert labels == {
             "Database",
@@ -331,6 +349,7 @@ class TestJsonMode:
             "Keys",
             "Last suspension sweep",
             "Cron",
+            "Backup cron",
             "Last backup",
             "Auth cache",
         }
@@ -365,6 +384,7 @@ class TestMarkerRendering:
             content="schedule=30 0 * * *\ncron_tz=America/Sao_Paulo",
         )
         _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0
         payload = json.loads(_buffers()[0])
@@ -372,6 +392,57 @@ class TestMarkerRendering:
         assert cron["severity"] == "ok"
         assert cron["data"]["schedule"] == "30 0 * * *"
         assert cron["data"]["tz"] == "America/Sao_Paulo"
+
+
+# ---------------------------------------------------------------------------
+# Backup-cron marker (Story 4.4 — new "Backup cron" row)
+# ---------------------------------------------------------------------------
+
+
+class TestBackupCronRow:
+    def test_table_render_includes_backup_cron_row(self, env: dict[str, str]) -> None:
+        _seed_real_registry(env["db_path"])
+        _write_marker(env["db_path"])
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
+        result = runner.invoke(app, ["health"])
+        assert result.exit_code == 0, _buffers()
+        stdout, _ = _buffers()
+        assert "Backup cron" in stdout
+
+    def test_json_includes_backup_cron_entry(self, env: dict[str, str]) -> None:
+        _seed_real_registry(env["db_path"])
+        _write_marker(env["db_path"])
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
+        result = runner.invoke(app, ["health", "--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(_buffers()[0])
+        backup_cron = next(c for c in payload["checks"] if c["label"] == "Backup cron")
+        assert backup_cron["severity"] == "ok"
+        assert backup_cron["data"] == {
+            "installed": True,
+            "schedule": "0 2 * * *",
+            "tz": "UTC",
+            "retention_days": 14,
+        }
+
+    def test_missing_marker_flips_json_to_exit_7(self, env: dict[str, str]) -> None:
+        _seed_real_registry(env["db_path"])
+        _write_marker(env["db_path"])
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        # Deliberately omit _write_backup_cron_marker — Backup cron warns.
+        result = runner.invoke(app, ["health", "--format", "json"])
+        assert result.exit_code == 7
+        payload = json.loads(_buffers()[0])
+        backup_cron = next(c for c in payload["checks"] if c["label"] == "Backup cron")
+        assert backup_cron["severity"] == "warn"
+        assert backup_cron["value"] == "Not installed"
+        assert backup_cron["detail"] == "run ansible-playbook bootstrap.yml"
+        assert payload["is_healthy"] is False
 
 
 # ---------------------------------------------------------------------------

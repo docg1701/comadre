@@ -578,6 +578,43 @@ Until the swap, every `comadre-keys export-customer` call fails with `InvalidTok
 2. `ansible-playbook restore-keys.yml -e "backup_file=/path/to/archive.tar.gz.enc ..."`.
 3. Compare `comadre-keys list-customers` against production's latest snapshot.
 
+### Operational health checks — `ansible-playbook health.yml`
+
+Story 4.4 turns `health.yml` into an **assertion playbook**. Every operational invariant becomes an `ansible.builtin.assert` task with a corrective hint, and the playbook exits non-zero on the first deviation. It is read-only — every probe is `changed_when: false`.
+
+```bash
+ansible-playbook deploy/ansible/playbooks/health.yml -i deploy/ansible/inventory/production.yml
+echo $?   # 0 if healthy, non-zero on any assertion failure
+```
+
+The assertion chain (in execution order):
+
+| Assertion | Failure means |
+|-----------|---------------|
+| DB file mode `0600` (`/var/lib/comadre/registry.db`) | Filesystem perms drifted; run `chmod 600 /var/lib/comadre/registry.db` inside the container. |
+| DB parent directory mode `0700` | Parent perms drifted; run `chmod 700 /var/lib/comadre`. |
+| `comadre-daily-suspension` cron present in host crontab | The suspension-sweep cron has been removed; re-run `bootstrap.yml`. |
+| `comadre-keys-backup` cron present in host crontab | The nightly backup cron has been removed; re-run `bootstrap.yml`. |
+| At least one `*.backup-*.tar.gz.enc` archive | No backup has run; either wait for the 02:00 cron or run `backup-keys.yml` manually. |
+| UFW active with exactly `22/tcp + 80/tcp + 443/tcp` ALLOW (≤ 6 lines for v4 + v6 dupes) | Firewall rule drifted; review with `sudo ufw status numbered` and remove the unexpected rule. |
+| In-container `comadre-keys health --format json` reports `is_healthy=true` | Some DB-state check (schema version, sweep freshness, last-backup age, backup-cron marker, …) flipped to `warn` / `fail`. The fail-message lists each failing row and the corrective hint. |
+
+The `comadre-keys health --format json` exit-7-on-warn/fail contract is the bridge from the in-container CLI to the ansible layer; the playbook does not re-implement DB-state probes.
+
+**Recommended cadences.** Pick whichever matches your existing alerting rhythm — the playbook's value is the exit code, not any specific integration:
+
+- **Nightly cron + log aggregator** — `30 3 * * * cd ~/comadre && ansible-playbook deploy/ansible/playbooks/health.yml -i deploy/ansible/inventory/production.yml 2>&1 | logger -t comadre-health`. Pattern-match on `ASSERTION FAILED` in your log alerting.
+- **Per-PR CI** — Story 4.5x will boot a docker-compose-spun-up Comadre and run `health.yml` against it on every pull request; treat the exit code as a build gate.
+- **Weekly hands-on audit** — SSH and run the playbook before scheduled maintenance windows. The `success_msg` strings document the green state for the change-control record.
+- **Post-incident verification** — the LGPD breach runbook (Story 4.6) will cite `health.yml` as the "after restore-keys.yml, before re-opening to traffic" gate.
+
+**Common failure modes and fixes** (the playbook's own `fail_msg` strings are authoritative — this is the recap):
+
+- **`DB file mode is 600` failed** → `docker compose exec tts-service chmod 600 /var/lib/comadre/registry.db`.
+- **`comadre-keys-backup cron is installed` failed** → `ansible-playbook bootstrap.yml -i inventory/production.yml -e "ansible_become_password=…"`.
+- **`UFW rules match the expected set` failed** → `sudo ufw status numbered && sudo ufw delete <number>` for the unexpected rule.
+- **`comadre-keys health is_healthy` failed** → run `docker compose exec tts-service comadre-keys health` for the table view; act on whichever row is yellow/red.
+
 ## Firewall (UFW)
 
 The bootstrap playbook installs and configures UFW with minimal rules:

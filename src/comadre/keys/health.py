@@ -386,6 +386,113 @@ def _check_cron_marker(marker_path: Path) -> HealthCheck:
     )
 
 
+def _check_backup_cron_marker(marker_path: Path) -> HealthCheck:
+    """Backup-cron marker — written by ``bootstrap.yml`` at install time.
+
+    Marker format (Story 4.3 §3.4):
+      schedule=<cron-expression>
+      cron_tz=<IANA-timezone>
+      retention_days=<positive int>
+
+    Shares parsing with ``_check_cron_marker`` via ``_marker_parse`` and
+    mirrors its warn-on-missing / warn-on-unparseable shape. Diverges in
+    three ways:
+      - adds an ``is_file()`` guard (a directory / symlink / FIFO at the
+        marker path would otherwise route to the generic "unparseable"
+        branch with a misleading "re-run bootstrap.yml" hint);
+      - validates ``retention_days`` is a positive integer (a string like
+        ``banana`` or ``-7`` must not render as green
+        ``retention=bananad`` / ``retention=-7d``);
+      - surfaces ``retention_days`` as an int in the rendered value AND
+        in the JSON ``data`` (operators reading the health report need
+        the archive-retention horizon alongside schedule + TZ).
+    """
+    if not marker_path.exists():
+        return HealthCheck(
+            label="Backup cron",
+            value="Not installed",
+            severity="warn",
+            detail="run ansible-playbook bootstrap.yml",
+            data={"installed": False},
+        )
+    if not marker_path.is_file():
+        return HealthCheck(
+            label="Backup cron",
+            value="Marker path is not a regular file",
+            severity="warn",
+            detail="remove it and re-run ansible-playbook bootstrap.yml",
+            data={"installed": True, "parsed": False, "regular_file": False},
+        )
+    try:
+        text = marker_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return HealthCheck(
+            label="Backup cron",
+            value="Marker present but unparseable",
+            severity="warn",
+            detail="re-run ansible-playbook bootstrap.yml",
+            data={"installed": True, "parsed": False},
+        )
+    parsed = _marker_parse(text)
+    if parsed is None:
+        return HealthCheck(
+            label="Backup cron",
+            value="Marker present but unparseable",
+            severity="warn",
+            detail="re-run ansible-playbook bootstrap.yml",
+            data={"installed": True, "parsed": False},
+        )
+    schedule = parsed.get("schedule", "").strip()
+    cron_tz = parsed.get("cron_tz", "").strip()
+    retention = parsed.get("retention_days", "").strip()
+    if not schedule or not cron_tz or not retention:
+        return HealthCheck(
+            label="Backup cron",
+            value="Marker present but unparseable",
+            severity="warn",
+            detail="re-run ansible-playbook bootstrap.yml",
+            data={"installed": True, "parsed": False},
+        )
+    try:
+        retention_int = int(retention)
+    except ValueError:
+        return HealthCheck(
+            label="Backup cron",
+            value=f"retention_days is not an integer (got {retention!r})",
+            severity="warn",
+            detail="re-run ansible-playbook bootstrap.yml",
+            data={"installed": True, "parsed": True, "retention_days": retention},
+        )
+    if retention_int <= 0:
+        return HealthCheck(
+            label="Backup cron",
+            value=f"retention_days must be positive (got {retention_int})",
+            severity="warn",
+            detail="re-run ansible-playbook bootstrap.yml",
+            data={
+                "installed": True,
+                "parsed": True,
+                "retention_days": retention_int,
+            },
+        )
+    value = (
+        f"comadre-keys-backup at {schedule} "
+        f"(CRON_TZ={cron_tz}, retention={retention_int}d)"
+    )
+    return HealthCheck(
+        label="Backup cron",
+        value=value,
+        severity="ok",
+        detail=None,
+        data={
+            "installed": True,
+            "schedule": schedule,
+            "tz": cron_tz,
+            "retention_days": retention_int,
+        },
+    )
+
+
 def _check_last_backup(
     backup_parent: Path,
     backup_pattern: str,
@@ -550,6 +657,7 @@ def collect_health_report(
     cron_marker_path: str,
     backup_parent: str,
     backup_pattern: str = "*.backup-*.tar.gz.enc",
+    backup_cron_marker_path: str | None = None,
     sweep_staleness_warn_seconds: int = _SWEEP_STALENESS_WARN_SECONDS,
 ) -> HealthReport:
     """Build the full HealthReport.
@@ -567,9 +675,19 @@ def collect_health_report(
     db_path_obj = Path(db_path)
     marker_path_obj = Path(cron_marker_path)
     backup_parent_obj = Path(backup_parent)
+    if backup_cron_marker_path is None:
+        # Same naming convention bootstrap.yml writes on the host: the
+        # marker file sits alongside the DB with a ``.backup-cron-installed``
+        # suffix. Operators who customise ``KEY_REGISTRY_DB_PATH`` re-run
+        # bootstrap.yml, which writes the marker at the new derived path.
+        backup_cron_marker_path = str(
+            db_path_obj.with_name(db_path_obj.name + ".backup-cron-installed")
+        )
+    backup_cron_marker_obj = Path(backup_cron_marker_path)
 
     cron_check = _check_cron_marker(marker_path_obj)
     cron_installed = bool(cron_check.data and cron_check.data.get("installed"))
+    backup_cron_check = _check_backup_cron_marker(backup_cron_marker_obj)
 
     snapshots = read_all_snapshots(db_path)
     cache_status = aggregate_cache_status(snapshots)
@@ -585,6 +703,7 @@ def collect_health_report(
             staleness_warn_seconds=sweep_staleness_warn_seconds,
         ),
         cron_check,
+        backup_cron_check,
         _check_last_backup(
             backup_parent_obj,
             backup_pattern,
