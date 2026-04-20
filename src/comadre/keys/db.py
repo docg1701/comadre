@@ -22,6 +22,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal, cast
 
+from pydantic import SecretStr
 from ulid import ULID
 
 from comadre.keys.models import (
@@ -77,6 +78,24 @@ class DeleteCustomerResult:
     customer_id: str
     customer_name: str
     keys_purged: int
+
+
+@dataclass(frozen=True, slots=True)
+class RotateEncryptionKeysResult:
+    """Return payload from ``rotate_encryption_keys`` (Story 4.2).
+
+    ``rows_re_encrypted`` is the count of ``customer`` rows whose
+    ``tax_id_encrypted`` was decrypted under the old key and rewritten
+    under the new key in the same transaction. Tombstoned rows
+    (``deleted_at IS NOT NULL`` — zero-length BLOB ciphertext per the
+    Story 4.1 tombstone contract) are intentionally skipped; the count
+    reflects active customers only. ``occurred_at`` is the canonical
+    ISO-UTC timestamp the helper wrote on the summary audit row, echoed
+    back so the CLI can render it without re-sampling the clock.
+    """
+
+    rows_re_encrypted: int
+    occurred_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,6 +653,89 @@ def delete_customer_hard(
         customer_id=customer_id,
         customer_name=customer_name,
         keys_purged=keys_purged,
+    )
+
+
+def rotate_encryption_keys(
+    conn: sqlite3.Connection,
+    *,
+    old_key: SecretStr,
+    new_key: SecretStr,
+    actor: str,
+) -> RotateEncryptionKeysResult:
+    """Re-encrypt every active customer's tax-ID under ``new_key`` in one transaction.
+
+    1. Begin transaction.
+    2. ``SELECT id, tax_id_encrypted FROM customer WHERE deleted_at IS NULL``
+       — tombstoned rows (zero-length BLOB ciphertext) are skipped because
+       ``Fernet.decrypt(b"")`` raises ``InvalidToken`` and the row holds no
+       PII anyway.
+    3. For each row: ``decrypt_tax_id(old)`` → ``encrypt_tax_id(canonical,
+       new)`` → ``UPDATE customer SET tax_id_encrypted = ? WHERE id = ?``.
+    4. ``log_event(action='rotate_encryption_key',
+       target_type='registry', target_id=None,
+       details={'rows_re_encrypted': N})``.
+    5. Commit.
+
+    Callers MUST NOT wrap in ``with conn:``. The helper owns the
+    transaction so all UPDATEs and the audit write either all commit
+    or all roll back. Mid-iteration failures (decrypt error from a
+    corrupted row, disk full, ``KeyboardInterrupt``) propagate as
+    exceptions; the ``with conn:`` rolls back and every row retains
+    its **original** ciphertext — the FR36 "no window of unreadable
+    data" guarantee.
+
+    The decrypted canonical plaintext exists only inside the loop's
+    local frame and is overwritten on each iteration — no cache, no
+    return-channel exposure. The audit ``details`` carry only the
+    structural count; ``_FORBIDDEN_DETAIL_KEYS`` rejects any attempt
+    to pass tax-ID material.
+    """
+    from comadre.keys.audit import log_event
+    from comadre.keys.crypto import decrypt_tax_id, encrypt_tax_id
+
+    occurred_at = _utcnow_iso()
+    rows_re_encrypted = 0
+
+    with conn:
+        # Materialise the row set before issuing any UPDATE. SQLite on
+        # some platforms/versions raises ``OperationalError("database
+        # table is locked")`` when a write is issued on the same
+        # connection that still holds an open SELECT cursor. At the
+        # NFR35 reference scale (1000 customers, ~150 B per ciphertext)
+        # this is ~150 KB — trivially safe in memory.
+        rows = conn.execute(
+            "SELECT id, tax_id_encrypted FROM customer WHERE deleted_at IS NULL"
+        ).fetchall()
+
+        for row in rows:
+            canonical = decrypt_tax_id(bytes(row["tax_id_encrypted"]), old_key)
+            new_ciphertext = encrypt_tax_id(canonical, new_key)
+            # ``rowcount`` instead of ``+= 1`` so the audit total stays
+            # honest if a concurrent writer tombstones a row between
+            # the SELECT and this UPDATE — the ``deleted_at IS NULL``
+            # predicate would then match zero rows and the counter
+            # must reflect that.
+            cursor = conn.execute(
+                "UPDATE customer SET tax_id_encrypted = ? "
+                "WHERE id = ? AND deleted_at IS NULL",
+                (new_ciphertext, row["id"]),
+            )
+            rows_re_encrypted += cursor.rowcount
+
+        log_event(
+            conn,
+            actor=actor,
+            action="rotate_encryption_key",
+            target_type="registry",
+            target_id=None,
+            details={"rows_re_encrypted": rows_re_encrypted},
+            occurred_at=occurred_at,
+        )
+
+    return RotateEncryptionKeysResult(
+        rows_re_encrypted=rows_re_encrypted,
+        occurred_at=occurred_at,
     )
 
 

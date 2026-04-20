@@ -7,9 +7,13 @@ import sqlite3
 import stat
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
+from cryptography.fernet import Fernet, InvalidToken
+from pydantic import SecretStr
 
+from comadre.keys.crypto import decrypt_tax_id, encrypt_tax_id
 from comadre.keys.db import (
     _SCHEMA_VERSION,
     _apply_migrations,
@@ -38,6 +42,7 @@ from comadre.keys.db import (
     resolve_show_target,
     revoke_api_key,
     rotate_api_key,
+    rotate_encryption_keys,
     suspend_key,
     update_api_key,
     update_customer,
@@ -48,6 +53,7 @@ from comadre.keys.models import (
     CustomerRecord,
     CustomerStatus,
     KeyDetailRow,
+    TaxIdKind,
 )
 from comadre.keys.tokens import generate_api_key_plaintext, hash_api_key
 
@@ -4089,5 +4095,390 @@ class TestDeleteCustomerHard:
             details = json.loads(str(delete_rows[0]["details_json"]))
             for key in details:
                 assert key.lower() not in _FORBIDDEN_DETAIL_KEYS
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# rotate_encryption_keys — Story 4.2
+# ---------------------------------------------------------------------------
+
+
+def _seed_active_customer(
+    conn: sqlite3.Connection,
+    *,
+    cid: str,
+    name: str,
+    email: str,
+    canonical: str,
+    tax_id_kind: str,
+    key: SecretStr,
+) -> None:
+    """Seed one active customer whose ``tax_id_encrypted`` is Fernet(canonical, key)."""
+    insert_customer(
+        conn,
+        CustomerRecord(
+            id=cid,
+            name=name,
+            email=email,
+            tax_id_kind=cast(TaxIdKind, tax_id_kind),
+            tax_id_encrypted=encrypt_tax_id(canonical, key),
+            notes="",
+            registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+            deleted_at=None,
+        ),
+        actor="cli:tester",
+    )
+
+
+class TestRotateEncryptionKeys:
+    """Atomic re-encryption of every active customer under a new Fernet key."""
+
+    def _audit_rotate_rows(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        return list(
+            conn.execute(
+                "SELECT id, action, target_type, target_id, actor, "
+                "occurred_at, details_json "
+                "FROM audit_log WHERE action = 'rotate_encryption_key' "
+                "ORDER BY id ASC"
+            ).fetchall()
+        )
+
+    def _fresh_key(self) -> SecretStr:
+        return SecretStr(Fernet.generate_key().decode())
+
+    def test_happy_path_re_encrypts_every_active_row(self, tmp_path: Path) -> None:
+        old_key = self._fresh_key()
+        new_key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            seed = [
+                ("cust_01aaaaaa", "Ana", "ana@x.com", "12345678909", "cpf"),
+                ("cust_01bbbbbb", "Acme", "b@x.com", "12345678000195", "cnpj"),
+                ("cust_01cccccc", "Zeta", "c@x.com", "12ABC345XY0189", "cnpj"),
+            ]
+            for cid, name, email, canonical, kind in seed:
+                _seed_active_customer(
+                    conn,
+                    cid=cid,
+                    name=name,
+                    email=email,
+                    canonical=canonical,
+                    tax_id_kind=kind,
+                    key=old_key,
+                )
+
+            # Capture pre-rotation ciphertexts.
+            pre = {
+                r["id"]: bytes(r["tax_id_encrypted"])
+                for r in conn.execute(
+                    "SELECT id, tax_id_encrypted FROM customer WHERE deleted_at IS NULL"
+                ).fetchall()
+            }
+
+            result = rotate_encryption_keys(
+                conn,
+                old_key=old_key,
+                new_key=new_key,
+                actor="cli:tester",
+            )
+            assert result.rows_re_encrypted == 3
+            # occurred_at is ISO-UTC with trailing Z.
+            datetime.strptime(result.occurred_at, "%Y-%m-%dT%H:%M:%SZ")
+
+            # Every row now decrypts under the new key; canonical round-trips.
+            rows = {
+                r["id"]: bytes(r["tax_id_encrypted"])
+                for r in conn.execute(
+                    "SELECT id, tax_id_encrypted FROM customer WHERE deleted_at IS NULL"
+                ).fetchall()
+            }
+            expected_canonicals = {
+                "cust_01aaaaaa": "12345678909",
+                "cust_01bbbbbb": "12345678000195",
+                "cust_01cccccc": "12ABC345XY0189",
+            }
+            for cid, canonical in expected_canonicals.items():
+                assert decrypt_tax_id(rows[cid], new_key) == canonical
+                # Old key no longer decrypts the new ciphertext.
+                with pytest.raises(InvalidToken):
+                    decrypt_tax_id(rows[cid], old_key)
+                # Byte-level change per row (Fernet IV randomness).
+                assert rows[cid] != pre[cid]
+
+            # One audit row with the expected shape.
+            audit = self._audit_rotate_rows(conn)
+            assert len(audit) == 1
+            row = audit[0]
+            assert row["action"] == "rotate_encryption_key"
+            assert row["target_type"] == "registry"
+            assert row["target_id"] is None
+            assert row["actor"] == "cli:tester"
+            assert row["occurred_at"] == result.occurred_at
+            details = json.loads(str(row["details_json"]))
+            assert details == {"rows_re_encrypted": 3}
+        finally:
+            conn.close()
+
+    def test_empty_db_still_writes_audit_row_with_zero_count(
+        self, tmp_path: Path
+    ) -> None:
+        old_key = self._fresh_key()
+        new_key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+
+            result = rotate_encryption_keys(
+                conn,
+                old_key=old_key,
+                new_key=new_key,
+                actor="cli:tester",
+            )
+            assert result.rows_re_encrypted == 0
+
+            audit = self._audit_rotate_rows(conn)
+            assert len(audit) == 1
+            details = json.loads(str(audit[0]["details_json"]))
+            assert details == {"rows_re_encrypted": 0}
+        finally:
+            conn.close()
+
+    def test_skips_tombstoned_rows(self, tmp_path: Path) -> None:
+        from comadre.keys.crypto import decrypt_tax_id
+
+        old_key = self._fresh_key()
+        new_key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_active_customer(
+                conn,
+                cid="cust_01activexxx1",
+                name="Ana",
+                email="a@x.com",
+                canonical="12345678909",
+                tax_id_kind="cpf",
+                key=old_key,
+            )
+            _seed_active_customer(
+                conn,
+                cid="cust_01activexxx2",
+                name="Bob",
+                email="b@x.com",
+                canonical="98765432100",
+                tax_id_kind="cpf",
+                key=old_key,
+            )
+            # Tombstone a third customer via delete_customer_hard so the
+            # tombstone fixture matches Story 4.1's contract exactly.
+            cid_tomb = _seed_customer(conn)
+            delete_customer_hard(conn, cid_tomb, actor="cli:tester")
+            tomb_blob = conn.execute(
+                "SELECT tax_id_encrypted FROM customer WHERE id = ?",
+                (cid_tomb,),
+            ).fetchone()[0]
+            assert bytes(tomb_blob) == b""
+
+            result = rotate_encryption_keys(
+                conn,
+                old_key=old_key,
+                new_key=new_key,
+                actor="cli:tester",
+            )
+            assert result.rows_re_encrypted == 2
+
+            # Tombstoned row's BLOB unchanged.
+            still_tomb = conn.execute(
+                "SELECT tax_id_encrypted FROM customer WHERE id = ?",
+                (cid_tomb,),
+            ).fetchone()[0]
+            assert bytes(still_tomb) == b""
+
+            # Active rows decrypt under the new key.
+            for cid, canonical in (
+                ("cust_01activexxx1", "12345678909"),
+                ("cust_01activexxx2", "98765432100"),
+            ):
+                cipher = conn.execute(
+                    "SELECT tax_id_encrypted FROM customer WHERE id = ?",
+                    (cid,),
+                ).fetchone()[0]
+                assert decrypt_tax_id(bytes(cipher), new_key) == canonical
+
+            audit = self._audit_rotate_rows(conn)
+            assert len(audit) == 1
+            details = json.loads(str(audit[0]["details_json"]))
+            assert details == {"rows_re_encrypted": 2}
+        finally:
+            conn.close()
+
+    def test_same_key_rotation_is_idempotent_but_rewrites_iv(
+        self, tmp_path: Path
+    ) -> None:
+        from comadre.keys.crypto import decrypt_tax_id
+
+        key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_active_customer(
+                conn,
+                cid="cust_01idempotxx",
+                name="Ana",
+                email="a@x.com",
+                canonical="12345678909",
+                tax_id_kind="cpf",
+                key=key,
+            )
+
+            pre_cipher = bytes(
+                conn.execute(
+                    "SELECT tax_id_encrypted FROM customer "
+                    "WHERE id = 'cust_01idempotxx'"
+                ).fetchone()[0]
+            )
+
+            result = rotate_encryption_keys(
+                conn,
+                old_key=key,
+                new_key=key,
+                actor="cli:tester",
+            )
+            assert result.rows_re_encrypted == 1
+
+            post_cipher = bytes(
+                conn.execute(
+                    "SELECT tax_id_encrypted FROM customer "
+                    "WHERE id = 'cust_01idempotxx'"
+                ).fetchone()[0]
+            )
+            # Fernet IV is random per encrypt — ciphertext is byte-different.
+            assert pre_cipher != post_cipher
+            # But decrypts to the same canonical form under the same key.
+            assert decrypt_tax_id(post_cipher, key) == "12345678909"
+        finally:
+            conn.close()
+
+    def test_invalid_old_key_rolls_back_every_row(self, tmp_path: Path) -> None:
+        from cryptography.fernet import InvalidToken
+
+        old_key = self._fresh_key()
+        # WRONG old key — helper will hit InvalidToken on the first row.
+        wrong_old_key = self._fresh_key()
+        new_key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            for idx in range(3):
+                _seed_active_customer(
+                    conn,
+                    cid=f"cust_01rollback{idx:02d}x",
+                    name=f"U{idx}",
+                    email=f"u{idx}@x.com",
+                    canonical="12345678909",
+                    tax_id_kind="cpf",
+                    key=old_key,
+                )
+
+            pre = {
+                r["id"]: bytes(r["tax_id_encrypted"])
+                for r in conn.execute(
+                    "SELECT id, tax_id_encrypted FROM customer"
+                ).fetchall()
+            }
+
+            with pytest.raises(InvalidToken):
+                rotate_encryption_keys(
+                    conn,
+                    old_key=wrong_old_key,
+                    new_key=new_key,
+                    actor="cli:tester",
+                )
+
+            # Every row's ciphertext is byte-identical to pre-rotation.
+            post = {
+                r["id"]: bytes(r["tax_id_encrypted"])
+                for r in conn.execute(
+                    "SELECT id, tax_id_encrypted FROM customer"
+                ).fetchall()
+            }
+            assert post == pre
+
+            # No rotate_encryption_key audit row (the whole txn rolled back).
+            assert self._audit_rotate_rows(conn) == []
+        finally:
+            conn.close()
+
+    def test_audit_row_content_matches_contract(self, tmp_path: Path) -> None:
+        old_key = self._fresh_key()
+        new_key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_active_customer(
+                conn,
+                cid="cust_01auditcheck",
+                name="Ana",
+                email="a@x.com",
+                canonical="12345678909",
+                tax_id_kind="cpf",
+                key=old_key,
+            )
+
+            result = rotate_encryption_keys(
+                conn,
+                old_key=old_key,
+                new_key=new_key,
+                actor="cli:anotheruser",
+            )
+
+            audit = self._audit_rotate_rows(conn)
+            assert len(audit) == 1
+            row = audit[0]
+            assert row["action"] == "rotate_encryption_key"
+            assert row["target_type"] == "registry"
+            assert row["target_id"] is None
+            assert row["actor"] == "cli:anotheruser"
+            assert row["occurred_at"] == result.occurred_at
+            details = json.loads(str(row["details_json"]))
+            assert details == {"rows_re_encrypted": 1}
+        finally:
+            conn.close()
+
+    def test_audit_details_dict_passes_forbidden_keys_guard(
+        self, tmp_path: Path
+    ) -> None:
+        # AC12: call ``_assert_no_forbidden_keys`` directly on the
+        # constructed details dict to exercise the full guard
+        # (including nested-mapping recursion), not just set-containment.
+        from comadre.keys.audit import _assert_no_forbidden_keys
+
+        old_key = self._fresh_key()
+        new_key = self._fresh_key()
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            _seed_active_customer(
+                conn,
+                cid="cust_01forbiddkeys",
+                name="Ana",
+                email="a@x.com",
+                canonical="12345678909",
+                tax_id_kind="cpf",
+                key=old_key,
+            )
+
+            rotate_encryption_keys(
+                conn,
+                old_key=old_key,
+                new_key=new_key,
+                actor="cli:tester",
+            )
+
+            audit = self._audit_rotate_rows(conn)
+            details = json.loads(str(audit[0]["details_json"]))
+            _assert_no_forbidden_keys(details)
         finally:
             conn.close()

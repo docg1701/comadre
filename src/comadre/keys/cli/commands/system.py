@@ -1,21 +1,30 @@
-"""`comadre-keys cache-status` + `suspend-sweep` + `health` — system verbs.
+"""System verbs for ``comadre-keys``.
+
+Commands: ``cache-status``, ``suspend-sweep``, ``health``,
+``rotate-encryption-key``.
 
 Story 2.3 landed ``cache-status``; Story 3.3 added ``suspend-sweep``;
-Story 3.4 adds ``health``. Story 4.2 (``rotate-encryption-key``) will
-add the final subcommand here — grouping the operational verbs in one
-module keeps the CLI map legible (customers → keys → billing → system).
+Story 3.4 added ``health``; Story 4.2 adds ``rotate-encryption-key``.
+Grouping the operational verbs in one module keeps the CLI map
+legible (customers → keys → billing → system).
 
 Exit-code contract (UX-DR10, matches sibling command modules):
   0 — success (including "no running API instance" for ``cache-status``,
-      zero-row sweeps for ``suspend-sweep``, and ``health --format table``
+      zero-row sweeps for ``suspend-sweep``, ``health --format table``
       regardless of severity — read-tier semantics; yellow warnings are
-      operator-readable hints, not script signals).
+      operator-readable hints, not script signals — and zero-active-row
+      rotations for ``rotate-encryption-key``).
   2 — usage error (bad ``--format`` on ``cache-status`` / ``health``;
       ``suspend-sweep`` never emits 2 — the only operator-parseable
-      flag is ``--dry-run``).
+      flag is ``--dry-run``; operator-aborted confirmation prompt on
+      ``rotate-encryption-key``).
+  4 — validation error from ``rotate-encryption-key --new-key`` Fernet
+      shape check (operator-supplied value is not a valid Fernet key).
   5 — database error from ``get_connection`` / ``_apply_migrations`` /
       ``run_suspension_sweep`` (``suspend-sweep``) / health-collection
-      query (``health``).
+      query (``health``) / encryption-rotation decrypt failure on
+      ``rotate-encryption-key`` (rolls back atomically — every row
+      retains its original ciphertext).
   6 — permission / configuration error (missing encryption key or
       invalid ``BILLING_TIMEZONE``).
   7 — unhealthy state in ``health --format json`` (any check has
@@ -32,8 +41,10 @@ from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import click
 import typer
-from pydantic import ValidationError
+from cryptography.fernet import Fernet, InvalidToken
+from pydantic import SecretStr, ValidationError
 
 from comadre.config import Settings, get_settings
 from comadre.counters import (
@@ -41,6 +52,7 @@ from comadre.counters import (
     aggregate_cache_status,
     read_all_snapshots,
 )
+from comadre.keys.audit import get_cli_actor
 from comadre.keys.cli._clock import resolve_today_in_tz
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
@@ -53,6 +65,7 @@ from comadre.keys.cli.output import (
     render_error,
     render_health_report,
     render_suspend_sweep_preview,
+    stderr_console,
     stdout_console,
 )
 from comadre.keys.db import (
@@ -60,6 +73,7 @@ from comadre.keys.db import (
     _apply_migrations,
     get_connection,
     list_api_keys,
+    rotate_encryption_keys,
     run_suspension_sweep,
 )
 from comadre.keys.health import collect_health_report, health_report_to_json
@@ -78,6 +92,18 @@ _MISSING_KEY_HINT = (
 )
 
 _CACHE_TTL_SECONDS = WINDOW_SECONDS
+
+_ROTATE_KEY_BAD_FERNET_HINT = (
+    "Generate a fresh Fernet key with: python -c 'from "
+    "cryptography.fernet import Fernet; "
+    "print(Fernet.generate_key().decode())'."
+)
+_ROTATE_KEY_DECRYPT_FAILED_HINT = (
+    "The current KEY_REGISTRY_ENCRYPTION_KEY value cannot decrypt at "
+    "least one customer's tax-ID ciphertext. The transaction has been "
+    "rolled back — every row retains its original encryption. Verify "
+    ".env matches the deployment-time key before retrying."
+)
 
 
 @app.command("cache-status")
@@ -409,3 +435,164 @@ def health_cmd(
         return
 
     render_health_report(report)
+
+
+@app.command("rotate-encryption-key")
+def rotate_encryption_key_cmd(
+    new_key: str = typer.Option(
+        ...,
+        "--new-key",
+        help=(
+            "New Fernet key (44-char base64) to re-encrypt every active "
+            "customer's tax ID with. Generate with: python -c 'from "
+            "cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())'."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Skip the interactive confirmation prompt (for scripting).",
+    ),
+) -> None:
+    """Re-encrypt every active customer's tax ID under a new Fernet key (FR36).
+
+    Atomic: either every active row's ciphertext flips to the new key OR
+    none does. After success, edit .env to set KEY_REGISTRY_ENCRYPTION_KEY
+    to the new value and restart the service.
+
+    Example: comadre-keys rotate-encryption-key --new-key gAAAAA...
+             comadre-keys rotate-encryption-key --new-key gAAAAA... --yes
+    """
+    # 1. New-key Fernet shape validation (exit 4). Fail fast on operator
+    # typo BEFORE loading settings or opening the DB. Never echo the
+    # invalid value back to the operator (NFR16) — they can reconstruct
+    # it from shell history if they need to.
+    try:
+        Fernet(new_key.encode())
+    except (ValueError, TypeError):
+        render_error(
+            "Invalid encryption key: --new-key is not a valid Fernet key",
+            _ROTATE_KEY_BAD_FERNET_HINT,
+        )
+        raise typer.Exit(code=4) from None
+
+    # 2. Settings ladder (exit 6). The billing tz is not consumed by this
+    # verb but the shared helper enforces ``KEY_REGISTRY_ENCRYPTION_KEY``
+    # presence (the OLD key we need for the decrypt half).
+    loaded = load_settings_and_tz()
+    if loaded is None:
+        raise typer.Exit(code=6)
+    settings_obj, _billing_tz = loaded
+    settings = cast(Settings, settings_obj)
+
+    # 3. Open DB + migrations (exit 5). ``from exc`` preserves the
+    # original traceback per the Story 3.3 code-review patch contract.
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except sqlite3.Error as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from exc
+
+    try:
+        try:
+            _apply_migrations(conn)
+        except (sqlite3.Error, RuntimeError) as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from exc
+
+        # 4. Pre-flight count for the confirmation prompt — so the
+        # operator sees scope BEFORE committing. The race window between
+        # this count and the helper's materialisation is a non-issue on
+        # a single-writer CLI (the helper's count is the audit source
+        # of truth).
+        try:
+            pre_count = conn.execute(
+                "SELECT COUNT(*) FROM customer WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from exc
+
+        # 5. Confirmation gate (UX-DR11).
+        if not yes:
+            try:
+                typer.confirm(
+                    (
+                        f"This will re-encrypt {pre_count} active customer "
+                        f"tax ID(s) with the new key. Continue?"
+                    ),
+                    default=False,
+                    abort=True,
+                    err=True,
+                )
+            except click.exceptions.Abort:
+                stderr_console().print("Aborted.")
+                raise typer.Exit(code=2) from None
+            except KeyboardInterrupt:
+                stderr_console().print("Aborted.")
+                raise typer.Exit(code=130) from None
+
+        # 6. Helper call — atomic. ``InvalidToken`` rolls back; every
+        # row retains its original ciphertext (FR36). The ``is None``
+        # check is a plain conditional (not ``assert``) so the
+        # exit-6 contract survives ``python -O`` / ``PYTHONOPTIMIZE``.
+        if settings.key_registry_encryption_key is None:
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                "Set KEY_REGISTRY_ENCRYPTION_KEY in .env before rotation.",
+            )
+            raise typer.Exit(code=6)
+        try:
+            result = rotate_encryption_keys(
+                conn,
+                old_key=settings.key_registry_encryption_key,
+                new_key=SecretStr(new_key),
+                actor=get_cli_actor(),
+            )
+        except InvalidToken:
+            render_error(
+                "Database error: tax-ID ciphertext failed to decrypt during rotation",
+                _ROTATE_KEY_DECRYPT_FAILED_HINT,
+            )
+            raise typer.Exit(code=5) from None
+        except sqlite3.Error as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from exc
+        except KeyboardInterrupt:
+            # Ctrl-C during the rotation loop: the helper's ``with
+            # conn:`` has already rolled the transaction back; every
+            # row retains its original ciphertext.
+            stderr_console().print("Aborted.")
+            raise typer.Exit(code=130) from None
+        except Exception as exc:
+            # Defensive catch for unexpected exceptions (TypeError,
+            # ValueError from audit guard, MemoryError, etc.) so
+            # operators never see a raw traceback. The helper's
+            # ``with conn:`` has already rolled back on any exception.
+            render_error("Unexpected rotation failure", str(exc))
+            raise typer.Exit(code=5) from exc
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    # 7. PII-austere INFO log (NFR15). Never the new key, never the
+    # old key, never any decrypted tax ID — only structural counts.
+    _logger.info(
+        "Encryption key rotated | rows_re_encrypted=%d | occurred_at=%s",
+        result.rows_re_encrypted,
+        result.occurred_at,
+    )
+
+    # 8. Success ConfirmationLine (UX-DR7). The new key value IS echoed
+    # back — epic AC verbatim — as a copy-paste hint for the .env swap.
+    # This is the ONLY place the CLI prints an encryption key value
+    # (never in INFO logs, never in error panels, never in audit rows).
+    # ``soft_wrap=True`` prevents Rich from breaking the 44-char Fernet
+    # key across terminal-width boundaries — a wrapped key pastes into
+    # ``.env`` with embedded whitespace and corrupts the env var.
+    stdout_console().print(
+        f"Encryption key rotated. Update KEY_REGISTRY_ENCRYPTION_KEY in "
+        f".env to: {new_key}",
+        soft_wrap=True,
+    )

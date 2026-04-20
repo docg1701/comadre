@@ -503,6 +503,28 @@ comadre-keys delete-customer <cust_id> --hard --yes
 
 `--hard` is required. After deletion, `list-customers` no longer shows the customer; `list-customers --deleted` shows the tombstone with blank name/email columns as a signal that the row was purged.
 
+### Rotating the encryption key
+
+If `KEY_REGISTRY_ENCRYPTION_KEY` is suspected compromised (leaked `.env`, lost backup tarball, departed contractor with shell history), rotate it without taking the registry offline. The rotation re-encrypts every active customer's `tax_id_encrypted` under the new key in a single transaction — either every row flips or none does (FR36 "no window of unreadable data").
+
+```bash
+# 1. Mint a new Fernet key. Keep the value handy for step 3.
+NEW_KEY="$(docker compose exec tts-service python -c \
+  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+
+# 2. Rotate (audited; the success line echoes the new key value for the .env swap).
+docker compose exec tts-service comadre-keys rotate-encryption-key \
+  --new-key "$NEW_KEY" --yes
+
+# 3. Update ~/comadre/.env on the host:
+#    KEY_REGISTRY_ENCRYPTION_KEY=<value from step 2's success line>
+
+# 4. Restart the service so the new env value is loaded.
+docker compose restart tts-service
+```
+
+Tombstoned customers are skipped by design — their ciphertext is a zero-length BLOB with no PII to rotate. The audit row's `details_json` carries only the structural count (`{"rows_re_encrypted": N}`); the new key value never appears in logs, error panels, or the audit log. The success line is the single operator-facing surface that echoes the value, and it only prints on success.
+
 Story 4.6 (LGPD documentation & breach runbook) consolidates these procedures into a full operator handbook once it lands; this section is the interim reference.
 
 ## Firewall (UFW)
