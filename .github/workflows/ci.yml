@@ -41,3 +41,26 @@ jobs:
           cache: true
       - run: uv sync
       - run: uv run pytest
+
+  non-regression:
+    name: Non-Regression (Security)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          cache: true
+      - run: uv sync
+      - run: docker --version && docker compose version
+      - run: uv run pytest -m non_regression tests/test_non_regression/ -v
+      - name: Teardown leftover non-regression containers
+        if: always()
+        run: |
+          ids=$(docker ps -aq --filter label=comadre-non-regression || true)
+          if [ -n "$ids" ]; then docker rm -f $ids || true; fi
+          docker network rm comadre-non-regression-net 2>/dev/null || true

@@ -67,5 +67,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["slow: integration tests requiring model files"]
+addopts = "-m 'not non_regression'"
+markers = [
+    "slow: integration tests requiring model files",
+    "non_regression: integration tests that exercise the prod docker-compose stack",
+]
 
