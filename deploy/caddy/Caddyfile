@@ -16,12 +16,78 @@
 		-Via
 	}
 
-	# API paths → tts-service (reverse proxy with rate-limit-aware XFF)
+	# FR49 — bounded-payload policy for the @api surface (/v1/* and /health).
+	# Mirrors the industry-standard pattern used by AWS API Gateway,
+	# Cloudflare, and nginx's `client_max_body_size`: every API request MUST
+	# send a canonical Content-Length within the 1 MiB limit. Chunked
+	# transfers, missing Content-Length on write methods, and malformed
+	# Content-Length values are all rejected BEFORE reverse_proxy runs, so no
+	# oversized or malformed body ever reaches the upstream. Handle blocks
+	# are first-match-wins in Caddyfile order — keep the order below.
+	#
+	# Background: `request_body { max_size 1MiB }` paired with `reverse_proxy`
+	# silently truncates oversized bodies and forwards the prefix to upstream
+	# (empirically verified 2026-04-24 on caddy:2-alpine v2.11.2). That
+	# anti-pattern is eliminated here by rejecting every way a >1 MiB body
+	# could be sent at matcher time, before any reverse_proxy handler runs.
+	# `request_body` is therefore not needed and has been removed.
+
+	# 1. Any Transfer-Encoding header on @api → 411 (force Content-Length).
+	# This API rejects ALL Transfer-Encoding values (chunked, gzip, identity,
+	# non-canonical extension tokens). The four-clause policy assumes every
+	# legitimate request is Content-Length-framed; stray TE values reach
+	# reverse_proxy with ambiguous framing otherwise (RFC-7230 §3.3.3).
+	# Mirrors AWS API Gateway / Cloudflare — neither accepts arbitrary TE.
+	@api_has_te {
+		path /v1/* /health
+		header Transfer-Encoding *
+	}
+	handle @api_has_te {
+		respond "Transfer-Encoding not permitted on /v1/* and /health; send Content-Length" 411
+	}
+
+	# 2. Content-Length header present but not a canonical non-negative
+	# integer of 1-10 digits → 400. Guards the @api_oversized_body CEL
+	# `int()` cast against duplicate, negative, non-numeric, or overflow
+	# values that would otherwise error the expression and fall through to
+	# reverse_proxy. The 10-digit cap (max ~9.9 GB) is far above any
+	# legitimate @api payload (1 MiB limit) but bounded well under int64
+	# so the int() cast is always safe.
+	@api_malformed_cl {
+		path /v1/* /health
+		header Content-Length *
+		expression `!{http.request.header.content-length}.matches('^[0-9]{1,10}$')`
+	}
+	handle @api_malformed_cl {
+		respond "malformed Content-Length header" 400
+	}
+
+	# 3. Valid Content-Length > 1 MiB → 413.
+	@api_oversized_body {
+		path /v1/* /health
+		header Content-Length *
+		expression `{http.request.header.content-length}.matches('^[0-9]{1,10}$') && int({http.request.header.content-length}) > 1048576`
+	}
+	handle @api_oversized_body {
+		respond "Payload Too Large" 413
+	}
+
+	# 4. Write method (POST/PUT/PATCH) with neither Content-Length nor
+	# Transfer-Encoding → 411. Prevents ambiguous zero-length writes that
+	# would otherwise be proxied opaquely.
+	@api_missing_cl {
+		path /v1/* /health
+		method POST PUT PATCH
+		not header Content-Length *
+		not header Transfer-Encoding *
+	}
+	handle @api_missing_cl {
+		respond "Length Required" 411
+	}
+
+	# 5. API paths → tts-service (reverse proxy with rate-limit-aware XFF).
 	@api path /v1/* /health
 	handle @api {
-		request_body {
-			max_size 1MB
-		}
 		reverse_proxy {
 			dynamic a {
 				name tts-service

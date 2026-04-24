@@ -35,6 +35,10 @@ _UPSTREAM_NGINX_CONF = """\
 events {}
 http {
     access_log /dev/null;
+    # Story 4.5d — raise the stub's body-size ceiling 100x above the Caddy
+    # limit so any 4xx the suite observes originates UNAMBIGUOUSLY from
+    # Caddy, never from nginx's default 1 MB fallback. Do NOT lower.
+    client_max_body_size 100M;
     server {
         listen 8000 default_server;
         location / {
@@ -138,6 +142,7 @@ def _wait_for_caddy(timeout_seconds: float = 30.0) -> None:
                 timeout=2.0,
             )
             if https_resp.status_code < 500 and http_resp.status_code < 500:
+                _verify_upstream_reachable()
                 return
             last_error = (
                 f"HTTPS {https_resp.status_code} / HTTP {http_resp.status_code}"
@@ -149,6 +154,54 @@ def _wait_for_caddy(timeout_seconds: float = 30.0) -> None:
         f"Caddy non-regression stack did not come up within "
         f"{timeout_seconds}s: {last_error!r}"
     )
+
+
+def _verify_upstream_reachable() -> None:
+    """Probe an ``@api``-scoped path once to confirm Caddy can reach the stub.
+
+    The readiness poll above hits ``/`` which is served by Caddy's
+    ``file_server`` (landing page) and never touches ``reverse_proxy``. If
+    the nginx stub failed to start (mount/permission error, port
+    conflict, config typo) Caddy still answers ``/`` with 200 from
+    ``file_server`` and the readiness check passes — but every
+    non-regression test that asserts on the upstream signature then fails
+    with a confusing "stub signature missing" assertion rather than a
+    clean "stub unreachable" fixture error.
+
+    This probe fires ``GET /health``, which matches ``@api`` and is
+    proxied to the stub. A 502/504 (upstream unreachable) or a 200
+    without ``non-regression-stub`` in the body names the real cause
+    before any test runs.
+    """
+    try:
+        resp = httpx.get(
+            f"{_BASE_URL}/health",
+            verify=False,
+            follow_redirects=False,
+            timeout=2.0,
+        )
+    except _READY_EXCEPTIONS as exc:
+        raise RuntimeError(
+            f"Non-regression stack: upstream stub is not reachable through "
+            f"Caddy. GET /health raised {exc!r}. Check that the "
+            f"{_UPSTREAM_CONTAINER!r} container is running and that the "
+            f"`{_NETWORK}` docker network resolves `{_UPSTREAM_HOSTNAME}`."
+        ) from exc
+    if resp.status_code >= 500:
+        raise RuntimeError(
+            f"Non-regression stack: upstream stub returned "
+            f"{resp.status_code} on GET /health — the stub container may "
+            f"have failed to start. Check `docker logs "
+            f"{_UPSTREAM_CONTAINER}`."
+        )
+    if b"non-regression-stub" not in resp.content:
+        raise RuntimeError(
+            f"Non-regression stack: GET /health returned {resp.status_code} "
+            f"but the upstream stub signature `non-regression-stub` is "
+            f"missing from the response body. Caddy may be answering /health "
+            f"itself instead of proxying, or the stub has been replaced. "
+            f"Response body (first 200 bytes): {resp.content[:200]!r}"
+        )
 
 
 @pytest.fixture(scope="session")

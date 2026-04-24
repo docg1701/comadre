@@ -16,7 +16,7 @@ Ownership per sub-story (Epic 4, Story 4.5a-g):
 | `test_security_headers.py`   | 4.5a      | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, CSP `upgrade-insecure-requests` directive; Server / Via banner stripping |
 | `test_docs_disabled.py`      | 4.5b      | FR47 — `/docs`, `/redoc`, `/openapi.json` 404 + project envelope + no OpenAPI content leak |
 | `test_timing_safe_compare.py`| 4.5c      | FR48 — static AST scan forbids bare `==`/`!=` on `*hash*`/`*token*`/`*secret*` identifiers in `src/comadre/`, with `# scan-allow: <reason>` line-comment allowlist |
-| `test_request_body_limit.py` | 4.5d      | Caddy `max_size 1MB` rejection                              |
+| `test_request_body_limit.py` | 4.5d      | FR49 — Caddy `@api` body-framing + oversize policy (any-TE/malformed-CL/missing-framing/>1MiB rejected; includes static Caddyfile-parity probe; see module docstring) |
 | `test_rate_limit_wired.py`   | 4.5e      | `SlowAPIMiddleware` registered                              |
 | `test_no_raw_httpexception.py` | 4.5f    | Static check: no raw `HTTPException` outside permitted list |
 | `test_sql_static_bandit.py`  | 4.5g      | Bandit SQL-injection static analysis                        |
