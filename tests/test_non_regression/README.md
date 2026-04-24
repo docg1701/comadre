@@ -15,7 +15,7 @@ Ownership per sub-story (Epic 4, Story 4.5a-g):
 | ---------------------------- | --------- | ----------------------------------------------------------- |
 | `test_security_headers.py`   | 4.5a      | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, CSP `upgrade-insecure-requests` directive; Server / Via banner stripping |
 | `test_docs_disabled.py`      | 4.5b      | FR47 — `/docs`, `/redoc`, `/openapi.json` 404 + project envelope + no OpenAPI content leak |
-| `test_timing_safe_compare.py`| 4.5c      | Static check: API-key comparison uses `hmac.compare_digest` |
+| `test_timing_safe_compare.py`| 4.5c      | FR48 — static AST scan forbids bare `==`/`!=` on `*hash*`/`*token*`/`*secret*` identifiers in `src/comadre/`, with `# scan-allow: <reason>` line-comment allowlist |
 | `test_request_body_limit.py` | 4.5d      | Caddy `max_size 1MB` rejection                              |
 | `test_rate_limit_wired.py`   | 4.5e      | `SlowAPIMiddleware` registered                              |
 | `test_no_raw_httpexception.py` | 4.5f    | Static check: no raw `HTTPException` outside permitted list |
@@ -189,3 +189,18 @@ Sub-stories pick ONE of two harness shapes, per the nature of the check:
 Rule of thumb: pick TestClient when the check is app-internal (FR47, FR50);
 pick docker when the check crosses the Caddy↔FastAPI boundary (FR46, FR49).
 Static-scan checks skip both harnesses.
+
+### Scan allowlist convention
+
+Static-scan sub-stories (4.5c, 4.5f, 4.5g) share one escape hatch: a
+trailing `# scan-allow: <reason>` comment on the offending source line
+suppresses the scan for that line only. The reason is free-form but
+reviewer-enforced — an empty or one-word reason is a review-blocker in
+practice. Each scan owns its own reason vocabulary; a reason accepted by
+4.5c's timing-safe scan is not automatically accepted by 4.5f's
+no-raw-`HTTPException` scan (they exist on different lines anyway).
+
+Fixture files driving each scan's self-tests live under
+`tests/test_non_regression/fixtures/<check_name>/` — e.g., 4.5c uses
+`fixtures/timing_safe_compare/`. This keeps fixture surface partitioned
+per-sub-story so a future scan can land without collision.
