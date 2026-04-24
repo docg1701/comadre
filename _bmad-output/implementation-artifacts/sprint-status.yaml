@@ -1,5 +1,5 @@
 # generated: 2026-04-16
-# last_updated: 2026-04-24 (story 4.5f review → done)
+# last_updated: 2026-04-24 (story 4.5g code-review fixes complete → done)
 # project: comadre
 # project_key: NOKEY
 # tracking_system: file-system
@@ -44,7 +44,7 @@
 #   after Epic 1 reaches usable state.
 
 generated: 2026-04-16
-last_updated: 2026-04-24 # story 4.5f review → done
+last_updated: 2026-04-24 # story 4.5g code-review fixes complete → done
 project: comadre
 # Note: duplicated last_updated is intentional — the YAML body is the tracked value;
 # the header comment is human-facing. Both updated together.
@@ -101,6 +101,6 @@ development_status:
   4-5d-ci-oversized-request-body-rejection: done
   4-5e-ci-rate-limit-middleware-registration: done
   4-5f-ci-no-raw-httpexception: done
-  4-5g-ci-sql-injection-static-analysis-bandit: backlog
+  4-5g-ci-sql-injection-static-analysis-bandit: done
   4-6-lgpd-documentation-breach-runbook: backlog
   epic-4-retrospective: optional

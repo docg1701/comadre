@@ -545,7 +545,7 @@ def update_customer(
         # mutation slipping through if a future caller restructures the
         # SELECT-then-UPDATE pair.
         sql = (
-            f"UPDATE customer SET {', '.join(set_parts)} "
+            f"UPDATE customer SET {', '.join(set_parts)} "  # nosec B608  # set_parts is a hardcoded column-allowlist ("email = ?", "name = ?", ...); only ? placeholders bind values
             "WHERE id = ? AND deleted_at IS NULL"
         )
         conn.execute(sql, params)
@@ -815,7 +815,7 @@ def list_api_keys(
         "k.key_prefix, k.status, k.billing_mode, k.rate_limit_rpm, "
         "k.price_monthly, k.paid_until, k.created_at, k.last_used_at, k.notes "
         "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
-        f"{where_clause} "
+        f"{where_clause} "  # nosec B608  # where_clause is assembled from a hardcoded predicate-allowlist ("k.status = ?", "k.billing_mode = ?", ...); every value binds via ?
         "ORDER BY k.created_at ASC"
     )
     cursor = conn.execute(sql, params)
@@ -1063,7 +1063,7 @@ def list_audit_events(
     sql = (
         "SELECT id, occurred_at, actor, action, target_type, target_id, "
         "details_json FROM audit_log "
-        f"WHERE target_id IN ({placeholders}) "
+        f"WHERE target_id IN ({placeholders}) "  # nosec B608  # placeholders is ",".join("?" * n) — only ? tokens; operator input binds via positional ? params
         "ORDER BY occurred_at DESC, id DESC LIMIT ?"
     )
     cursor = conn.execute(sql, (*target_ids, limit))
@@ -1265,7 +1265,7 @@ def update_api_key(
         # the predicate to the UPDATE prevents a mutation slipping through
         # if a future caller restructures the SELECT-then-UPDATE pair.
         sql = (
-            f"UPDATE api_key SET {', '.join(set_parts)} "
+            f"UPDATE api_key SET {', '.join(set_parts)} "  # nosec B608  # set_parts is a hardcoded column-allowlist ("rate_limit_rpm = ?", "notes = ?", ...); only ? placeholders bind values
             "WHERE id = ? AND status != 'revoked'"
         )
         conn.execute(sql, params)

@@ -19,7 +19,7 @@ Ownership per sub-story (Epic 4, Story 4.5a-g):
 | `test_request_body_limit.py` | 4.5d      | FR49 — Caddy `@api` body-framing + oversize policy (any-TE/malformed-CL/missing-framing/>1MiB rejected; includes static Caddyfile-parity probe; see module docstring) |
 | `test_rate_limit_wired.py`   | 4.5e      | FR50 — per-key rate-limit gate on `/v1/audio/speech`: `Depends(check_rate_limit)` present + `app.state.rate_limiter` initialised + 429 on `rate_limit_rpm+1`; negative assertion `/health` UN-rate-limited. ASGI TestClient (no docker). See module docstring for the 2.0.0 re-interpretation of FR50's slowapi-era wording. |
 | `test_no_raw_httpexception.py` | 4.5f    | FR51 — static AST scan forbids ``raise HTTPException(...)`` AND ``from {fastapi, fastapi.exceptions, starlette.exceptions} import HTTPException`` in ``src/comadre/``, with ``# scan-allow: <reason>`` line-comment allowlist (same contract as 4.5c). Remediation hint names the ``ComadreError`` hierarchy at ``src/comadre/exceptions.py``. |
-| `test_sql_static_bandit.py`  | 4.5g      | Bandit SQL-injection static analysis                        |
+| `test_sql_static_bandit.py`  | 4.5g      | SQL-injection prevention — subprocess-runs ``python -m bandit -c <sentinel> -r src/comadre/keys/ -t B608 -ll -f json -q``, asserts zero B608 (``hardcoded_sql_expressions``) findings at MEDIUM-or-higher severity (``-ll``; bandit's ``-l`` means LOW-or-higher). Controlled-input column/identifier splicing sites use bandit's native ``# nosec B608  # <reviewer-enforced reason>`` two-comment escape hatch (orthogonal to 4.5c/4.5f's ``# scan-allow:`` token — see "Scan allowlist convention"). |
 
 ## Opt-in contract
 
@@ -204,3 +204,27 @@ Fixture files driving each scan's self-tests live under
 `tests/test_non_regression/fixtures/<check_name>/` — e.g., 4.5c uses
 `fixtures/timing_safe_compare/`. This keeps fixture surface partitioned
 per-sub-story so a future scan can land without collision.
+
+### Bandit allowlist convention (4.5g)
+
+Sub-story 4.5g delegates its scan to `bandit`, which ships its own native
+escape hatch: a trailing `# nosec <test-ids>` comment on the offending
+source line. 4.5g's gate uses the **two-comment form**
+`# nosec B608  # <reason>` specifically:
+
+- The explicit test-id `B608` narrows the suppression to the SQL plugin
+  only (a bare `# nosec` would silence all bandit findings on that line,
+  which is too broad).
+- The reason after the **second** `#` is invisible to bandit's tolerant
+  nosec lexer — bandit reads test-ids only until the next `#` boundary,
+  so reason text never trips the `[manager] WARNING Test in comment:
+  <word> is not a test name or id, ignoring` stderr noise that the
+  single-comment colon form (`# nosec B608: <reason>`) emits once per
+  word.
+
+The `# nosec` vocabulary is complementary to the `# scan-allow:`
+vocabulary 4.5c/4.5f share; the two tokens are orthogonal and a line
+could in principle carry both if it tripped multiple scans
+simultaneously. Same reviewer-enforced reason-vocabulary rules apply:
+the reason must name the controlled-input contract (which collection is
+spliced, why it's safe, how values bind).
