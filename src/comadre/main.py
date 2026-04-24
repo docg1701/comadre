@@ -246,6 +246,32 @@ async def validation_error_handler(
     )
 
 
+def _not_found_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Convert Starlette HTTPException(404) to our standard error format.
+
+    Without this handler, FastAPI returns ``{"detail": "Not Found"}`` which
+    breaks the consistent ``{"error": {message, type, hint}}`` envelope used
+    everywhere else in the API. Shares the ``"not_found_error"`` type with
+    ``VoiceNotFoundError`` for shape consistency — unknown-path 404s and
+    voice-not-found 404s are both "resource not found," distinguished by
+    ``message`` and ``hint``.
+    """
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": {
+                "message": f"Not found: {request.method} {request.url.path}",
+                "type": "not_found_error",
+                "hint": (
+                    "Check the URL. The Comadre API surface is /v1/audio/speech"
+                    " and /health. See docs/api-reference.md for the full"
+                    " endpoint list."
+                ),
+            }
+        },
+    )
+
+
 def _method_not_allowed_handler(request: Request, exc: Exception) -> JSONResponse:
     """Convert Starlette HTTPException(405) to our standard error format.
 
@@ -314,6 +340,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(404, _not_found_handler)
     app.add_exception_handler(405, _method_not_allowed_handler)
     app.include_router(api_router)
 

@@ -29,7 +29,8 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "non_regression: integration tests that exercise the prod docker-compose stack",
+        "non_regression: CI non-regression suite (PRD Non-Regression Contract"
+        " coverage; some tests spawn docker, others use ASGI TestClient)",
     )
 
 

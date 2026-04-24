@@ -2,6 +2,18 @@
 
 Items surfaced during code reviews that were judged real but non-gating for the current story. Re-triage when picking up a related story or a hardening pass.
 
+## Deferred from: code review of story-4-5b (2026-04-23)
+
+- **Path/method reflection in 404 message body without sanitisation.** `f"Not found: {request.method} {request.url.path}"` echoes attacker-controlled URL into the JSON body. JSON-encoded so XSS-safe, but log aggregators that consume the field may mis-render long/binary/control-character paths. Identical pattern in the symmetric 405 handler — cross-handler housekeeping, not 4.5b-specific. [`src/comadre/main.py:263`]
+- **Hint references repo-relative `docs/api-reference.md` instead of public URL.** Meaningless to an HTTP client. Same convention as the existing 405 handler; revisit on a public-API documentation pass. [`src/comadre/main.py:267-269`]
+- **Default `uv run pytest` no longer covers FR47.** The deleted `TestDocsDisabled` ran on every developer invocation; the new module is `non_regression`-marker-gated. CI catches the regression, but local feedback latency increases. Revisit if devs report missing the fast feedback. [`tests/test_api.py` (deleted), `tests/test_non_regression/test_docs_disabled.py`]
+- **`_CONTENT_LEAK_MARKERS` could miss future docs UIs (rapidoc, stoplight-elements, openapi-explorer).** Already in spec §Deferred-work as "Content-leak markers list evolution"; the failure message names the body excerpt so a real leak would be loud. Refresh the marker list when FastAPI swaps its default UI. [`tests/test_non_regression/test_docs_disabled.py:183-191`]
+- **HEAD-method body framing not asserted on the new 404 handler.** Starlette normally strips bodies on HEAD; not exercised by these tests. Candidate for a cross-handler RFC-compliance hardening story. [`src/comadre/main.py:249-272`]
+- **Future required-env-var addition would silently break `bare_client`.** Architectural concern: any new `Settings` field marked required would cause `create_app()` to ValidationError before the test body runs. Shared by every test that calls `create_app()`. Migrate to a shared `mock_settings` pattern when a third non-regression module needs an ASGI client. [`tests/test_non_regression/test_docs_disabled.py:194-212`]
+- **`/docs/oauth2-redirect` not in `DISABLED_ENDPOINTS`.** Out of FR47 AC scope. The realistic regression scenario (re-enabling `docs_url`) is already caught by the existing `/docs` assertion since FastAPI mounts oauth2-redirect only when `docs_url` is non-None. Add if a stricter docs-disabled contract surfaces. [`tests/test_non_regression/test_docs_disabled.py:124`]
+- **Method-variance not tested (only GET).** Already in spec §Deferred-work ("Test matrix expansion to cover method variance"). FR47 explicitly names GET as the surface. [`tests/test_non_regression/test_docs_disabled.py:165-211`]
+- **README ownership cell may overpromise FR47 since Caddy-layer is uncovered.** Spec §Deferred-work explicitly names a Caddy-level belt-and-braces test as candidate follow-up; today the Caddy `file_server` 404 transitively satisfies the control. Tighten the README cell language if the Caddy `@api` matcher is touched. [`tests/test_non_regression/README.md:17`]
+
 ## Deferred from: code review of story-4-3 (2026-04-20)
 
 - **PBKDF2 iteration count at openssl-3 default 10K vs OWASP-2023 600K.** Spec Q3 deliberately chose 10K with a ≥32-char passphrase; upgrade is a one-line `-iter 600000` swap in both playbooks when Epic 4 hardening lands. [`deploy/ansible/playbooks/backup-keys.yml:126`]

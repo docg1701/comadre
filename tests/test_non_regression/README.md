@@ -2,16 +2,19 @@
 
 This package holds the CI non-regression contract — the mechanical checks
 that prove controls the PRD marks as *must-not-regress* still hold on every
-PR. The checks run against a locally-spawned `docker` stack: the production
+PR. Some checks run against a locally-spawned `docker` stack (the production
 Caddy image with the production `deploy/caddy/Caddyfile`, hitting a stubbed
-upstream instead of the real `tts-service` container.
+upstream instead of the real `tts-service` container); others exercise the
+FastAPI app directly via an ASGI TestClient. The common contract is: they
+run in the CI `non-regression` job and are excluded from the default
+developer `pytest` invocation.
 
 Ownership per sub-story (Epic 4, Story 4.5a-g):
 
 | File                         | Sub-story | Controls covered                                            |
 | ---------------------------- | --------- | ----------------------------------------------------------- |
 | `test_security_headers.py`   | 4.5a      | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, CSP `upgrade-insecure-requests` directive; Server / Via banner stripping |
-| `test_docs_disabled.py`      | 4.5b      | `/docs`, `/redoc`, `/openapi.json` disabled                 |
+| `test_docs_disabled.py`      | 4.5b      | FR47 — `/docs`, `/redoc`, `/openapi.json` 404 + project envelope + no OpenAPI content leak |
 | `test_timing_safe_compare.py`| 4.5c      | Static check: API-key comparison uses `hmac.compare_digest` |
 | `test_request_body_limit.py` | 4.5d      | Caddy `max_size 1MB` rejection                              |
 | `test_rate_limit_wired.py`   | 4.5e      | `SlowAPIMiddleware` registered                              |
@@ -22,7 +25,10 @@ Ownership per sub-story (Epic 4, Story 4.5a-g):
 
 The whole package is gated behind the `non_regression` pytest marker.
 Running `uv run pytest` on a developer laptop (no flag) does **not** collect
-or run these tests — they need `docker compose` and bind privileged ports.
+or run these tests. Some tests need `docker compose` and bind privileged
+ports; others use an ASGI TestClient and run in-process. The common
+contract is: they run in the CI `non-regression` job and are excluded from
+the default developer `pytest` invocation.
 
 To run the suite locally:
 
@@ -167,3 +173,19 @@ Sub-stories SHOULD NOT:
   no-landing lines 8-17); covering the primary covers the no-landing
   variant transitively. A pre-commit hook asserting byte-identity is
   candidate deferred-work.
+
+### Harness choice
+
+Sub-stories pick ONE of two harness shapes, per the nature of the check:
+
+- **Docker stack** (`compose_stack` + `probe_client` from this package's
+  `conftest.py`). Use when the check crosses the Caddy↔FastAPI boundary —
+  e.g., FR46 security headers (4.5a), FR49 Caddy request-body limit (4.5d).
+- **ASGI TestClient** (per-module fixture wrapping `create_app()`). Use
+  when the check is app-internal — e.g., FR47 docs-disabled (4.5b), FR50
+  rate-limit middleware registration (4.5e) — or when it's a static scan
+  that needs no HTTP harness at all (4.5c, 4.5f, 4.5g).
+
+Rule of thumb: pick TestClient when the check is app-internal (FR47, FR50);
+pick docker when the check crosses the Caddy↔FastAPI boundary (FR46, FR49).
+Static-scan checks skip both harnesses.
