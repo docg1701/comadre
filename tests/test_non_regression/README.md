@@ -18,7 +18,7 @@ Ownership per sub-story (Epic 4, Story 4.5a-g):
 | `test_timing_safe_compare.py`| 4.5c      | FR48 — static AST scan forbids bare `==`/`!=` on `*hash*`/`*token*`/`*secret*` identifiers in `src/comadre/`, with `# scan-allow: <reason>` line-comment allowlist |
 | `test_request_body_limit.py` | 4.5d      | FR49 — Caddy `@api` body-framing + oversize policy (any-TE/malformed-CL/missing-framing/>1MiB rejected; includes static Caddyfile-parity probe; see module docstring) |
 | `test_rate_limit_wired.py`   | 4.5e      | FR50 — per-key rate-limit gate on `/v1/audio/speech`: `Depends(check_rate_limit)` present + `app.state.rate_limiter` initialised + 429 on `rate_limit_rpm+1`; negative assertion `/health` UN-rate-limited. ASGI TestClient (no docker). See module docstring for the 2.0.0 re-interpretation of FR50's slowapi-era wording. |
-| `test_no_raw_httpexception.py` | 4.5f    | Static check: no raw `HTTPException` outside permitted list |
+| `test_no_raw_httpexception.py` | 4.5f    | FR51 — static AST scan forbids ``raise HTTPException(...)`` AND ``from {fastapi, fastapi.exceptions, starlette.exceptions} import HTTPException`` in ``src/comadre/``, with ``# scan-allow: <reason>`` line-comment allowlist (same contract as 4.5c). Remediation hint names the ``ComadreError`` hierarchy at ``src/comadre/exceptions.py``. |
 | `test_sql_static_bandit.py`  | 4.5g      | Bandit SQL-injection static analysis                        |
 
 ## Opt-in contract
