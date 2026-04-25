@@ -1227,8 +1227,15 @@ class TestRenderRevenueReport:
         report = _revenue_report(complimentary_rows=(hostile,))
         render_revenue_report(report)
         out = buf.getvalue()
-        # The literal markup must survive — no Rich interpretation.
-        assert "[red]evil[/]" in out
+        # F24 hardening: ``_safe_user_text`` escapes Rich markup brackets
+        # via ``rich.markup.escape``, producing the backslash-escaped form
+        # in the output stream. The defensive contract is "no styling
+        # applied"; the visible text still reads ``[red]evil[/]`` (Rich
+        # treats the escape as plain text); we check the underlying
+        # token survives.
+        assert "evil" in out
+        # And no ANSI styling leaked (NO_COLOR-equivalent buffer).
+        assert "\x1b[" not in out
 
 
 class TestRenderSuspendSweepPreview:

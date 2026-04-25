@@ -9,8 +9,12 @@ full allowlist contract.
 
 from __future__ import annotations
 
-from fastapi import HTTPException  # scan-allow: fixture-intentional-for-4.5f
+from fastapi import (
+    HTTPException,  # scan-allow[no-raw-httpexception]: fixture-intentional-for-4.5f
+)
 
 
 def forbid() -> None:
-    raise HTTPException(status_code=403)  # scan-allow: fixture-intentional-for-4.5f
+    raise HTTPException(
+        status_code=403
+    )  # scan-allow[no-raw-httpexception]: fixture-intentional-for-4.5f

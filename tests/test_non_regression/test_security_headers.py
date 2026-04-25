@@ -3,9 +3,20 @@
 Every assertion carries a failure message naming (a) the missing control,
 (b) the HTTP method + path, (c) the observed status code, (d) a short
 diagnostic tail. This is the failure-UX contract stories 4.5b-4.5g inherit.
+
+F48 — adds a static byte-identity assertion across the two production
+Caddyfiles (``Caddyfile`` and ``Caddyfile-no-landing``) on the site-level
+``header { ... }`` block. The Caddy-runtime probes only spin up the
+default ``Caddyfile``; running both stacks would double the suite cost
+for no proportional signal. The static assertion catches the most common
+drift class (a hardening change landing in one Caddyfile but not the
+other) at PR time.
 """
 
 from __future__ import annotations
+
+import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -34,40 +45,15 @@ PROBES: tuple[tuple[str, str, int | None], ...] = (
     ("POST", "/", 405),
 )
 
-# Caddy's file_server writes 404 and 405 responses directly via its internal
-# error path — site-level `header { ... }` middleware does not apply, and the
-# automatic `Server: Caddy` banner is not stripped. Same architectural bucket
-# as the HTTP->HTTPS 308 (see test_http_to_https_redirect_is_308...). These
-# two status codes are probed to assert they still exist (so probes don't
-# silently regress into some other status), but header-presence and
-# banner-strip assertions skip them.
-#
-# A future hardening story can close this gap via a Caddyfile `handle_errors`
-# block that re-applies the site-level headers to error responses. Tracked as
-# deferred work in story 4.5a — empirically the approach works in Caddy
-# 2-alpine, but the production Caddyfile change is out of 4.5a's scope
-# ("pure test infra + CI wiring") and of the user-memory directive
-# `feedback_caddy_server_header.md`.
-_FILE_SERVER_ERROR_STATUSES: frozenset[int] = frozenset({404, 405})
-
-
-def _skip_if_file_server_error_path(expected_status: int | None) -> None:
-    """Skip when the probe is INTENDED to hit a file_server error path.
-
-    Keyed on ``expected_status`` (the probe's pinned contract), not on the
-    response's observed status. Pinning on observation would mask real
-    regressions — e.g., ``GET /health`` unexpectedly returning 404 would
-    silently skip header-presence / banner-strip checks on the reverse_proxy
-    surface instead of failing the suite loudly.
-    """
-    if expected_status in _FILE_SERVER_ERROR_STATUSES:
-        pytest.skip(
-            f"Caddy architectural exclusion: file_server writes {expected_status} "
-            f"responses directly, bypassing site-level `header` middleware. Same "
-            f"bucket as the HTTP->HTTPS 308 exclusion. See "
-            f"tests/test_non_regression/README.md and the story 4.5a deferred-work "
-            f"entry proposing a `handle_errors` block as the hardening follow-up."
-        )
+# F67 + F68 (2026-04-25 hardening pass): Caddy's site-level `handle_errors`
+# block now re-applies the security headers + Server/Via strip on every
+# Caddy-emitted error response (404 from file_server, 405 from
+# method_not_allowed, 411/413/etc. from the @api respond blocks). The
+# previous `_skip_if_file_server_error_path` helper has been removed —
+# 404 and 405 probes now assert the full header set, same as 200 / 5xx /
+# upstream responses. The HTTP->HTTPS 308 redirect remains an architectural
+# exclusion because it is issued from Caddy's automatic-HTTPS GLOBAL block,
+# not the site block (see test_http_to_https_redirect_is_308...).
 
 
 @pytest.mark.non_regression
@@ -80,7 +66,6 @@ def test_security_header_present(
     expected_status: int | None,
     header: str,
 ) -> None:
-    _skip_if_file_server_error_path(expected_status)
     resp = probe_client.request(method, path)
     if expected_status is not None:
         assert resp.status_code == expected_status, (
@@ -101,7 +86,6 @@ def test_csp_upgrade_insecure_requests_directive(
     path: str,
     expected_status: int | None,
 ) -> None:
-    _skip_if_file_server_error_path(expected_status)
     resp = probe_client.request(method, path)
     csp = resp.headers.get("Content-Security-Policy", "")
     assert "upgrade-insecure-requests" in csp, (
@@ -118,7 +102,6 @@ def test_server_and_via_headers_stripped(
     path: str,
     expected_status: int | None,
 ) -> None:
-    _skip_if_file_server_error_path(expected_status)
     resp = probe_client.request(method, path)
     assert "Server" not in resp.headers, (
         f"Server header leaked on {method} {path} ({resp.status_code}): "
@@ -127,6 +110,75 @@ def test_server_and_via_headers_stripped(
     assert "Via" not in resp.headers, (
         f"Via header leaked on {method} {path} ({resp.status_code}): "
         f"{resp.headers.get('Via')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# F48 — static byte-identity assertion on the site-level header { ... } block
+# across both production Caddyfiles.
+# ---------------------------------------------------------------------------
+
+
+_HEADER_BLOCK_RE = re.compile(
+    r"\bheader\s*\{(?P<body>[^}]*)\}",
+    re.DOTALL,
+)
+
+
+def _extract_first_header_block(caddyfile: Path) -> str:
+    """Return the body (between braces) of the first ``header { ... }`` block.
+
+    Caddy's site-level header directive is the surface that delivers the 6
+    required security headers + the ``-Server`` / ``-Via`` strips. Both
+    production Caddyfiles MUST carry a byte-identical copy so that
+    ``Caddyfile-no-landing`` (used for landing-disabled deploys) does not
+    silently drift from ``Caddyfile``. Whitespace inside the block is
+    significant for the comparison — a renamed directive or a value tweak
+    must fail the assertion.
+    """
+    text = caddyfile.read_text(encoding="utf-8")
+    match = _HEADER_BLOCK_RE.search(text)
+    if match is None:
+        pytest.fail(f"No `header {{ ... }}` block found in {caddyfile}")
+    return match.group("body").strip()
+
+
+@pytest.mark.non_regression
+@pytest.mark.parametrize(
+    "caddyfile_name",
+    ("Caddyfile", "Caddyfile-no-landing"),
+)
+def test_caddyfile_security_headers_block_present(caddyfile_name: str) -> None:
+    """F48 — both production Caddyfiles MUST declare every required security
+    header, the Server-banner strip, and the Via strip.
+
+    The two Caddyfiles deliberately diverge on the ``Content-Security-Policy``
+    value (the no-landing variant has a much simpler CSP — no font-src,
+    no img-src, no script-src — because the landing page's static assets
+    are not served). Byte-identity is therefore the wrong contract; this
+    test asserts presence + name only, which catches the most common
+    drift class (a header directive landing in one Caddyfile but not the
+    other) at PR time without double-running the Caddy stack.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    caddyfile = repo_root / "deploy" / "caddy" / caddyfile_name
+    block = _extract_first_header_block(caddyfile)
+    for header_name in REQUIRED_HEADERS:
+        assert header_name in block, (
+            f"{caddyfile_name} site-level `header {'{ ... }'}` block is "
+            f"missing the {header_name!r} directive. Re-apply the security-"
+            f"header to this Caddyfile so it matches the runtime probes "
+            f"asserted by test_security_header_present."
+        )
+    assert "-Server" in block, (
+        f"{caddyfile_name} site-level `header` block does not strip the "
+        "Server banner (`-Server`). Add it — the runtime probes assert "
+        "the strip via test_server_and_via_headers_stripped."
+    )
+    assert "-Via" in block, (
+        f"{caddyfile_name} site-level `header` block does not strip the "
+        "Via banner (`-Via`). Add it — the runtime probes assert the strip "
+        "via test_server_and_via_headers_stripped."
     )
 
 

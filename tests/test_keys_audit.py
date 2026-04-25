@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 
@@ -61,7 +62,7 @@ class TestLogEvent:
         assert row["action"] == "create_customer"
         assert row["target_type"] == "customer"
         assert row["target_id"] == "cust_abc"
-        assert row["details_json"] == '{"tax_id_kind": "cpf"}'
+        assert json.loads(row["details_json"]) == {"tax_id_kind": "cpf"}
         assert ISO_UTC_RE.match(row["occurred_at"])
 
     def test_details_none_writes_null(self, conn: sqlite3.Connection) -> None:
@@ -162,9 +163,10 @@ class TestLogEvent:
             details={"paid_until": "2026-06-05", "reactivated": False},
         )
         row = conn.execute("SELECT details_json FROM audit_log").fetchone()
-        assert (
-            row["details_json"] == '{"paid_until": "2026-06-05", "reactivated": false}'
-        )
+        assert json.loads(row["details_json"]) == {
+            "paid_until": "2026-06-05",
+            "reactivated": False,
+        }
 
         log_event(
             conn,
@@ -177,6 +179,7 @@ class TestLogEvent:
         rows = conn.execute(
             "SELECT details_json FROM audit_log ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        assert (
-            rows["details_json"] == '{"paid_until": "2026-06-05", "reactivated": true}'
-        )
+        assert json.loads(rows["details_json"]) == {
+            "paid_until": "2026-06-05",
+            "reactivated": True,
+        }

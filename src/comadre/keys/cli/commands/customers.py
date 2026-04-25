@@ -20,7 +20,6 @@ import re
 import sqlite3
 from datetime import UTC, datetime
 from typing import cast
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
 import typer
@@ -31,8 +30,9 @@ from comadre.config import get_settings
 from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import get_cli_actor
-from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
+from comadre.keys.cli import _clock
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
+from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
     EXPORT_FORMAT_CHOICES,
     LIST_FORMAT_CHOICES,
@@ -247,7 +247,7 @@ def create_customer(
             insert_customer(conn, record, actor=get_cli_actor())
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
@@ -333,14 +333,14 @@ def list_customers_cmd(
     # (listings are pure reads — close errors here have nothing to protect).
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -550,47 +550,18 @@ def show_cmd(
         )
         raise typer.Exit(code=2)
 
-    # 2. Settings + encryption-key sanity (exit 6 — same mapping as siblings).
-    try:
-        settings = get_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    # 2. Settings + encryption-key sanity (F38 — adopt shared ladder).
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, billing_tz = loaded
 
-    try:
-        billing_tz = ZoneInfo(settings.billing_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        render_error(
-            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
-            (
-                "Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
-                f"Got: {settings.billing_timezone}"
-            ),
-        )
-        raise typer.Exit(code=6) from None
-
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations + resolve target + fetch events.
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
@@ -599,7 +570,7 @@ def show_cmd(
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -839,50 +810,18 @@ def update_customer_cmd(
             raise typer.Exit(code=2)
         add_note = stripped_note
 
-    # 4. Settings load — same exit-6 mapping as the sibling commands. The
-    # encryption key isn't used here (no tax-ID operation), but we still
-    # validate its presence so the operator gets a consistent configuration
-    # error surface across all `comadre-keys` verbs.
-    try:
-        settings = get_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    # 4. Settings load (F38 — adopt shared ladder).
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, billing_tz = loaded
 
-    try:
-        billing_tz = ZoneInfo(settings.billing_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        render_error(
-            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
-            (
-                "Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
-                f"Got: {settings.billing_timezone}"
-            ),
-        )
-        raise typer.Exit(code=6) from None
-
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 5. Open DB + migrations + mutation. Close in finally + suppress.
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
@@ -890,7 +829,7 @@ def update_customer_cmd(
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -903,15 +842,12 @@ def update_customer_cmd(
                 actor=get_cli_actor(),
                 today=today,
             )
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
-            # Defensive: ``update_customer`` raises ``RuntimeError`` when the
-            # post-commit re-read returns ``None`` (a concurrent tombstone
-            # between commit and re-read — "shouldn't happen" in the single-
-            # writer CLI). Map to exit 5 so the operator sees the same
-            # database-failure surface instead of an unhandled traceback.
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            # ``update_customer`` raises ``RuntimeError`` when the post-commit
+            # re-read returns ``None`` (a concurrent tombstone between commit
+            # and re-read — "shouldn't happen" in the single-writer CLI);
+            # ``sqlite3.Error`` covers the SQL-time failures; ``OSError``
+            # the DB-file-unreachable path. All three map to exit 5.
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -1023,21 +959,21 @@ def export_customer_cmd(
     # 4. Open DB + migrations (exit 5).
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
         # 5. Fetch the export row (+ associated keys).
         try:
             row = get_customer_with_cipher(conn, customer_id)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -1050,7 +986,7 @@ def export_customer_cmd(
 
         try:
             keys = list_api_keys(conn, customer_id=customer_id)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -1195,14 +1131,14 @@ def delete_customer_cmd(
     # 4. Open DB + migrations (exit 5).
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -1211,7 +1147,7 @@ def delete_customer_cmd(
         # not-found.
         try:
             existing = get_customer(conn, customer_id)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -1225,7 +1161,7 @@ def delete_customer_cmd(
         customer_name = existing.name
         try:
             pre_keys = len(list_api_keys(conn, customer_id=customer_id))
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -1250,7 +1186,7 @@ def delete_customer_cmd(
         # 7. Helper call.
         try:
             result = delete_customer_hard(conn, customer_id, actor=get_cli_actor())
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:

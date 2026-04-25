@@ -233,6 +233,35 @@
               -e "ansible_become_password=YOUR_SUDO_PASS"
         success_msg: "{{ backup_count.stdout | trim }} backup archive(s) present."
 
+    # F13 — size sanity. A crashed ``backup-keys.yml`` mid-``openssl enc``
+    # leaves a 0-byte (or sub-1024-byte salt-only) tarball that passes the
+    # count assertion above but is unrecoverable. Treat any archive smaller
+    # than 1 KiB as truncated.
+    - name: "[Backup] Smallest archive size in bytes"
+      ansible.builtin.command:
+        cmd: >-
+          docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
+          'stat -c %s /var/lib/comadre/*.backup-*.tar.gz.enc 2>/dev/null
+           | sort -n | head -1'
+      register: backup_min_size
+      changed_when: false
+
+    - name: "[Backup] Assert no archive is 0-byte or truncated"
+      ansible.builtin.assert:
+        that:
+          - (backup_min_size.stdout | trim | length) > 0
+          - (backup_min_size.stdout | trim | int) >= 1024
+        fail_msg: |
+          At least one backup archive at /var/lib/comadre/*.backup-*.tar.gz.enc
+          is 0-byte or truncated (smallest = {{ backup_min_size.stdout | trim }}
+          bytes; expected >= 1024). A crashed backup-keys.yml mid-``openssl enc``
+          leaves an unrecoverable salt-only file that the count-based check
+          would otherwise accept. Investigate, delete the bad archive, and
+          re-run backup-keys.yml.
+        success_msg: >-
+          All backup archives are at least 1 KiB
+          (smallest = {{ backup_min_size.stdout | trim }} bytes).
+
     # =========================================================================
     # UFW rules
     # =========================================================================

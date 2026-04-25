@@ -14,7 +14,7 @@ from comadre.exceptions import (
 )
 from comadre.keys.auth import verify_api_key
 from comadre.logging import get_logger
-from comadre.rate_limit import check_rate_limit
+from comadre.rate_limit import check_rate_limit, check_speech_per_ip_rate_limit
 from comadre.schemas import ResponseFormat, SpeechRequest
 
 logger = get_logger("request")
@@ -35,6 +35,10 @@ async def verify_ready(request: Request) -> None:
     "/v1/audio/speech",
     dependencies=[
         Depends(verify_ready),
+        # F20 — per-IP rate-limit gate runs BEFORE auth so denied-key
+        # spammers cannot bypass the per-key bucket. Generous 600/min/IP
+        # to keep NAT-shared legitimate users unaffected.
+        Depends(check_speech_per_ip_rate_limit),
         Depends(verify_api_key),
         Depends(check_rate_limit),
     ],

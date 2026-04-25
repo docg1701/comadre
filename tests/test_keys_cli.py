@@ -8,52 +8,24 @@ DB file is shared between tests.
 from __future__ import annotations
 
 import base64
+import json
 import re
 import sqlite3
 import stat
-from collections.abc import Iterator
-from io import StringIO
 from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
-from rich.console import Console
 from typer.testing import CliRunner
 
-import comadre.keys.cli.output as output_mod
-from comadre.config import get_settings
 from comadre.keys.cli.app import app
 
+# F41 — autouse fixtures (`_clear_settings_cache`,
+# `_reset_cli_consoles_to_buffers`) now live in tests/conftest.py and apply
+# to every test. Helpers (``_buffers``) live in tests/_keys_cli_helpers.py.
+from tests._keys_cli_helpers import buffers as _buffers
+
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _clear_settings_cache() -> Iterator[None]:
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
-    """Redirect the CLI's shared Consoles into StringIO buffers per-test.
-
-    Typer's CliRunner captures stdout/stderr at the process level, but our
-    render helpers use module-level Console singletons that cache their
-    destination. We re-wire them to buffers so assertions can see the
-    rendered output deterministically (no ANSI clutter from rich).
-    """
-    stdout_buf = StringIO()
-    stderr_buf = StringIO()
-    output_mod._reset_for_tests()
-    output_mod._stdout_console = Console(
-        file=stdout_buf, force_terminal=False, no_color=True, width=120
-    )
-    output_mod._stderr_console = Console(
-        file=stderr_buf, force_terminal=False, no_color=True, width=120
-    )
-    yield stdout_buf, stderr_buf
-    output_mod._reset_for_tests()
 
 
 @pytest.fixture()
@@ -63,13 +35,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
     return {"db_path": str(db_path), "key": key}
-
-
-def _buffers() -> tuple[str, str]:
-    """Return (stdout_text, stderr_text) from the re-wired Console buffers."""
-    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
-    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
-    return stdout_file.getvalue(), stderr_file.getvalue()
 
 
 class TestCreateCustomerHappyPath:
@@ -124,7 +89,7 @@ class TestCreateCustomerHappyPath:
             assert len(audits) == 1
             assert audits[0]["action"] == "create_customer"
             assert audits[0]["target_type"] == "customer"
-            assert audits[0]["details_json"] == '{"tax_id_kind": "cpf"}'
+            assert json.loads(audits[0]["details_json"]) == {"tax_id_kind": "cpf"}
             # AC8 actor shape: must be `cli:<something>`, never empty or None.
             assert audits[0]["actor"].startswith("cli:")
             assert len(audits[0]["actor"]) > len("cli:")
@@ -385,8 +350,13 @@ class TestFirstRunBootstrap:
         assert mode == 0o600
         conn = sqlite3.connect(db_path)
         try:
-            row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row[0] == 1
+            row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+            # F19 — schema bumped to v2; assert against the live constant
+            # rather than a frozen literal so future migrations keep this
+            # test honest.
+            from comadre.keys.db import _SCHEMA_VERSION
+
+            assert row[0] == _SCHEMA_VERSION
         finally:
             conn.close()
 
@@ -441,11 +411,15 @@ class TestIdempotentRerun:
         finally:
             monkeypatch.setattr(db_module.importlib.resources, "files", real_files)
 
-        # Schema version still single row @ v=1.
+        # Schema version still at the same row count after the second run.
         conn = sqlite3.connect(env["db_path"])
         try:
-            rows = conn.execute("SELECT version FROM schema_version").fetchall()
-            assert rows == [(1,)]
+            from comadre.keys.db import _SCHEMA_VERSION
+
+            rows = conn.execute(
+                "SELECT version FROM schema_version ORDER BY version"
+            ).fetchall()
+            assert [r[0] for r in rows] == list(range(1, _SCHEMA_VERSION + 1))
             count = conn.execute("SELECT COUNT(*) FROM customer").fetchone()[0]
             assert count == 2
         finally:
@@ -489,8 +463,6 @@ class TestAuditLogNoPersonalData:
             assert needle not in details, f"leak: {needle!r} in {details!r}"
         # No FORBIDDEN key names (per AC8). Keys are "name":, "email": etc. —
         # scan the parsed JSON, not substrings, to avoid tax_id_kind confusion.
-        import json
-
         parsed = json.loads(details)
         forbidden_keys = {"cpf", "cnpj", "tax_id", "name", "email"}
         assert not (parsed.keys() & forbidden_keys)

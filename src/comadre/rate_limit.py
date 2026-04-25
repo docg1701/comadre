@@ -73,6 +73,74 @@ def get_client_ip(request: Request) -> str:
     return "127.0.0.1"
 
 
+# F14 — per-IP bucket on /health to bound the shape-valid-random DoS
+# surface. Authenticated probes still use the auth path; this gate trips
+# only when one IP exceeds 60 calls/minute, regardless of bearer
+# validity. Operator-overridable via env if a noisy monitoring agent
+# legitimately exceeds it. F20 — same per-IP bucket is reused on the
+# pre-auth surface of /v1/audio/speech so denied-key spam can't bypass
+# the per-key bucket (auth runs before per-key rate-limit).
+_HEALTH_PER_IP_LIMIT = "60/minute"
+_SPEECH_PER_IP_LIMIT = "600/minute"
+
+
+async def _check_per_ip_bucket(
+    request: Request, *, limit_str: str, bucket_prefix: str
+) -> None:
+    limiter: RateLimiter | None = getattr(request.app.state, "rate_limiter", None)
+    if limiter is None:
+        # Lifespan has not yet attached the limiter (test stubs that
+        # bypass lifespan). Fail open — protecting against a never-running
+        # limiter would block every request. Lifespan attaches the
+        # limiter on startup; a missing limiter in production is a
+        # framework bug, not a request-time concern.
+        return
+    ip = get_client_ip(request)
+    limit = parse(limit_str)
+    bucket = f"{bucket_prefix}:{ip}"
+    allowed = await limiter.strategy.hit(limit, bucket)
+    if allowed:
+        return
+    reset_time, _remaining = await limiter.strategy.get_window_stats(limit, bucket)
+    now = time.time()
+    retry_after = max(1, math.ceil(reset_time - now))
+    reset_header = max(int(reset_time), int(now) + 1)
+    _rate_limit_logger.info(
+        "Per-IP rate-limit 429 | bucket=%s | ip=%s | limit=%s",
+        bucket_prefix,
+        ip,
+        limit_str,
+    )
+    rpm = int(limit_str.split("/")[0])
+    raise RateLimitError(
+        retry_after=retry_after,
+        limit=rpm,
+        remaining=0,
+        reset=reset_header,
+    )
+
+
+async def check_health_per_ip_rate_limit(request: Request) -> None:
+    """F14 — per-IP rate-limit gate on /health. 60/min/IP."""
+    await _check_per_ip_bucket(
+        request, limit_str=_HEALTH_PER_IP_LIMIT, bucket_prefix="health-ip"
+    )
+
+
+async def check_speech_per_ip_rate_limit(request: Request) -> None:
+    """F20 — per-IP rate-limit gate on /v1/audio/speech. 600/min/IP.
+
+    Runs BEFORE ``verify_api_key`` so a denied-key spammer cannot bypass
+    the per-key bucket by never authenticating. The 600/min headroom is
+    well above any legitimate single-IP usage (a 10x margin over the
+    default 60-rpm per-key limit) so a NAT-shared client cluster is
+    unaffected; the bucket trips only on bot-shaped traffic.
+    """
+    await _check_per_ip_bucket(
+        request, limit_str=_SPEECH_PER_IP_LIMIT, bucket_prefix="speech-ip"
+    )
+
+
 async def check_rate_limit(request: Request) -> None:
     """FastAPI dependency — enforce the per-key rate limit.
 

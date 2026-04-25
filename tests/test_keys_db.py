@@ -154,11 +154,13 @@ class TestApplyMigrations:
         try:
             _apply_migrations(conn)
             rows = conn.execute(
-                "SELECT version, applied_at FROM schema_version"
+                "SELECT version, applied_at FROM schema_version ORDER BY version"
             ).fetchall()
-            assert len(rows) == 1
-            assert rows[0]["version"] == _SCHEMA_VERSION
-            assert rows[0]["applied_at"].endswith("Z")
+            # F19 — every migration writes its own row, so the count
+            # equals the number of files in ``_MIGRATION_FILES``.
+            assert len(rows) == _SCHEMA_VERSION
+            assert rows[-1]["version"] == _SCHEMA_VERSION
+            assert all(r["applied_at"].endswith("Z") for r in rows)
         finally:
             conn.close()
 
@@ -166,11 +168,11 @@ class TestApplyMigrations:
         conn = get_connection(tmp_path / "registry.db")
         try:
             _apply_migrations(conn)
-            # Second run must not error (even though the v001 DDL has no
+            # Second run must not error (even though the migration DDL has no
             # IF NOT EXISTS — the version sentinel prevents re-execution).
             _apply_migrations(conn)
             rows = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-            assert rows == 1
+            assert rows == _SCHEMA_VERSION
         finally:
             conn.close()
 
@@ -191,6 +193,52 @@ class TestApplyMigrations:
                 "idx_api_key_sweep",
                 "idx_audit_occurred",
             } <= indexes
+        finally:
+            conn.close()
+
+    def test_v002_rate_limit_upper_bound_check(self, tmp_path: Path) -> None:
+        """F19 — v002 migration enforces ``rate_limit_rpm BETWEEN 1 AND 10000``.
+
+        The CLI already caps the value, but a direct SQL edit / malformed
+        backup restore could plant a rogue value. The CHECK constraint
+        rejects it at the DB layer.
+        """
+        conn = get_connection(tmp_path / "registry.db")
+        try:
+            _apply_migrations(conn)
+            # Seed a customer for the foreign-key reference.
+            conn.execute(
+                "INSERT INTO customer "
+                "(id, name, email, tax_id_kind, tax_id_encrypted, "
+                "registered_at) VALUES "
+                "('cust_x', 'X', 'x@x.com', 'cpf', x'00', '2026-04-25T00:00:00Z')"
+            )
+            conn.commit()
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+                conn.execute(
+                    "INSERT INTO api_key "
+                    "(id, customer_id, key_hash, key_prefix, rate_limit_rpm, "
+                    "status, billing_mode, created_at) VALUES "
+                    "('key_a', 'cust_x', 'h', 'p', 10001, 'active', "
+                    "'manual', '2026-04-25T00:00:00Z')"
+                )
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+                conn.execute(
+                    "INSERT INTO api_key "
+                    "(id, customer_id, key_hash, key_prefix, rate_limit_rpm, "
+                    "status, billing_mode, created_at) VALUES "
+                    "('key_b', 'cust_x', 'h2', 'p', 0, 'active', "
+                    "'manual', '2026-04-25T00:00:00Z')"
+                )
+            # In-bound values still accepted.
+            conn.execute(
+                "INSERT INTO api_key "
+                "(id, customer_id, key_hash, key_prefix, rate_limit_rpm, "
+                "status, billing_mode, created_at) VALUES "
+                "('key_c', 'cust_x', 'h3', 'p', 10000, 'active', "
+                "'manual', '2026-04-25T00:00:00Z')"
+            )
+            conn.commit()
         finally:
             conn.close()
 
@@ -222,7 +270,7 @@ class TestInsertCustomer:
             assert audit_row["actor"] == "cli:tester"
             assert audit_row["action"] == "create_customer"
             assert audit_row["target_type"] == "customer"
-            assert audit_row["details_json"] == '{"tax_id_kind": "cpf"}'
+            assert json.loads(audit_row["details_json"]) == {"tax_id_kind": "cpf"}
         finally:
             conn.close()
 
@@ -448,9 +496,10 @@ class TestInsertApiKey:
             assert audit["action"] == "issue_key"
             assert audit["target_type"] == "api_key"
             assert audit["actor"] == "cli:tester"
-            assert audit["details_json"] == (
-                '{"billing_mode": "manual", "rate_limit_rpm": 60}'
-            )
+            assert json.loads(audit["details_json"]) == {
+                "billing_mode": "manual",
+                "rate_limit_rpm": 60,
+            }
         finally:
             conn.close()
 
@@ -552,9 +601,10 @@ class TestInsertApiKey:
                 "SELECT details_json FROM audit_log WHERE target_id = ?",
                 (rec.id,),
             ).fetchone()
-            assert audit["details_json"] == (
-                '{"billing_mode": "complimentary", "rate_limit_rpm": 120}'
-            )
+            assert json.loads(audit["details_json"]) == {
+                "billing_mode": "complimentary",
+                "rate_limit_rpm": 120,
+            }
         finally:
             conn.close()
 
@@ -1576,7 +1626,8 @@ class TestListAuditEvents:
             )
             events = list_audit_events(conn, [cid], limit=10)
             assert events[0].details_json is None
-            assert events[1].details_json == '{"tax_id_kind": "cpf"}'
+            assert events[1].details_json is not None
+            assert json.loads(events[1].details_json) == {"tax_id_kind": "cpf"}
         finally:
             conn.close()
 
@@ -1824,7 +1875,7 @@ class TestUpdateCustomer:
             assert audit[0]["action"] == "update_customer"
             assert audit[0]["target_type"] == "customer"
             assert audit[0]["target_id"] == cid
-            assert audit[0]["details_json"] == '{"fields": ["email"]}'
+            assert json.loads(audit[0]["details_json"]) == {"fields": ["email"]}
         finally:
             conn.close()
 
@@ -1854,7 +1905,7 @@ class TestUpdateCustomer:
             audit = conn.execute(
                 "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
             ).fetchone()
-            assert audit["details_json"] == '{"fields": ["notes"]}'
+            assert json.loads(audit["details_json"]) == {"fields": ["notes"]}
         finally:
             conn.close()
 
@@ -1941,7 +1992,9 @@ class TestUpdateCustomer:
                 "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
             ).fetchall()
             assert len(audit) == 1
-            assert audit[0]["details_json"] == '{"fields": ["email", "notes"]}'
+            assert json.loads(audit[0]["details_json"]) == {
+                "fields": ["email", "notes"]
+            }
         finally:
             conn.close()
 
@@ -2059,7 +2112,7 @@ class TestUpdateCustomer:
             audit = conn.execute(
                 "SELECT details_json FROM audit_log WHERE action = 'update_customer'"
             ).fetchone()
-            assert audit["details_json"] == '{"fields": ["email"]}'
+            assert json.loads(audit["details_json"]) == {"fields": ["email"]}
         finally:
             conn.close()
 
@@ -2096,7 +2149,7 @@ class TestUpdateCustomer:
             )
             assert secret_email not in joined
             assert secret_note not in joined
-            assert row["details_json"] == '{"fields": ["email", "notes"]}'
+            assert json.loads(row["details_json"]) == {"fields": ["email", "notes"]}
         finally:
             conn.close()
 

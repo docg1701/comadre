@@ -107,6 +107,32 @@
 		file_server
 	}
 
+	# F67 — re-apply the security headers + Server/Via strip on Caddy-level
+	# error responses (404 from file_server, 405 from method_not_allowed,
+	# 411/413/etc. from the @api respond blocks above). Without this,
+	# Caddy's internal error path bypasses the site-level `header { ... }`
+	# middleware and ships error responses with the bare `Server: Caddy`
+	# banner and no security headers — empirically reproduced on
+	# caddy:2-alpine v2.11.2 in 2026-04-21 review work for Story 4.5a.
+	#
+	# F70 — also rewrites the body to the project's ComadreError-shaped
+	# JSON envelope so Caddy-level errors are indistinguishable from
+	# upstream-level errors at the API contract layer.
+	handle_errors {
+		header {
+			Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Permissions-Policy "microphone=(), camera=(), geolocation=()"
+			Content-Security-Policy "default-src 'none'; upgrade-insecure-requests; frame-ancestors 'none'"
+			Content-Type "application/json"
+			-Server
+			-Via
+		}
+		respond `{"error":{"message":"{err.status_text}","type":"caddy_error","hint":null,"status":{err.status_code}}}` {err.status_code}
+	}
+
 	log {
 		output stdout
 		format json

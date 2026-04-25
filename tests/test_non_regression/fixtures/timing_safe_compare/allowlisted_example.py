@@ -9,4 +9,6 @@ from __future__ import annotations
 
 
 def authenticate(token_hash: str, stored_hash: str) -> bool:
-    return token_hash == stored_hash  # scan-allow: fixture-intentional-for-4.5c
+    return (
+        token_hash == stored_hash
+    )  # scan-allow[timing-safe-compare]: fixture-intentional-for-4.5c

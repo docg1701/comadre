@@ -29,7 +29,7 @@ import typer
 
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import first_charge_date
-from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
+from comadre.keys.cli import _clock
 from comadre.keys.cli.commands.keys import (
     _key_row_to_json,
     _truncate_ident,
@@ -149,19 +149,19 @@ def mark_paid_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -201,10 +201,7 @@ def mark_paid_cmd(
                 )
                 raise typer.Exit(code=3) from None
             raise
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -258,19 +255,19 @@ def suspend_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -300,10 +297,7 @@ def suspend_cmd(
                 )
                 raise typer.Exit(code=3) from None
             raise
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -352,19 +346,19 @@ def reactivate_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -394,10 +388,7 @@ def reactivate_cmd(
                 )
                 raise typer.Exit(code=3) from None
             raise
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -645,20 +636,20 @@ def at_risk_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
     cutoff = today + timedelta(days=window_days)
 
     # 4. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -761,7 +752,7 @@ def revenue_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. --month shape + bounds (exit 2).
     year, month_int = _parse_month(month, today=today)
@@ -782,21 +773,21 @@ def revenue_cmd(
     # month_last (reused from Story 1.2's first_charge_date helper).
     next_charge = first_charge_date(
         today=month_last,
-        billing_day=settings.billing_day,  # type: ignore[attr-defined]
-        tz=settings.billing_timezone,  # type: ignore[attr-defined]
+        billing_day=settings.billing_day,
+        tz=settings.billing_timezone,
     )
 
     # 5. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 

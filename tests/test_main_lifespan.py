@@ -97,7 +97,9 @@ class TestRegistryBootstrap:
             version_row = conn.execute(
                 "SELECT MAX(version) FROM schema_version"
             ).fetchone()
-            assert version_row[0] == 1
+            from comadre.keys.db import _SCHEMA_VERSION
+
+            assert version_row[0] == _SCHEMA_VERSION
         finally:
             conn.close()
 

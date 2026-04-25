@@ -38,7 +38,7 @@ import contextlib
 import sqlite3
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
@@ -46,14 +46,14 @@ import typer
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr, ValidationError
 
-from comadre.config import Settings, get_settings
+from comadre.config import get_settings
 from comadre.counters import (
     WINDOW_SECONDS,
     aggregate_cache_status,
     read_all_snapshots,
 )
 from comadre.keys.audit import get_cli_actor
-from comadre.keys.cli._clock import resolve_today_in_tz
+from comadre.keys.cli import _clock
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
@@ -235,19 +235,18 @@ def suspend_sweep_cmd(
     loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
-    settings_obj, billing_tz = loaded
-    settings = cast(Settings, settings_obj)
+    settings, billing_tz = loaded
 
     # 2. Resolve today in operator TZ. Critical for FR18: the cron runs at
     # 00:30 São Paulo time but the VPS host clock is UTC. Without the
     # TZ-aware resolution, a sweep triggered near midnight could sweep
     # the wrong day's set.
-    today = resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from exc
 
@@ -379,14 +378,13 @@ def health_cmd(
     loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
-    settings_obj, _billing_tz = loaded
-    settings = cast(Settings, settings_obj)
+    settings, _billing_tz = loaded
 
     # 3. Open DB + migrations (exit 5). ``from exc`` preserves the
     # original traceback per Story 3.3 code-review patch contract.
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from exc
 
@@ -484,14 +482,13 @@ def rotate_encryption_key_cmd(
     loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
-    settings_obj, _billing_tz = loaded
-    settings = cast(Settings, settings_obj)
+    settings, _billing_tz = loaded
 
     # 3. Open DB + migrations (exit 5). ``from exc`` preserves the
     # original traceback per the Story 3.3 code-review patch contract.
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from exc
 
@@ -511,7 +508,7 @@ def rotate_encryption_key_cmd(
             pre_count = conn.execute(
                 "SELECT COUNT(*) FROM customer WHERE deleted_at IS NULL"
             ).fetchone()[0]
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from exc
 
@@ -559,7 +556,7 @@ def rotate_encryption_key_cmd(
                 _ROTATE_KEY_DECRYPT_FAILED_HINT,
             )
             raise typer.Exit(code=5) from None
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from exc
         except KeyboardInterrupt:

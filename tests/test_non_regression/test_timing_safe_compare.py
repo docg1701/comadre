@@ -8,26 +8,33 @@ the visitor's scope (Call node, not Compare node) and are therefore never
 flagged — this is the point: the scan is a negative invariant on bare
 equality, not a positive check on compare_digest presence.
 
-Inline ``# scan-allow: <reason>`` on the same source line suppresses the scan
-for that line only; the comment is reviewer-enforced at PR time.
+Inline ``# scan-allow[timing-safe-compare]: <reason>`` on the same source
+line suppresses the scan for that line only; the comment is reviewer-enforced
+at PR time. F45 — the namespace bracket is mandatory, so a comment
+suppressing this scan cannot accidentally silence a sibling scan
+(``no-raw-httpexception``, ``sql-injection``).
 """
 
 from __future__ import annotations
 
 import ast
-import io
 import re
-import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+from tests.test_non_regression._scan_common import (
+    allowlisted_lines,
+    safe_parse,
+)
 
 _PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 _SRC_ROOT: Path = _PROJECT_ROOT / "src" / "comadre"
 _FIXTURES_ROOT: Path = (
     Path(__file__).resolve().parent / "fixtures" / "timing_safe_compare"
 )
+_SCAN_LABEL: str = "timing-safe-compare"
 
 # AC4 — ``key`` is DELIBERATELY excluded from the suspect-identifier set.
 # A preview grep at story-draft time (2026-04-23) showed 15+ legitimate hits
@@ -42,7 +49,6 @@ _FIXTURES_ROOT: Path = (
 # ``_DUMMY_HASH``, ``bearer_token``, ``webhook_secret``), so the
 # substring-match-without-``key`` rule catches the regression class cleanly.
 _SUSPECT_IDENTIFIER_RE: re.Pattern[str] = re.compile(r"(?i)(hash|token|secret)")
-_ALLOWLIST_TOKEN: str = "# scan-allow:"
 
 
 @dataclass(frozen=True)
@@ -79,39 +85,21 @@ def _terminal_identifier(node: ast.expr) -> str | None:
     return None
 
 
-def _allowlisted_lines(source: str) -> set[int]:
-    """Return the set of line numbers carrying a real ``# scan-allow:`` comment.
-
-    Uses ``tokenize`` so the allowlist fires only on genuine COMMENT tokens and
-    never on occurrences of the literal string inside a string or docstring.
-    A raw-substring check would admit the bypass
-    ``_msg = "# scan-allow:"; token_hash == stored`` — tokenize sees the
-    STRING token and the COMMENT token separately, so a string-literal
-    occurrence cannot suppress an adjacent comparison.
-    """
-    allowlisted: set[int] = set()
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    for tok in tokens:
-        if tok.type == tokenize.COMMENT and _ALLOWLIST_TOKEN in tok.string:
-            allowlisted.add(tok.start[0])
-    return allowlisted
-
-
 def _find_unsafe_comparisons(path: Path) -> list[_Violation]:
     """Walk ``path`` AST for ``Compare`` nodes containing an ``Eq``/``NotEq``
     operator whose adjacent-operand terminal identifier matches
     ``_SUSPECT_IDENTIFIER_RE``.
 
-    A ``# scan-allow: <reason>`` comment on any physical line the comparison
-    spans (``node.lineno`` through ``node.end_lineno``) suppresses the
-    violation for that node. The allowlist is detected via ``tokenize`` so it
-    cannot be spoofed from string-literal content. Returns a list of
-    ``_Violation`` (empty on success).
+    A ``# scan-allow[timing-safe-compare]: <reason>`` comment on any physical
+    line the comparison spans (``node.lineno`` through ``node.end_lineno``)
+    suppresses the violation for that node. The allowlist is detected via
+    ``tokenize`` so it cannot be spoofed from string-literal content. Returns
+    a list of ``_Violation`` (empty on success).
     """
     source = path.read_text(encoding="utf-8")
     source_lines = source.splitlines()
-    tree = ast.parse(source, filename=str(path))
-    allowlisted = _allowlisted_lines(source)
+    tree = safe_parse(path)
+    allowlisted = allowlisted_lines(source, label=_SCAN_LABEL)
     violations: list[_Violation] = []
 
     for node in ast.walk(tree):
@@ -189,7 +177,8 @@ def test_src_comadre_has_no_unsafe_key_comparisons() -> None:
         "intentional and does NOT handle key material (e.g., an equality\n"
         "check on a non-sensitive field that incidentally contains the word\n"
         "'hash' or 'token'), add a trailing comment on the same line:\n"
-        "    # scan-allow: <why this is safe, reviewed by <initials>>\n\n"
+        "    # scan-allow[timing-safe-compare]: "
+        "<why this is safe, reviewed by <initials>>\n\n"
         "Violations:\n  " + "\n  ".join(v.render() for v in all_violations)
     )
 

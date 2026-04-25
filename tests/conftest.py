@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -14,9 +15,11 @@ import pytest
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
+from rich.console import Console
 
 from comadre.config import Settings, get_settings
 from comadre.keys.cache import AuthCache
+from comadre.keys.cli import output as _keys_cli_output
 from comadre.keys.db import _apply_migrations, get_connection
 from comadre.main import create_app
 from comadre.rate_limit import RateLimiter
@@ -35,9 +38,45 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_settings_cache() -> None:
-    """Clear get_settings LRU cache to prevent cross-test leakage."""
+def _clear_settings_cache() -> Iterator[None]:
+    """Clear get_settings LRU cache before AND after each test.
+
+    F41 hardening — was previously duplicated as a local autouse fixture
+    in 19 ``tests/test_keys_cli_*.py`` files (yielded so the cache was
+    cleared on both sides of the test). Promoted here so every CLI test
+    inherits the post-test cleanup without local duplication.
+    """
     get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_cli_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
+    """F41 — autouse-stubbed Rich consoles for every test.
+
+    Routes ``comadre.keys.cli.output``'s singleton stdout/stderr Consoles
+    to in-memory buffers so any test that exercises ``render_*`` helpers
+    (or merely imports a CLI command path) does not pollute the real
+    terminal. Cleared on both sides via ``_reset_for_tests`` so
+    cross-test leakage is impossible.
+
+    Tests that don't touch the CLI output module pay only the buffer
+    construction cost; the singletons are re-used across the test body.
+    """
+    stdout_buf = StringIO()
+    stderr_buf = StringIO()
+    _keys_cli_output._reset_for_tests()
+    _keys_cli_output._stdout_console = Console(
+        file=stdout_buf, force_terminal=False, no_color=True, width=120
+    )
+    _keys_cli_output._stderr_console = Console(
+        file=stderr_buf, force_terminal=False, no_color=True, width=120
+    )
+    try:
+        yield stdout_buf, stderr_buf
+    finally:
+        _keys_cli_output._reset_for_tests()
 
 
 @pytest.fixture()

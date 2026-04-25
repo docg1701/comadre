@@ -6,18 +6,13 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import Iterator
 from datetime import UTC, datetime
-from io import StringIO
 from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
-from rich.console import Console
 from typer.testing import CliRunner
 
-import comadre.keys.cli.output as output_mod
-from comadre.config import get_settings
 from comadre.keys.cli.app import app
 from comadre.keys.db import (
     _apply_migrations,
@@ -30,29 +25,14 @@ from comadre.keys.db import (
 from comadre.keys.models import ApiKeyRecord, CustomerRecord
 from comadre.keys.tokens import hash_api_key
 
+# F41 — autouse fixtures (`_clear_settings_cache`,
+# `_reset_cli_consoles_to_buffers`) now live in tests/conftest.py
+# and apply to every test. Helpers (``_buffers`` / ``_clear_buffers``)
+# live in tests/_keys_cli_helpers.py.
+from tests._keys_cli_helpers import buffers as _buffers
+from tests._keys_cli_helpers import clear_buffers as _clear_buffers
+
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _clear_settings_cache() -> Iterator[None]:
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
-    stdout_buf = StringIO()
-    stderr_buf = StringIO()
-    output_mod._reset_for_tests()
-    output_mod._stdout_console = Console(
-        file=stdout_buf, force_terminal=False, no_color=True, width=120
-    )
-    output_mod._stderr_console = Console(
-        file=stderr_buf, force_terminal=False, no_color=True, width=120
-    )
-    yield stdout_buf, stderr_buf
-    output_mod._reset_for_tests()
 
 
 @pytest.fixture()
@@ -62,19 +42,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
     return {"db_path": str(db_path), "key": key}
-
-
-def _buffers() -> tuple[str, str]:
-    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
-    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
-    return stdout_file.getvalue(), stderr_file.getvalue()
-
-
-def _clear_buffers() -> None:
-    for attr in ("_stdout_console", "_stderr_console"):
-        console = getattr(output_mod, attr)
-        console.file.seek(0)  # type: ignore[union-attr]
-        console.file.truncate()  # type: ignore[union-attr]
 
 
 def _seed_customer_and_key(

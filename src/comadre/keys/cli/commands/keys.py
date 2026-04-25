@@ -23,10 +23,10 @@ import click
 import typer
 from pydantic import ValidationError
 
-from comadre.config import get_settings
+from comadre.config import Settings, get_settings
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import ManualBillingProvider, days_until, first_charge_date
-from comadre.keys.cli._clock import resolve_today_in_tz as _resolve_today_in_tz
+from comadre.keys.cli import _clock
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
     LIST_FORMAT_CHOICES,
@@ -251,38 +251,11 @@ def issue_key(
         )
         raise typer.Exit(code=2)
 
-    # 4. Settings + encryption-key sanity.
-    try:
-        settings = get_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _MISSING_KEY_HINT,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _MISSING_KEY_HINT,
-        )
+    # 4. Settings + encryption-key sanity (F38 — adopt shared ladder).
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
-
-    try:
-        billing_tz = ZoneInfo(settings.billing_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        render_error(
-            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
-            f"Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
-            f"Got: {settings.billing_timezone}",
-        )
-        raise typer.Exit(code=6) from None
+    settings, billing_tz = loaded
 
     # 5. Open DB, apply migrations, look up customer.
     #    Customer lookup runs BEFORE ApiKeyCreate validation so that
@@ -291,14 +264,14 @@ def issue_key(
     #    operator sees the actionable message (AC3).
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -338,7 +311,7 @@ def issue_key(
 
         # 8. First-charge date (manual only).
         if billing_mode == "manual":
-            today_local = _resolve_today_in_tz(billing_tz)
+            today_local = _clock.resolve_today_in_tz(billing_tz)
             fc_date = first_charge_date(
                 today=today_local,
                 billing_day=settings.billing_day,
@@ -398,7 +371,7 @@ def issue_key(
                 str(exc),
             )
             raise typer.Exit(code=5) from None
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -558,38 +531,11 @@ def list_keys_cmd(
         )
         raise typer.Exit(code=2)
 
-    # 2. Settings + billing tz (same mapping as issue-key for exit 6).
-    try:
-        settings = get_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _MISSING_KEY_HINT,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _MISSING_KEY_HINT,
-        )
+    # 2. Settings + billing tz (F38 — adopt shared ladder).
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
-
-    try:
-        billing_tz = ZoneInfo(settings.billing_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        render_error(
-            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
-            f"Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
-            f"Got: {settings.billing_timezone}",
-        )
-        raise typer.Exit(code=6) from None
+    settings, billing_tz = loaded
 
     # 3. --paid-until-lte resolution ("today" or ISO date). Stripping whitespace
     # first so copy-pasted values don't reject; re-emitting the parsed date
@@ -602,7 +548,7 @@ def list_keys_cmd(
     else:
         trimmed = paid_until_lte.strip()
         if trimmed == "today":
-            resolved_paid = _resolve_today_in_tz(billing_tz).isoformat()
+            resolved_paid = _clock.resolve_today_in_tz(billing_tz).isoformat()
         else:
             try:
                 parsed = date.fromisoformat(trimmed)
@@ -618,14 +564,14 @@ def list_keys_cmd(
     # 4. Open DB + apply migrations + read rows.
     try:
         conn = get_connection(settings.key_registry_db_path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -736,13 +682,18 @@ def _key_update_clauses(result: UpdateKeyResult) -> list[str]:
     return clauses
 
 
-def load_settings_and_tz() -> tuple[object, ZoneInfo] | None:
+def load_settings_and_tz() -> tuple[Settings, ZoneInfo] | None:
     """Return ``(settings, billing_tz)`` or ``None`` after rendering an error.
 
     Shared configuration-surface for the Story 1.6 and Story 3.1 command
     modules so the encryption-key / billing-TZ exit-6 mapping stays DRY
     without touching the existing ``issue-key`` / ``list-keys`` / ``show``
     paths.
+
+    F36 — return type tightened from ``tuple[object, ZoneInfo] | None`` to
+    ``tuple[Settings, ZoneInfo] | None`` so call sites stop needing
+    ``cast(Settings, settings_obj)`` / ````
+    dance to read ``settings.key_registry_db_path``.
 
     Returns ``None`` when the caller should ``raise typer.Exit(code=6)``;
     the error panel has already been rendered.
@@ -913,19 +864,19 @@ def update_key_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 6. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -971,10 +922,7 @@ def update_key_cmd(
             # Unknown ValueError shape — re-raise so the operator sees a
             # traceback rather than a silently-misrouted error panel.
             raise
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -1021,12 +969,12 @@ def rotate_key_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
@@ -1035,7 +983,7 @@ def rotate_key_cmd(
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -1087,10 +1035,7 @@ def rotate_key_cmd(
             else:
                 render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:
@@ -1186,19 +1131,19 @@ def revoke_key_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _resolve_today_in_tz(billing_tz)
+    today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
     try:
-        conn = get_connection(settings.key_registry_db_path)  # type: ignore[attr-defined]
-    except sqlite3.Error as exc:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         render_error("Database error", str(exc))
         raise typer.Exit(code=5) from None
 
     try:
         try:
             _apply_migrations(conn)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
@@ -1246,10 +1191,7 @@ def revoke_key_cmd(
                 )
                 raise typer.Exit(code=3) from None
             raise
-        except sqlite3.Error as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-        except RuntimeError as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
     finally:

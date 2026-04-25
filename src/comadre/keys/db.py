@@ -239,7 +239,7 @@ class ShowTarget:
     value: CustomerDetailRow | KeyDetailRow | list[KeyDetailRow] | None
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def _utcnow_iso() -> str:
@@ -356,8 +356,20 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     _apply_migrations(conn)
 
 
+_MIGRATION_FILES: tuple[tuple[int, str], ...] = (
+    (1, "v001_initial.sql"),
+    (2, "v002_rate_limit_upper_bound.sql"),
+)
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
-    """Apply pending migrations. Idempotent."""
+    """Apply pending migrations. Idempotent.
+
+    Each migration file in ``_MIGRATION_FILES`` runs in its own transaction
+    along with the matching ``INSERT INTO schema_version`` row so a
+    mid-migration crash leaves the registry at the LAST successful version
+    rather than halfway between.
+    """
     cursor = conn.execute(
         "SELECT name FROM sqlite_master "
         "WHERE type = 'table' AND name = 'schema_version'"
@@ -377,19 +389,23 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     if current == _SCHEMA_VERSION:
         return
 
-    sql = (
-        importlib.resources.files("comadre.keys.migrations")
-        .joinpath("v001_initial.sql")
-        .read_text(encoding="utf-8")
-    )
-    with conn:
-        # executescript handles multi-statement DDL safely, including statements
-        # whose bodies contain semicolons (triggers, CHECK clauses with strings).
-        conn.executescript(sql)
-        conn.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-            (_SCHEMA_VERSION, _utcnow_iso()),
+    for version, filename in _MIGRATION_FILES:
+        if version <= current:
+            continue
+        sql = (
+            importlib.resources.files("comadre.keys.migrations")
+            .joinpath(filename)
+            .read_text(encoding="utf-8")
         )
+        with conn:
+            # executescript handles multi-statement DDL safely, including
+            # statements whose bodies contain semicolons (triggers, CHECK
+            # clauses with strings).
+            conn.executescript(sql)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, _utcnow_iso()),
+            )
 
 
 def insert_customer(

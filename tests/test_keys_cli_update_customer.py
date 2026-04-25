@@ -6,44 +6,26 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import date
-from io import StringIO
 from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
-from rich.console import Console
 from typer.testing import CliRunner
 
 import comadre.keys.cli.commands.customers as customers_cmd
-import comadre.keys.cli.output as output_mod
-from comadre.config import get_settings
+from comadre.keys.cli import _clock
 from comadre.keys.cli.app import app
 
+# F41 — autouse fixtures (`_clear_settings_cache`,
+# `_reset_cli_consoles_to_buffers`) now live in tests/conftest.py
+# and apply to every test. Helpers (``_buffers`` / ``_clear_buffers``)
+# live in tests/_keys_cli_helpers.py.
+from tests._keys_cli_helpers import buffers as _buffers
+from tests._keys_cli_helpers import clear_buffers as _clear_buffers
+
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _clear_settings_cache() -> Iterator[None]:
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
-    stdout_buf = StringIO()
-    stderr_buf = StringIO()
-    output_mod._reset_for_tests()
-    output_mod._stdout_console = Console(
-        file=stdout_buf, force_terminal=False, no_color=True, width=120
-    )
-    output_mod._stderr_console = Console(
-        file=stderr_buf, force_terminal=False, no_color=True, width=120
-    )
-    yield stdout_buf, stderr_buf
-    output_mod._reset_for_tests()
 
 
 @pytest.fixture()
@@ -53,19 +35,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
     return {"db_path": str(db_path), "key": key}
-
-
-def _buffers() -> tuple[str, str]:
-    stdout_file = output_mod._stdout_console.file  # type: ignore[union-attr]
-    stderr_file = output_mod._stderr_console.file  # type: ignore[union-attr]
-    return stdout_file.getvalue(), stderr_file.getvalue()
-
-
-def _clear_buffers() -> None:
-    for attr in ("_stdout_console", "_stderr_console"):
-        console = getattr(output_mod, attr)
-        console.file.seek(0)  # type: ignore[union-attr]
-        console.file.truncate()  # type: ignore[union-attr]
 
 
 def _seed_customer(
@@ -158,7 +127,7 @@ def freeze_today(
     """Return a closure that freezes ``_resolve_today_in_tz`` on demand."""
 
     def _factory(frozen: date) -> None:
-        monkeypatch.setattr(customers_cmd, "_resolve_today_in_tz", lambda _tz: frozen)
+        monkeypatch.setattr(_clock, "resolve_today_in_tz", lambda _tz: frozen)
 
     return _factory
 
@@ -198,7 +167,7 @@ class TestUpdateCustomerEmailOnly:
         assert audit["action"] == "update_customer"
         assert audit["target_type"] == "customer"
         assert audit["target_id"] == cid
-        assert audit["details_json"] == '{"fields": ["email"]}'
+        assert json.loads(audit["details_json"]) == {"fields": ["email"]}
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +199,7 @@ class TestUpdateCustomerAddNote:
 
         audit = _latest_update_audit(env)
         assert audit is not None
-        assert audit["details_json"] == '{"fields": ["notes"]}'
+        assert json.loads(audit["details_json"]) == {"fields": ["notes"]}
 
     def test_second_append_stacks(
         self,
@@ -314,7 +283,7 @@ class TestUpdateCustomerBothFlags:
 
         audit = _latest_update_audit(env)
         assert audit is not None
-        assert audit["details_json"] == '{"fields": ["email", "notes"]}'
+        assert json.loads(audit["details_json"]) == {"fields": ["email", "notes"]}
         assert _count_update_audits(env) == 1
 
         assert (
@@ -377,7 +346,6 @@ class TestUpdateCustomerBothFlags:
         # the CLI's ``except sqlite3.Error`` and Typer/Click mapped it to
         # exit 1. Now it must surface as a structured Database error at
         # exit 5 per UX-DR10.
-        import comadre.keys.cli.commands.customers as customers_cmd
 
         freeze_today(date(2026, 4, 20))
         cid = _seed_customer(env, notes="seed")
@@ -811,7 +779,7 @@ class TestUpdateCustomerSameEmail:
         assert _count_update_audits(env) == before_count + 1
         audit = _latest_update_audit(env)
         assert audit is not None
-        assert audit["details_json"] == '{"fields": ["email"]}'
+        assert json.loads(audit["details_json"]) == {"fields": ["email"]}
 
 
 # ---------------------------------------------------------------------------

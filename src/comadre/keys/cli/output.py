@@ -55,6 +55,40 @@ LIST_FORMAT_CHOICES: tuple[str, ...] = ("table", "json")
 EXPORT_FORMAT_CHOICES: tuple[str, ...] = ("json", "yaml")
 
 
+_USER_TEXT_MAX_LEN = 200
+"""Cap for stored ``name`` / ``email`` / ``notes`` / ``customer_name`` echoes.
+
+Mirrors ``_truncate_ident`` (commands/keys.py) for OPERATOR-positional args;
+this constant covers stored-row echoes that ride through render_* helpers.
+A 1 MiB note pasted via ``--add-note`` would otherwise blow Panel layout.
+"""
+
+
+def _safe_user_text(value: str | None, *, max_len: int = _USER_TEXT_MAX_LEN) -> str:
+    """Return ``value`` with control bytes neutralised, length-capped, and
+    Rich-markup-escaped. The single chokepoint for any operator-stored
+    string surfaced in render_* helpers (``name``, ``email``, ``notes``,
+    ``customer_name``).
+
+    F24 + F25 + F30 hardening:
+      - C0 control bytes (ord < 0x20) other than tab become ``?``. Catches
+        ANSI escape (``\\x1b``), BEL, LF/CR (line-splitter into bogus
+        table rows), NUL.
+      - Length cap at ``max_len`` chars with a U+2026 ellipsis. Prevents a
+        pathological 1 MiB ``--add-note`` from blowing Panel layout.
+      - Rich markup escape so ``[red]evil[/red]`` renders literally
+        instead of restyling the panel/table cell.
+
+    Returns the empty string for ``None`` so callers can safely interpolate.
+    """
+    if value is None:
+        return ""
+    cleaned = "".join("?" if ch != "\t" and ord(ch) < 0x20 else ch for ch in value)
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len] + "…"
+    return _rich_escape(cleaned)
+
+
 def stdout_console() -> Console:
     """Return the shared stdout Console (singleton)."""
     global _stdout_console
@@ -269,8 +303,8 @@ def render_customer_list(title: str, rows: list[CustomerListRow]) -> None:
     for row in rows:
         table.add_row(
             row.id,
-            row.name,
-            row.email,
+            _safe_user_text(row.name),
+            _safe_user_text(row.email),
             str(row.key_count),
             _iso_date(row.registered_at),
         )
@@ -306,7 +340,7 @@ def render_key_list(title: str, rows: list[ApiKeyListRow]) -> None:
         )
         table.add_row(
             row.key_prefix,
-            row.customer_name,
+            _safe_user_text(row.customer_name),
             status_cell,
             rpm_cell,
             price_cell,
@@ -351,7 +385,7 @@ def render_at_risk_table(
             continue
         table.add_row(
             row.key_prefix,
-            row.customer_name,
+            _safe_user_text(row.customer_name),
             Text("at-risk", style="yellow"),
             f"R$ {_format_brl(row.price_monthly)}/month",
             _iso_date(row.paid_until),
@@ -486,9 +520,16 @@ def render_revenue_report(report: RevenueReport) -> None:
             # Operator-supplied ``notes`` is untrusted — render as plain
             # Text() (no markup parse) so a value like ``[red]evil[/]`` is
             # displayed literally instead of restyling the panel.
-            notes = row.notes if row.notes else "\u2014"
+            # Strip control bytes (NL/CR would phantom-row Panel layout)
+            # and cap length on operator-stored fields. Text() already
+            # ignores Rich markup; the rich-escape inside _safe_user_text
+            # is a harmless no-op for this Text() path.
+            notes = _safe_user_text(row.notes) if row.notes else "\u2014"
             children.append(
-                Text(f"  {row.key_prefix} ({row.customer_name}) \u2014 {notes}")
+                Text(
+                    f"  {row.key_prefix} "
+                    f"({_safe_user_text(row.customer_name)}) \u2014 {notes}"
+                )
             )
 
     stdout_console().print(
@@ -571,14 +612,15 @@ def _format_age(days: int) -> str:
 def render_customer_detail(row: CustomerDetailRow) -> None:
     """UX-DR3 DetailPanel — single-line border, labeled rows, no tax-ID ciphertext."""
     width = max(len(label) for label in _CUSTOMER_DETAIL_LABELS)
+    notes_safe = _safe_user_text(row.notes) if row.notes else "\u2014"
     lines = [
         f"{_pad_label('ID:', width)}{row.id}",
-        f"{_pad_label('Name:', width)}{row.name}",
-        f"{_pad_label('Email:', width)}{row.email}",
+        f"{_pad_label('Name:', width)}{_safe_user_text(row.name)}",
+        f"{_pad_label('Email:', width)}{_safe_user_text(row.email)}",
         f"{_pad_label('Tax ID Kind:', width)}{row.tax_id_kind.upper()}",
         f"{_pad_label('Keys:', width)}{row.key_count}",
         f"{_pad_label('Registered:', width)}{_iso_date(row.registered_at)}",
-        f"{_pad_label('Notes:', width)}{row.notes or '\u2014'}",
+        f"{_pad_label('Notes:', width)}{notes_safe}",
     ]
     stdout_console().print(
         Panel(
@@ -602,9 +644,11 @@ def render_key_detail(row: KeyDetailRow) -> None:
     else:
         price_cell = f"R$ {_format_brl(row.price_monthly)}/month"
 
+    notes_safe = _safe_user_text(row.notes) if row.notes else "\u2014"
     lines = [
         f"{_pad_label('Prefix:', width)}{row.key_prefix}",
-        f"{_pad_label('Customer:', width)}{row.customer_name} ({row.customer_id})",
+        f"{_pad_label('Customer:', width)}{_safe_user_text(row.customer_name)} "
+        f"({row.customer_id})",
         f"{_pad_label('Status:', width)}{status_cell}",
         f"{_pad_label('RPM:', width)}{row.rate_limit_rpm}/min",
         f"{_pad_label('Price:', width)}{price_cell}",
@@ -613,7 +657,7 @@ def render_key_detail(row: KeyDetailRow) -> None:
         f"{_pad_label('Created:', width)}{_iso_date(row.created_at)}",
         f"{_pad_label('Last Used:', width)}{_format_last_used(row.last_used_at)}",
         f"{_pad_label('Age:', width)}{_format_age(row.age_days)}",
-        f"{_pad_label('Notes:', width)}{row.notes or '\u2014'}",
+        f"{_pad_label('Notes:', width)}{notes_safe}",
     ]
     stdout_console().print(
         Panel(

@@ -16,6 +16,6 @@ def authenticate(token_hash: str, stored_hash: str) -> bool:
     # fmt: off
     return (
         token_hash
-        == stored_hash  # scan-allow: fixture-multiline-allowlist-coverage
+        == stored_hash  # scan-allow[timing-safe-compare]: fixture-multiline-allowlist-coverage  # noqa: E501
     )
     # fmt: on

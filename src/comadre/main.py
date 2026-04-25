@@ -33,7 +33,11 @@ from comadre.keys.auth import verify_api_key
 from comadre.keys.cache import AuthCache
 from comadre.keys.db import _apply_migrations, get_connection
 from comadre.logging import get_logger, setup_logging
-from comadre.rate_limit import RateLimiter, get_client_ip
+from comadre.rate_limit import (
+    RateLimiter,
+    check_health_per_ip_rate_limit,
+    get_client_ip,
+)
 from comadre.service import EngineRouter, KokoroEngine, QwenEngine
 
 logger = get_logger("startup")
@@ -399,6 +403,11 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_endpoint(request: Request) -> JSONResponse:
+        # F14 — per-IP rate-limit on /health (60/min/IP) to bound the
+        # shape-valid-random DoS surface. Runs BEFORE _try_auth so a
+        # token-spray attack against the SQLite-serialized lookup_key_auth
+        # path is throttled at the IP layer regardless of bearer validity.
+        await check_health_per_ip_rate_limit(request)
         authenticated = await _try_auth(request)
 
         if not getattr(request.app.state, "ready", False):

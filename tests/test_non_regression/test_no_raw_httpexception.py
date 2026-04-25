@@ -10,10 +10,11 @@ Walks every ``.py`` file under ``src/comadre/`` and asserts:
    ``_IMPORT_SOURCE_MODULES`` and whose ``.names`` contains an alias named
    ``"HTTPException"``).
 
-Inline ``# scan-allow: <reason>`` on any physical line the ``Raise`` or
-``ImportFrom`` node spans suppresses the scan for that node; the comment is
-reviewer-enforced at PR time. Reason text is free-form — an empty or
-one-word reason is a review-blocker in practice.
+Inline ``# scan-allow[no-raw-httpexception]: <reason>`` on any physical
+line the ``Raise`` or ``ImportFrom`` node spans suppresses the scan for
+that node; the comment is reviewer-enforced at PR time. F44 enforces a
+>=3 non-whitespace-char reason. F45 — the namespace bracket is mandatory,
+so a comment cannot accidentally silence a sibling scan.
 
 The scan's complement is positive: every error path must construct a
 ``ComadreError`` subclass from ``src/comadre/exceptions.py`` (``VoiceNotFoundError``,
@@ -31,19 +32,20 @@ them without needing an allowlist comment.
 from __future__ import annotations
 
 import ast
-import io
-import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from tests.test_non_regression._scan_common import allowlisted_lines, safe_parse
+
 _PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 _SRC_ROOT: Path = _PROJECT_ROOT / "src" / "comadre"
 _FIXTURES_ROOT: Path = (
     Path(__file__).resolve().parent / "fixtures" / "no_raw_httpexception"
 )
+_SCAN_LABEL: str = "no-raw-httpexception"
 
 _HTTPEXCEPTION_NAME: str = "HTTPException"
 # AC7 — all three canonical source modules are covered. FastAPI re-exports
@@ -55,7 +57,6 @@ _HTTPEXCEPTION_NAME: str = "HTTPException"
 _IMPORT_SOURCE_MODULES: frozenset[str] = frozenset(
     {"fastapi", "fastapi.exceptions", "starlette.exceptions"}
 )
-_ALLOWLIST_TOKEN: str = "# scan-allow:"
 
 
 @dataclass(frozen=True)
@@ -93,23 +94,6 @@ def _terminal_function_name(node: ast.expr) -> str | None:
     return None
 
 
-def _allowlisted_lines(source: str) -> set[int]:
-    """Return line numbers carrying a real ``# scan-allow:`` comment.
-
-    Uses ``tokenize`` so the allowlist fires only on genuine ``COMMENT`` tokens
-    and never on occurrences of the literal string inside a string or
-    docstring (the same short-circuit 4.5c's scan depends on). See the 4.5c
-    module-docstring rationale for why raw-substring matching on ``source``
-    lines is unsafe.
-    """
-    allowlisted: set[int] = set()
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    for tok in tokens:
-        if tok.type == tokenize.COMMENT and _ALLOWLIST_TOKEN in tok.string:
-            allowlisted.add(tok.start[0])
-    return allowlisted
-
-
 def _is_raw_httpexception_raise(node: ast.AST) -> bool:
     """True if ``node`` is ``raise <something-named-HTTPException>(...)``."""
     if not isinstance(node, ast.Raise):
@@ -131,13 +115,14 @@ def _is_httpexception_import(node: ast.AST) -> bool:
 def _find_raw_httpexception_usages(path: Path) -> list[_Violation]:
     """Walk ``path`` AST and collect every raw-HTTPException violation.
 
-    Respects ``# scan-allow:`` comments spanning the violating node's lines.
-    Returns a list of ``_Violation`` (empty on success).
+    Respects ``# scan-allow[no-raw-httpexception]: <reason>`` comments
+    spanning the violating node's lines. Returns a list of ``_Violation``
+    (empty on success).
     """
     source = path.read_text(encoding="utf-8")
     source_lines = source.splitlines()
-    tree = ast.parse(source, filename=str(path))
-    allowlisted = _allowlisted_lines(source)
+    tree = safe_parse(path)
+    allowlisted = allowlisted_lines(source, label=_SCAN_LABEL)
     violations: list[_Violation] = []
 
     for node in ast.walk(tree):
@@ -195,7 +180,8 @@ def test_src_comadre_has_no_raw_httpexception() -> None:
         "If the HTTPException is intentional and bridged back into the\n"
         "envelope by a dedicated exception-bridging helper, add a trailing\n"
         "comment on the offending line (or any line the statement spans):\n"
-        "    # scan-allow: <why this is safe, reviewed by <initials>>\n\n"
+        "    # scan-allow[no-raw-httpexception]: "
+        "<why this is safe, reviewed by <initials>>\n\n"
         "Violations:\n  " + "\n  ".join(v.render() for v in all_violations)
     )
 
