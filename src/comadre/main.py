@@ -68,6 +68,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry_db = get_connection(settings.key_registry_db_path)
     _apply_migrations(app.state.registry_db)
     sentinel_path = Path(f"{settings.key_registry_db_path}.invalidate")
+    # F16 — cross-mount sentinel probe. Touch the sentinel as the API
+    # process and read it back to confirm the parent directory is
+    # writable AND that the read-after-write is visible. A non-bind-mount
+    # copy of the DB directory (or a CLI process running on the host
+    # against an in-container DB) would silently fail this read-back,
+    # leaving revoked keys authenticatable for up to the 60s cache TTL.
+    # Warn loudly at startup so the operator can spot the misconfig
+    # before live traffic exposes it.
+    try:
+        sentinel_path.touch(exist_ok=True)
+        try:
+            probed_mtime = sentinel_path.stat().st_mtime_ns
+        except OSError:
+            probed_mtime = 0
+        if probed_mtime == 0:
+            logger.warning(
+                "Auth-cache sentinel probe FAILED — sentinel touch did not "
+                "produce a readable mtime at %s. Cross-mount invalidation "
+                "WILL NOT work; revoked keys may stay authenticatable for "
+                "up to the 60s cache TTL. Verify the registry directory is "
+                "a single shared filesystem between the API and CLI.",
+                sentinel_path,
+            )
+    except OSError as exc:
+        logger.warning(
+            "Auth-cache sentinel probe FAILED — could not touch %s: %s. "
+            "Cross-mount invalidation will not work; the CLI's revocations "
+            "may stay invisible until the next cache TTL boundary. Verify "
+            "the registry directory is writable by the API process.",
+            sentinel_path,
+            exc,
+        )
     app.state.auth_cache = AuthCache(invalidation_sentinel=sentinel_path)
     app.state.rate_limiter = RateLimiter.build()
     # Story 2.3 — per-key request counters + periodic snapshot writer. The

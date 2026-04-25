@@ -141,7 +141,18 @@ def auth_log_handler() -> Any:
 
 
 class TestCacheHitPath:
-    async def test_cache_hit_short_circuits_db_lookup(self, tmp_path: Path) -> None:
+    async def test_cache_hit_runs_equalisation_select_against_dummy(
+        self, tmp_path: Path
+    ) -> None:
+        """F18 — cache hit performs a dummy SELECT for timing equalisation.
+
+        Before F18, a cache hit short-circuited the DB layer entirely,
+        making "key cached" vs "key looked up just now" timing-
+        distinguishable. The equalisation pass runs the same indexed
+        SELECT against the dummy hash on every hit so the wallclock cost
+        of hit and miss paths is dominated by the same query. The cache
+        still avoids the cost of decoding a real ``AuthPayload`` row.
+        """
         conn = get_connection(tmp_path / "registry.db")
         try:
             _apply_migrations(conn)
@@ -166,7 +177,10 @@ class TestCacheHitPath:
             finally:
                 conn.set_trace_callback(None)
 
-            assert statements == []
+            # Exactly one indexed lookup runs — against the dummy hash,
+            # not the real one — and returns zero rows.
+            select_stmts = [s for s in statements if "SELECT" in s.upper()]
+            assert len(select_stmts) == 1, statements
             assert request.state.auth_payload is payload
             assert cache.snapshot()["hits"] == 1
         finally:
@@ -285,7 +299,12 @@ class TestStatusBranches:
                 await verify_api_key_registry(request, token=plaintext)
 
             assert cache.snapshot()["entries"] == 1
-            # Second call must deny from the cache (no further SQL).
+            # F18 — second call denies from the cache (the real lookup
+            # never runs against the cached hash) but still performs the
+            # equalisation dummy SELECT. Assert exactly one SELECT runs
+            # and that it targets the dummy hash, not the real one.
+            from comadre.keys.auth import _DUMMY_HASH
+
             statements: list[str] = []
             conn.set_trace_callback(statements.append)
             try:
@@ -293,7 +312,9 @@ class TestStatusBranches:
                     await verify_api_key_registry(request, token=plaintext)
             finally:
                 conn.set_trace_callback(None)
-            assert statements == []
+            select_stmts = [s for s in statements if "SELECT" in s.upper()]
+            assert len(select_stmts) == 1
+            assert _DUMMY_HASH in select_stmts[0]
         finally:
             conn.close()
 

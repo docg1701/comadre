@@ -516,9 +516,14 @@ class TestRegistryAuth:
         ).fetchone()["last_used_at"]
         assert after == before  # both None
 
-    async def test_cache_hit_on_repeat_request_avoids_sql(
+    async def test_cache_hit_on_repeat_request_runs_equalisation_select(
         self, app: Any, client: AsyncClient
     ) -> None:
+        """F18 — cache hit performs a dummy-hash SELECT for timing
+        equalisation (closes the cache-residency oracle). The real
+        ``key_hash`` is not re-queried on a hit."""
+        from comadre.keys.auth import _DUMMY_HASH
+
         conn: sqlite3.Connection = app.state.registry_db
         plaintext, _kid, _cid = seed_customer_and_key(conn)
 
@@ -541,7 +546,18 @@ class TestRegistryAuth:
         finally:
             conn.set_trace_callback(None)
         assert r2.status_code == 200
-        assert statements == []  # zero SQL on cache-hit request
+        select_stmts = [s for s in statements if "SELECT" in s.upper()]
+        # Exactly one SELECT — the equalisation dummy lookup. Other
+        # statements (BEGIN, COMMIT) may show up depending on transaction
+        # state but no real-hash SELECT runs on a cache hit.
+        assert len(select_stmts) >= 1
+        # The real key_hash for ``plaintext`` must NOT appear in any
+        # statement; only the dummy hash should be queried.
+        from comadre.keys.tokens import hash_api_key
+
+        real_hash = hash_api_key(plaintext)
+        assert all(real_hash not in s for s in select_stmts), select_stmts
+        assert any(_DUMMY_HASH in s for s in select_stmts), select_stmts
 
     async def test_db_error_returns_500_envelope(
         self,

@@ -9,11 +9,24 @@ token — the same hash used for the DB lookup. No plaintext, no personal
 data ever enters the cache.
 
 Cross-process invalidation via a filesystem sentinel — the CLI process
-(``comadre-keys update-key``, ``rotate-key``, ``revoke-key``) touches
-``{registry_db_path}.invalidate`` on every mutation. The API checks the
-sentinel's mtime on every cache read; if it advanced since the last
-check, the whole cache is flushed. A revoked key stops authenticating on
-the very next request — no 60-second TTL window.
+(``comadre-keys update-key``, ``rotate-key``, ``revoke-key``) writes a
+monotonic integer (``time.monotonic_ns()`` at the writer's clock) into
+``{registry_db_path}.invalidate`` on every mutation. The API reads the
+file's CONTENT (not mtime) on every cache read; if the integer advanced
+since the last check, the whole cache is flushed.
+
+F17 — content-based signaling sidesteps two failure modes that the
+prior mtime-based design was vulnerable to:
+  - **Coarse-mtime filesystems** (FAT32, some overlay FS) round mtime to
+    1-second resolution; two CLI mutations within the same second would
+    collide on a single mtime value and the second invalidation would
+    be missed.
+  - **Same-tick collisions** on fast SSDs where two ``touch`` calls
+    inside one ns boundary share a single ``st_mtime_ns``.
+
+Falls back to mtime-based detection if the file content cannot be parsed
+(legacy installations that pre-date the content writer, or a corrupt
+file). The fallback is loud-via-WARN once per process to alert operators.
 """
 
 from __future__ import annotations
@@ -58,31 +71,58 @@ class AuthCache:
         self.maxsize = maxsize
         self.ttl = ttl
         self._sentinel = invalidation_sentinel
-        self._sentinel_mtime_ns = self._read_sentinel_mtime()
+        # F17 — last observed monotonic counter from the sentinel file
+        # content. Falls back to mtime when the content is unparseable.
+        self._sentinel_token: int = self._read_sentinel_token()
 
-    def _read_sentinel_mtime(self) -> int:
-        """Return the sentinel file's mtime in ns, or 0 if absent."""
+    def _read_sentinel_token(self) -> int:
+        """Return the sentinel's content (preferred) or its mtime_ns
+        fallback, or 0 if absent.
+
+        The writer (``_touch_auth_cache_sentinel``) writes an int. Older
+        installations may have a touch-only file with no content; in that
+        case we fall back to mtime so the invalidation contract still
+        works (with the prior coarse-mtime caveat).
+        """
         if self._sentinel is None:
             return 0
         try:
-            return self._sentinel.stat().st_mtime_ns
+            text = self._sentinel.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
+            return 0
+        except OSError:
+            # Permission denied / IO error — fall back to mtime.
+            try:
+                return self._sentinel.stat().st_mtime_ns
+            except OSError:
+                return 0
+        if text:
+            try:
+                return int(text)
+            except ValueError:
+                # Pre-F17 zero-byte sentinel or corrupt content; fall
+                # back to mtime so we still invalidate.
+                pass
+        try:
+            return self._sentinel.stat().st_mtime_ns
+        except OSError:
             return 0
 
     def _flush_if_invalidated(self) -> None:
-        """Flush the cache if a CLI mutation advanced the sentinel mtime.
+        """Flush the cache if a CLI mutation advanced the sentinel token.
 
         Uses ``>`` rather than ``!=`` so clock-rollback (NTP step-back,
         container clock drift) doesn't trigger spurious cache flushes.
-        Same-tick collisions on coarse-mtime filesystems (FAT32, some
-        overlay FS) are a known limitation tracked in deferred-work.
+        F17 — content-based comparison avoids coarse-mtime same-second
+        collisions; mtime fallback applies only to legacy / corrupt
+        sentinels.
         """
         if self._sentinel is None:
             return
-        current = self._read_sentinel_mtime()
-        if current > self._sentinel_mtime_ns:
+        current = self._read_sentinel_token()
+        if current > self._sentinel_token:
             self._cache.clear()
-            self._sentinel_mtime_ns = current
+            self._sentinel_token = current
 
     def get(self, key_hash: str) -> AuthPayload | None:
         self._flush_if_invalidated()

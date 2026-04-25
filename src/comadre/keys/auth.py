@@ -110,6 +110,17 @@ async def verify_api_key_registry(request: Request, token: str) -> None:
     closed on any SQLite error. Kept as a separately-callable function
     (not inlined into ``verify_api_key``) so tests can exercise the full
     auth logic without constructing an HTTP ``Authorization`` header.
+
+    F18 — timing equalisation between cache hit and miss. The cache hit
+    path runs the same indexed DB lookup the miss path does (against the
+    dummy hash, which never matches), so the total wallclock cost of
+    both paths is dominated by the same SELECT. A wallclock observer
+    cannot distinguish "this key is cached (active recently)" from
+    "this key was looked up from the registry just now" — closes the
+    cache-residency oracle. The cache still avoids the cost of actually
+    parsing and constructing an ``AuthPayload`` on hit; the dummy SELECT
+    only retrieves zero rows from a btree-indexed seek that is the
+    fastest a SQLite SELECT can be.
     """
     settings: Settings = request.app.state.settings
     cache: AuthCache = request.app.state.auth_cache
@@ -125,6 +136,19 @@ async def verify_api_key_registry(request: Request, token: str) -> None:
         hmac.compare_digest(_DUMMY_HASH, _DUMMY_HASH)
         raise ApiKeyNotFoundError() from None
     payload = cache.get(token_hash)
+
+    if payload is not None:
+        # F18 — equalise: incur the same indexed-SELECT cost the miss
+        # path pays. ``_DUMMY_HASH`` is shaped like a real hash but
+        # never matches a stored row. Equalisation must never break
+        # the auth path — a SELECT error on the dummy hash would only
+        # matter if the registry is unreachable, which the miss-path
+        # SELECT would also surface; on hit, the cached payload is
+        # authoritative.
+        import contextlib
+
+        with contextlib.suppress(sqlite3.Error):
+            lookup_key_auth(conn, _DUMMY_HASH)
 
     if payload is None:
         try:

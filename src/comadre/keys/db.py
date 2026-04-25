@@ -290,7 +290,39 @@ def _touch_auth_cache_sentinel(conn: sqlite3.Connection) -> None:
         return
     sentinel = Path(row[0] + ".invalidate")
     try:
-        sentinel.touch(exist_ok=True)
+        # F17 — write a monotonic counter (``time.time_ns()``) into the
+        # file content. The atomic tmp-file + rename pattern means a
+        # concurrent reader sees either the old value or the new one,
+        # never a partial write. Compared to the prior touch-only design,
+        # this sidesteps coarse-mtime same-second collisions on FAT32 /
+        # overlayfs — see ``AuthCache._read_sentinel_token`` for the
+        # reader contract.
+        #
+        # ``time.time_ns()`` (wall clock) — not ``monotonic_ns()`` —
+        # because the reader's mtime fallback is also wall clock; mixing
+        # domains would let a content-int (small) lose a comparison
+        # against a fallback mtime (large epoch ns). Rollback regression
+        # is mitigated below by reading the current content and bumping
+        # if the new value is not strictly greater.
+        import time
+
+        new_token = time.time_ns()
+        # Read current content first so a clock-rollback (e.g. NTP step
+        # back) cannot regress the counter. Reader uses ``>``, so a
+        # regressed value would silently disable invalidation.
+        try:
+            current_text = sentinel.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            current_text = ""
+        try:
+            current = int(current_text) if current_text else 0
+        except ValueError:
+            current = 0
+        if new_token <= current:
+            new_token = current + 1
+        tmp = sentinel.with_name(sentinel.name + ".tmp")
+        tmp.write_text(str(new_token), encoding="utf-8")
+        tmp.replace(sentinel)
         _chmod_0600(sentinel)
     except OSError as exc:
         # The DB commit is authoritative; cache staleness falls back to

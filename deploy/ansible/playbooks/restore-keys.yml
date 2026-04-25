@@ -74,11 +74,20 @@
       changed_when: false
       failed_when: tts_service_ps.stdout | length == 0
 
+    # F4 — backup_file is operator-supplied via ``-e backup_file=...`` and
+    # must NEVER be interpolated raw into a shell command. Pass it through
+    # an environment variable so the container script reads ``$BACKUP_FILE``
+    # via shell parameter expansion (parameter substitution is not subject
+    # to word-splitting / glob expansion the way `"{{ ... }}"` is). This
+    # closes the command-injection surface even under operator-in-the-loop
+    # disaster-recovery flows where a hostile ``-e backup_file=...$(rm -rf
+    # /);echo`` could otherwise execute.
     - name: "[Prereq] Verify backup archive is readable inside container"
       ansible.builtin.command:
         cmd: >-
-          docker compose exec -T tts-service bash -c
-          'test -r "{{ backup_file }}" && echo ok'
+          docker compose exec -T -e BACKUP_FILE={{ backup_file | quote }}
+          tts-service bash -c
+          'test -r "$BACKUP_FILE" && echo ok'
         chdir: "~/comadre"
       register: archive_readable
       changed_when: false
@@ -93,47 +102,17 @@
     # ``docker compose exec`` calls and is visible to the helper container
     # that performs the swap after the service stops.
 
+    # F6 — script body lives in deploy/ansible/scripts/restore-stage.sh;
+    # piped into ``bash -s`` inside the container. ``$BACKUP_FILE`` is
+    # passed via -e so the script reads it via shell parameter expansion
+    # (F4 — no raw jinja interpolation into a shell command).
     - name: "[Stage] Decrypt + untar + integrity-check"
-      ansible.builtin.command:
+      ansible.builtin.shell:
         cmd: >-
-          docker compose exec -T tts-service
-          bash -c '{{ _stage_script }}'
+          docker compose exec -T -e BACKUP_FILE={{ backup_file | quote }}
+          tts-service bash -s
         chdir: "~/comadre"
-      vars:
-        _stage_script: |
-          set -euo pipefail
-          umask 077
-          DB_PATH="${KEY_REGISTRY_DB_PATH:-/var/lib/comadre/registry.db}"
-          DB_DIR="$(dirname "$DB_PATH")"
-          STAGING="$DB_DIR/.restore-staging"
-          rm -rf "$STAGING"
-          mkdir -p "$STAGING"
-          chmod 0700 "$STAGING"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
-            -in "{{ backup_file }}" \
-            -out "$STAGING/bundle.tar.gz" \
-            -pass env:BACKUP_PASSPHRASE
-          tar -C "$STAGING" -xzf "$STAGING/bundle.tar.gz"
-          test -f "$STAGING/registry.db" \
-            || { echo "Archive missing registry.db" >&2; exit 1; }
-          test -f "$STAGING/encryption-key.txt" \
-            || { echo "Archive missing encryption-key.txt" >&2; exit 1; }
-          python -c "
-          import sqlite3, sys
-          conn = sqlite3.connect(sys.argv[1])
-          result = conn.execute('PRAGMA integrity_check').fetchone()[0]
-          conn.close()
-          sys.exit(0 if result == 'ok' else 1)
-          " "$STAGING/registry.db"
-          ARCHIVED_KEY="$(cat "$STAGING/encryption-key.txt")"
-          if [ "$ARCHIVED_KEY" != "$KEY_REGISTRY_ENCRYPTION_KEY" ]; then
-              echo "KEY_DIVERGES"
-              echo "ARCHIVED_KEY=$ARCHIVED_KEY"
-          else
-              echo "KEY_MATCHES"
-          fi
-          rm -f "$STAGING/bundle.tar.gz"
-          echo "stage OK"
+        stdin: "{{ lookup('file', playbook_dir + '/../scripts/restore-stage.sh') }}"
       register: stage_result
       changed_when: true
 
@@ -177,26 +156,23 @@
             name: comadre-restore-helper
             state: absent
 
+        # F6 — script body lives in deploy/ansible/scripts/restore-swap.sh.
+        # The alpine helper container runs ``sh -c "$(cat ... | base64 -d)"``
+        # — passing the script content through a base64 round-trip
+        # sidesteps the docker_container ``command`` field's quoting layer
+        # without re-introducing the inline jinja blob.
         - name: "[Restore] Create helper container for volume access"
           community.docker.docker_container:
             name: comadre-restore-helper
             image: alpine:3.21
-            command: "sh -c '{{ _swap_script }}'"
+            command:
+              - "sh"
+              - "-c"
+              - "{{ lookup('file', playbook_dir + '/../scripts/restore-swap.sh') }}"
             volumes:
               - "comadre-registry:/var/lib/comadre"
             state: started
             auto_remove: false
-          vars:
-            _swap_script: |
-              set -eu
-              umask 077
-              DB_PATH="/var/lib/comadre/registry.db"
-              STAGING="/var/lib/comadre/.restore-staging"
-              rm -f "$DB_PATH-wal" "$DB_PATH-shm"
-              mv "$STAGING/registry.db" "$DB_PATH"
-              chmod 0600 "$DB_PATH"
-              rm -rf "$STAGING"
-              echo "swap OK"
 
         - name: "[Restore] Wait for helper container to finish"
           community.docker.docker_container_info:
