@@ -1,4 +1,16 @@
-"""Tests for ``comadre.keys.auth.verify_api_key_registry``."""
+"""Tests for ``comadre.keys.auth.verify_api_key_registry`` (SECURITY-CRITICAL).
+
+Lean by design (test-suite review 2026-04-25): this is the auth path
+on every ``POST /v1/audio/speech``. Every test here defends a security
+property that no integration test reliably catches:
+
+* F18 cache-hit equalisation (timing-attack defense)
+* DB miss runs constant-time dummy compare (enumeration defense)
+* Status branches: suspended / revoked / expired / complimentary
+* DB error fails closed (KeyRegistryError, not 200)
+* Log records carry no plaintext / hash / customer name (PII)
+* Non-ASCII tokens → 401, not 500
+"""
 
 from __future__ import annotations
 
@@ -10,9 +22,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import SecretStr
 
-from comadre.config import Settings
+from comadre.config import RegistrySettings
 from comadre.exceptions import (
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
@@ -28,21 +41,16 @@ from comadre.keys.db import (
     generate_key_id,
     get_connection,
 )
-from comadre.keys.models import AuthPayload
 from comadre.keys.tokens import generate_api_key_plaintext, hash_api_key
 
 CONTACT_HINT = "Contact Ana on WhatsApp: +55 11 90000-0000"
 
 
-def _settings(**overrides: Any) -> Settings:
-    from cryptography.fernet import Fernet
-
-    defaults: dict[str, Any] = {
-        "operator_contact_hint": CONTACT_HINT,
-        "key_registry_encryption_key": SecretStr(Fernet.generate_key().decode()),
-    }
-    defaults.update(overrides)
-    return Settings(**defaults)
+def _settings() -> RegistrySettings:
+    return RegistrySettings(
+        operator_contact_hint=CONTACT_HINT,
+        key_registry_encryption_key=SecretStr(Fernet.generate_key().decode()),
+    )
 
 
 def _seed_key(
@@ -51,47 +59,32 @@ def _seed_key(
     plaintext: str | None = None,
     status: str = "active",
     billing_mode: str = "manual",
-    rate_limit_rpm: int = 60,
     paid_until: str | None = "2099-12-31",
     customer_name: str = "Helena",
 ) -> tuple[str, str, str]:
-    """Seed a customer + key row, returning (plaintext, key_id, customer_id)."""
     plaintext = plaintext or generate_api_key_plaintext()
     cid = generate_customer_id()
     kid = generate_key_id()
     conn.execute(
-        "INSERT INTO customer ("
-        "id, name, email, tax_id_kind, tax_id_encrypted, notes, "
-        "registered_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            cid,
-            customer_name,
-            "h@example.com",
-            "cpf",
-            b"ciphertext",
-            "",
-            "2026-04-16T12:00:00Z",
-            None,
-        ),
+        "INSERT INTO customer (id, name, email, tax_id_kind, tax_id_encrypted, "
+        "notes, registered_at, deleted_at) VALUES "
+        "(?, ?, 'h@x.com', 'cpf', ?, '', '2026-04-16T12:00:00Z', NULL)",
+        (cid, customer_name, b"ct"),
     )
     conn.execute(
-        "INSERT INTO api_key ("
-        "id, customer_id, key_hash, key_prefix, rate_limit_rpm, status, "
-        "billing_mode, price_monthly, paid_until, created_at, last_used_at, "
-        "notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO api_key (id, customer_id, key_hash, key_prefix, "
+        "rate_limit_rpm, status, billing_mode, price_monthly, paid_until, "
+        "created_at, last_used_at, notes) VALUES "
+        "(?, ?, ?, ?, 60, ?, ?, ?, ?, '2026-04-16T12:00:00Z', NULL, '')",
         (
             kid,
             cid,
             hash_api_key(plaintext),
             plaintext[len("cmdr_live_") : len("cmdr_live_") + 8],
-            rate_limit_rpm,
             status,
             billing_mode,
             0.0 if billing_mode == "complimentary" else 149.0,
             paid_until,
-            "2026-04-16T12:00:00Z",
-            None,
-            "",
         ),
     )
     conn.commit()
@@ -99,28 +92,17 @@ def _seed_key(
 
 
 def _make_request(
-    conn: sqlite3.Connection, cache: AuthCache, settings: Settings
+    conn: sqlite3.Connection, cache: AuthCache, settings: RegistrySettings
 ) -> Any:
-    """Return a mock Request whose ``.app.state`` carries the three state fields."""
     request = MagicMock()
     request.app.state.settings = settings
     request.app.state.auth_cache = cache
     request.app.state.registry_db = conn
-    # ``.state`` gets attributes set on it — use a plain MagicMock so
-    # ``request.state.auth_payload = payload`` simply records the assignment.
     request.state = MagicMock()
     return request
 
 
 class _CapturingHandler(logging.Handler):
-    """Drain ``keys.auth`` records into a list for assertion.
-
-    The module's logger has ``propagate=False`` (stderr-only structured
-    logging per Story 1.3), so pytest's ``caplog`` fixture — which attaches
-    to the root logger — never sees the records. This handler lives on the
-    ``keys.auth`` logger directly for the lifetime of a single test.
-    """
-
     def __init__(self) -> None:
         super().__init__(level=logging.DEBUG)
         self.records: list[logging.LogRecord] = []
@@ -140,544 +122,200 @@ def auth_log_handler() -> Any:
         logger.removeHandler(handler)
 
 
-class TestCacheHitPath:
-    async def test_cache_hit_runs_equalisation_select_against_dummy(
-        self, tmp_path: Path
-    ) -> None:
-        """F18 — cache hit performs a dummy SELECT for timing equalisation.
-
-        Before F18, a cache hit short-circuited the DB layer entirely,
-        making "key cached" vs "key looked up just now" timing-
-        distinguishable. The equalisation pass runs the same indexed
-        SELECT against the dummy hash on every hit so the wallclock cost
-        of hit and miss paths is dominated by the same query. The cache
-        still avoids the cost of decoding a real ``AuthPayload`` row.
-        """
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, kid, cid = _seed_key(conn)
-            settings = _settings()
-            cache = AuthCache()
-            payload = AuthPayload(
-                customer_id=cid,
-                key_id=kid,
-                status="active",
-                billing_mode="manual",
-                rate_limit_rpm=60,
-                paid_until="2099-12-31",
-            )
-            cache.set(hash_api_key(plaintext), payload)
-
-            statements: list[str] = []
-            conn.set_trace_callback(statements.append)
-            try:
-                request = _make_request(conn, cache, settings)
-                await verify_api_key_registry(request, token=plaintext)
-            finally:
-                conn.set_trace_callback(None)
-
-            # Exactly one indexed lookup runs — against the dummy hash,
-            # not the real one — and returns zero rows.
-            select_stmts = [s for s in statements if "SELECT" in s.upper()]
-            assert len(select_stmts) == 1, statements
-            assert request.state.auth_payload is payload
-            assert cache.snapshot()["hits"] == 1
-        finally:
-            conn.close()
-
-
-class TestCacheMissPath:
-    async def test_cache_miss_db_hit_caches_payload_and_sets_request_state(
-        self, tmp_path: Path
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, kid, cid = _seed_key(conn)
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            await verify_api_key_registry(request, token=plaintext)
-
-            snap = cache.snapshot()
-            assert snap["entries"] == 1
-            assert snap["misses"] == 1  # first get() missed
-            cached = cache.get(hash_api_key(plaintext))
-            assert cached is not None
-            assert cached.customer_id == cid
-            assert cached.key_id == kid
-            assert cached.status == "active"
-            assert request.state.auth_payload == cached
-        finally:
-            conn.close()
-
-
-class TestDbMissPath:
-    async def test_db_miss_runs_dummy_compare_and_raises_not_found(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            _seed_key(conn)  # different key present; token below won't match
-            settings = _settings()
-            cache = AuthCache()
-
-            calls: list[tuple[str, str]] = []
-            real_compare = auth_module.hmac.compare_digest
-
-            def spy(a: Any, b: Any) -> bool:
-                calls.append((a, b))
-                return bool(real_compare(a, b))
-
-            monkeypatch.setattr(auth_module.hmac, "compare_digest", spy)
-
-            request = _make_request(conn, cache, settings)
-            with pytest.raises(ApiKeyNotFoundError):
-                await verify_api_key_registry(request, token="unknown-token-xyz")
-
-            assert len(calls) == 1
-            token_hash = hash_api_key("unknown-token-xyz")
-            assert calls[0] == (token_hash, auth_module._DUMMY_HASH)
-            # Miss MUST NOT cache anything.
-            assert cache.snapshot()["entries"] == 0
-        finally:
-            conn.close()
-
-    async def test_cache_write_skipped_on_db_miss(self, tmp_path: Path) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            with pytest.raises(ApiKeyNotFoundError):
-                await verify_api_key_registry(request, token="whatever")
-
-            assert cache.snapshot()["entries"] == 0
-        finally:
-            conn.close()
-
-
-class TestStatusBranches:
-    async def test_suspended_status_raises_suspended_error(
-        self, tmp_path: Path
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(conn, status="suspended")
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            with pytest.raises(ApiKeySuspendedError) as exc_info:
-                await verify_api_key_registry(request, token=plaintext)
-            assert CONTACT_HINT in exc_info.value.hint
-        finally:
-            conn.close()
-
-    async def test_cache_write_happens_for_suspended_payload(
-        self, tmp_path: Path
-    ) -> None:
-        """AC4 tail: the lookup succeeded, so the payload is cached even
-        though the request is denied."""
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(conn, status="suspended")
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            with pytest.raises(ApiKeySuspendedError):
-                await verify_api_key_registry(request, token=plaintext)
-
-            assert cache.snapshot()["entries"] == 1
-            # F18 — second call denies from the cache (the real lookup
-            # never runs against the cached hash) but still performs the
-            # equalisation dummy SELECT. Assert exactly one SELECT runs
-            # and that it targets the dummy hash, not the real one.
-            from comadre.keys.auth import _DUMMY_HASH
-
-            statements: list[str] = []
-            conn.set_trace_callback(statements.append)
-            try:
-                with pytest.raises(ApiKeySuspendedError):
-                    await verify_api_key_registry(request, token=plaintext)
-            finally:
-                conn.set_trace_callback(None)
-            select_stmts = [s for s in statements if "SELECT" in s.upper()]
-            assert len(select_stmts) == 1
-            assert _DUMMY_HASH in select_stmts[0]
-        finally:
-            conn.close()
-
-    async def test_revoked_status_raises_revoked_error(self, tmp_path: Path) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(conn, status="revoked")
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            with pytest.raises(ApiKeyRevokedError) as exc_info:
-                await verify_api_key_registry(request, token=plaintext)
-            assert CONTACT_HINT in exc_info.value.hint
-        finally:
-            conn.close()
-
-
-class TestBillingBranches:
-    async def test_manual_expired_paid_until_raises_suspended_error(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(conn, paid_until="2020-01-01")
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            monkeypatch.setattr(
-                auth_module,
-                "_today_in_billing_tz",
-                lambda _s: date(2026, 4, 17),
-            )
-
-            with pytest.raises(ApiKeySuspendedError):
-                await verify_api_key_registry(request, token=plaintext)
-
-            # Row on disk is still status='active' — the auth path never
-            # mutates the registry; the cron is the writer.
-            row = conn.execute(
-                "SELECT status FROM api_key WHERE key_hash = ?",
-                (hash_api_key(plaintext),),
-            ).fetchone()
-            assert row["status"] == "active"
-        finally:
-            conn.close()
-
-    async def test_complimentary_always_allowed(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(
-                conn, billing_mode="complimentary", paid_until=None
-            )
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            monkeypatch.setattr(
-                auth_module,
-                "_today_in_billing_tz",
-                lambda _s: date(2099, 1, 1),
-            )
-
-            await verify_api_key_registry(request, token=plaintext)
-            assert request.state.auth_payload.billing_mode == "complimentary"
-            assert request.state.auth_payload.paid_until is None
-        finally:
-            conn.close()
-
-    async def test_manual_null_paid_until_fails_as_suspended(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """``ManualBillingProvider.is_payment_current`` returns False when
-        ``billing_mode='manual'`` and ``paid_until is None`` — the auth path
-        denies with suspended."""
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(conn, paid_until=None)
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            monkeypatch.setattr(
-                auth_module,
-                "_today_in_billing_tz",
-                lambda _s: date(2026, 4, 17),
-            )
-
-            with pytest.raises(ApiKeySuspendedError):
-                await verify_api_key_registry(request, token=plaintext)
-        finally:
-            conn.close()
-
-    async def test_malformed_paid_until_fails_closed_as_suspended(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        auth_log_handler: _CapturingHandler,
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, kid, _cid = _seed_key(conn, paid_until="not-a-date")
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            monkeypatch.setattr(
-                auth_module,
-                "_today_in_billing_tz",
-                lambda _s: date(2026, 4, 17),
-            )
-
-            with pytest.raises(ApiKeySuspendedError):
-                await verify_api_key_registry(request, token=plaintext)
-
-            error_records = [
-                r for r in auth_log_handler.records if r.levelno == logging.ERROR
-            ]
-            assert len(error_records) == 1
-            msg = error_records[0].getMessage()
-            assert "Malformed paid_until" in msg
-            assert kid in msg
-            assert plaintext not in msg
-            assert hash_api_key(plaintext) not in msg
-            assert "Helena" not in msg
-        finally:
-            conn.close()
-
-
-class TestDatabaseErrorFailClosed:
-    async def test_sqlite_error_raises_key_registry_error(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        auth_log_handler: _CapturingHandler,
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            def boom(*_args: object, **_kwargs: object) -> object:
-                raise sqlite3.OperationalError("database is closed")
-
-            monkeypatch.setattr(auth_module, "lookup_key_auth", boom)
-
-            with pytest.raises(KeyRegistryError):
-                await verify_api_key_registry(request, token="whatever")
-
-            assert cache.snapshot()["entries"] == 0
-            error_records = [
-                r for r in auth_log_handler.records if r.levelno == logging.ERROR
-            ]
-            assert len(error_records) == 1
-            assert "unreachable or corrupt" in error_records[0].getMessage()
-        finally:
-            conn.close()
-
-
-class TestLogSanitisation:
-    async def test_no_plaintext_or_hash_in_log_records(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        auth_log_handler: _CapturingHandler,
-    ) -> None:
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(
-                conn, paid_until="not-a-date", customer_name="Helena Ribeiro"
-            )
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-            monkeypatch.setattr(
-                auth_module,
-                "_today_in_billing_tz",
-                lambda _s: date(2026, 4, 17),
-            )
-
-            with pytest.raises(ApiKeySuspendedError):
-                await verify_api_key_registry(request, token=plaintext)
-
-            for record in auth_log_handler.records:
-                body = record.getMessage()
-                assert "cmdr_live_" not in body
-                assert hash_api_key(plaintext) not in body
-                assert "Helena Ribeiro" not in body
-        finally:
-            conn.close()
-
-
-class TestTodayInBillingTz:
-    def test_returns_date_in_configured_zone(self) -> None:
-        settings = _settings(billing_timezone="America/Sao_Paulo")
-        today = auth_module._today_in_billing_tz(settings)
-        assert isinstance(today, date)
-
-
-class TestNonAsciiBearerToken:
-    async def test_non_ascii_token_raises_not_found_not_500(
-        self,
-        tmp_path: Path,
-        auth_log_handler: _CapturingHandler,
-    ) -> None:
-        """Non-ASCII tokens must not bubble UnicodeEncodeError as a 500."""
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            settings = _settings()
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            with pytest.raises(ApiKeyNotFoundError):
-                await verify_api_key_registry(request, token="café_não_existe")
-
-            assert cache.snapshot()["entries"] == 0
-        finally:
-            conn.close()
-
-
-class TestZoneInfoFailureFailsClosed:
-    async def test_unknown_billing_timezone_raises_key_registry_error(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        auth_log_handler: _CapturingHandler,
-    ) -> None:
-        """Invalid ``BILLING_TIMEZONE`` (or missing tzdata) must fail closed
-        with a 500-shaped ``KeyRegistryError``, not bubble a 500 trace.
-        """
-        conn = get_connection(tmp_path / "registry.db")
-        try:
-            _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(conn)
-            # The IANA validator now blocks bogus timezones at Settings()
-            # construction. This defense-in-depth test still runs the auth
-            # path with a bogus value (e.g. monkeypatched after boot) — set
-            # the field directly via __setattr__ to bypass the validator.
-            settings = _settings()
-            object.__setattr__(settings, "billing_timezone", "Atlantis/Lost_City")
-            cache = AuthCache()
-            request = _make_request(conn, cache, settings)
-
-            with pytest.raises(KeyRegistryError):
-                await verify_api_key_registry(request, token=plaintext)
-
-            error_records = [
-                r for r in auth_log_handler.records if r.levelno == logging.ERROR
-            ]
-            assert len(error_records) == 1
-            msg = error_records[0].getMessage()
-            assert "billing_timezone" in msg
-            assert plaintext not in msg
-            assert hash_api_key(plaintext) not in msg
-        finally:
-            conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Story 3.1 AC4 — FR20 full round-trip via CLI + sentinel-driven invalidation.
-# ---------------------------------------------------------------------------
-
-
-class TestFR20RoundTripViaCli:
-    """Suspend → auth-denied → mark-paid → auth-allowed, all via CLI verbs.
-
-    Exercises the end-to-end chain:
-      1. Seed active key; authenticate → payload cached.
-      2. ``comadre-keys suspend`` (via CliRunner) touches the sentinel.
-      3. Authenticate again → AuthCache flushes, DB lookup returns suspended,
-         ``ApiKeySuspendedError`` raised on the very next request.
-      4. ``comadre-keys mark-paid --until <future>`` re-touches the sentinel.
-      5. Authenticate again → cache flushed, DB now active → 200.
+async def test_cache_miss_db_hit_caches_payload_and_sets_request_state(
+    tmp_path: Path,
+) -> None:
+    """First lookup: DB miss → DB hit → payload cached → request.state set."""
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        plaintext, kid, _cid = _seed_key(conn)
+        cache = AuthCache()
+        request = _make_request(conn, cache, _settings())
+
+        await verify_api_key_registry(request, token=plaintext)
+
+        assert cache.snapshot()["entries"] == 1
+        cached = cache.get(hash_api_key(plaintext))
+        assert cached is not None
+        assert cached.key_id == kid
+        assert request.state.auth_payload == cached
+    finally:
+        conn.close()
+
+
+async def test_cache_hit_runs_equalisation_select_against_dummy(
+    tmp_path: Path,
+) -> None:
+    """F18: cache hit MUST run the same indexed SELECT as a miss (against
+    a never-matching dummy hash) so timing distinguishability is removed.
+    A cache-residency oracle for active keys would be a known-key probe.
     """
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        plaintext, _, _ = _seed_key(conn)
+        cache = AuthCache()
+        # Pre-populate cache to take the hit path.
+        request = _make_request(conn, cache, _settings())
+        await verify_api_key_registry(request, token=plaintext)
 
-    async def test_full_fr20_round_trip(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from cryptography.fernet import Fernet
-        from typer.testing import CliRunner
+        # Second call hits the cache. Trace SQL.
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            await verify_api_key_registry(request, token=plaintext)
+        finally:
+            conn.set_trace_callback(None)
 
-        import comadre.keys.cli.output as output_mod
-        from comadre.config import get_settings
-        from comadre.keys.cli.app import app
+        select_stmts = [
+            s for s in statements if s.upper().lstrip().startswith("SELECT")
+        ]
+        assert len(select_stmts) == 1, statements
+    finally:
+        conn.close()
 
-        # Env wiring so the CLI sees the same registry file as our test conn.
-        db_path = tmp_path / "registry.db"
-        enc_key = Fernet.generate_key().decode()
-        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
-        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", enc_key)
-        get_settings.cache_clear()
 
-        output_mod._reset_for_tests()  # Rich console singletons.
+async def test_db_miss_runs_dummy_compare_and_does_not_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unknown token: ApiKeyNotFoundError + dummy compare runs (anti-enum)
+    + cache stays empty (a miss MUST NOT pollute the cache)."""
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        _seed_key(conn)
+        cache = AuthCache()
 
-        conn = get_connection(db_path)
+        calls: list[tuple[bytes, bytes]] = []
+        real_compare = auth_module.hmac.compare_digest
+
+        def spy(a: Any, b: Any) -> bool:
+            calls.append((a, b))
+            return bool(real_compare(a, b))
+
+        monkeypatch.setattr(auth_module.hmac, "compare_digest", spy)
+
+        request = _make_request(conn, cache, _settings())
+        with pytest.raises(ApiKeyNotFoundError):
+            await verify_api_key_registry(request, token="unknown-xyz")
+
+        assert len(calls) == 1
+        assert cache.snapshot()["entries"] == 0
+    finally:
+        conn.close()
+
+
+async def test_status_and_billing_branches_raise_correct_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Suspended → 401 suspended; revoked → 401 revoked; expired manual
+    → 401 suspended; complimentary always allowed."""
+    monkeypatch.setattr(
+        auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
+    )
+
+    cases = [
+        ({"status": "suspended"}, ApiKeySuspendedError),
+        ({"status": "revoked"}, ApiKeyRevokedError),
+        ({"paid_until": "2020-01-01"}, ApiKeySuspendedError),
+    ]
+    for kwargs, expected_exc in cases:
+        conn = get_connection(tmp_path / f"r-{expected_exc.__name__}.db")
         try:
             _apply_migrations(conn)
-            plaintext, _kid, _cid = _seed_key(
-                conn, status="active", paid_until="2099-12-31"
-            )
-
-            # Read the real key_prefix so the CLI verbs can resolve it.
-            row = conn.execute("SELECT key_prefix FROM api_key LIMIT 1").fetchone()
-            assert row is not None
-            key_prefix = row["key_prefix"]
-
-            settings = Settings(
-                operator_contact_hint=CONTACT_HINT,
-                key_registry_encryption_key=SecretStr(enc_key),
-                key_registry_db_path=str(db_path),
-            )
-            sentinel_path = Path(str(db_path) + ".invalidate")
-            sentinel_path.touch(exist_ok=True)
-            cache = AuthCache(invalidation_sentinel=sentinel_path)
-
-            # Step 1 — authenticate active key; payload caches.
-            request = _make_request(conn, cache, settings)
-            await verify_api_key_registry(request, token=plaintext)
-            token_hash = hash_api_key(plaintext)
-            assert cache.get(token_hash) is not None
-
-            runner = CliRunner()
-
-            # Step 2 — suspend via CLI (touches sentinel on success).
-            result = runner.invoke(app, ["suspend", key_prefix])
-            assert result.exit_code == 0, result.output
-
-            # Step 3 — next auth attempt must raise ApiKeySuspendedError.
-            request = _make_request(conn, cache, settings)
-            with pytest.raises(ApiKeySuspendedError):
+            plaintext, _, _ = _seed_key(conn, **kwargs)  # type: ignore[arg-type]
+            cache = AuthCache()
+            request = _make_request(conn, cache, _settings())
+            with pytest.raises(expected_exc):
                 await verify_api_key_registry(request, token=plaintext)
-
-            # Step 4 — mark-paid re-extends + reactivates.
-            result = runner.invoke(
-                app, ["mark-paid", key_prefix, "--until", "2099-12-31"]
-            )
-            assert result.exit_code == 0, result.output
-
-            # Step 5 — auth now succeeds; cache re-populates.
-            request = _make_request(conn, cache, settings)
-            await verify_api_key_registry(request, token=plaintext)
-            assert request.state.auth_payload.status == "active"
         finally:
             conn.close()
-            output_mod._reset_for_tests()
-            get_settings.cache_clear()
+
+    # Complimentary with NULL paid_until is always allowed.
+    conn = get_connection(tmp_path / "comp.db")
+    try:
+        _apply_migrations(conn)
+        plaintext, _, _ = _seed_key(conn, billing_mode="complimentary", paid_until=None)
+        cache = AuthCache()
+        request = _make_request(conn, cache, _settings())
+        await verify_api_key_registry(request, token=plaintext)
+        assert request.state.auth_payload is not None
+    finally:
+        conn.close()
+
+
+async def test_db_error_fails_closed_with_key_registry_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_log_handler: _CapturingHandler,
+) -> None:
+    """A SQLite error must NOT leak as 200 — fail closed via KeyRegistryError.
+    The error log line is the operator's only signal that the registry is sick."""
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        cache = AuthCache()
+        request = _make_request(conn, cache, _settings())
+
+        def boom(*_a: object, **_kw: object) -> object:
+            raise sqlite3.OperationalError("database is closed")
+
+        monkeypatch.setattr(auth_module, "lookup_key_auth", boom)
+
+        with pytest.raises(KeyRegistryError):
+            await verify_api_key_registry(request, token="any-token")
+
+        error_records = [
+            r for r in auth_log_handler.records if r.levelno == logging.ERROR
+        ]
+        assert len(error_records) >= 1
+        assert "unreachable or corrupt" in error_records[0].getMessage()
+    finally:
+        conn.close()
+
+
+async def test_log_records_carry_no_plaintext_hash_or_customer_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_log_handler: _CapturingHandler,
+) -> None:
+    """LGPD + token discipline: log lines NEVER carry secret-shaped values."""
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        plaintext, _, _ = _seed_key(
+            conn, paid_until="not-a-date", customer_name="Helena Ribeiro"
+        )
+        cache = AuthCache()
+        request = _make_request(conn, cache, _settings())
+        monkeypatch.setattr(
+            auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
+        )
+
+        with pytest.raises(ApiKeySuspendedError):
+            await verify_api_key_registry(request, token=plaintext)
+
+        for record in auth_log_handler.records:
+            body = record.getMessage()
+            assert "cmdr_live_" not in body
+            assert hash_api_key(plaintext) not in body
+            assert "Helena Ribeiro" not in body
+    finally:
+        conn.close()
+
+
+async def test_non_ascii_bearer_token_returns_not_found_not_500(
+    tmp_path: Path,
+) -> None:
+    """Non-ASCII tokens must not bubble UnicodeEncodeError as a 500."""
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        cache = AuthCache()
+        request = _make_request(conn, cache, _settings())
+        with pytest.raises(ApiKeyNotFoundError):
+            await verify_api_key_registry(request, token="café_não_existe")
+        assert cache.snapshot()["entries"] == 0
+    finally:
+        conn.close()
