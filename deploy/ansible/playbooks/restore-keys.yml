@@ -109,7 +109,7 @@
           rm -rf "$STAGING"
           mkdir -p "$STAGING"
           chmod 0700 "$STAGING"
-          openssl enc -d -aes-256-cbc -pbkdf2 \
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
             -in "{{ backup_file }}" \
             -out "$STAGING/bundle.tar.gz" \
             -pass env:BACKUP_PASSPHRASE
@@ -231,14 +231,22 @@
         state: present
 
     - name: "[Health] Wait for service to become healthy"
-      ansible.builtin.uri:
-        url: "https://{{ domain | default('localhost') }}/health"
-        validate_certs: false
-        return_content: true
+      # Poll the docker-internal upstream rather than the public Caddy URL.
+      # This sidesteps Caddy bind quirks on hosts where 443 is not listening
+      # on localhost and removes the validate_certs=false TLS shortcut.
+      ansible.builtin.command:
+        cmd: >-
+          docker compose exec -T tts-service
+          sh -c 'wget -qO- http://127.0.0.1:8000/health'
+        chdir: "~/comadre"
       register: health_check
+      changed_when: false
+      failed_when: false
       until: >-
-        health_check.status == 200
-        and (health_check.json.status | default('')) == "healthy"
+        health_check.rc == 0
+        and ('"status":' in health_check.stdout)
+        and ('"healthy"' in health_check.stdout
+             or '"status":"healthy"' in (health_check.stdout | replace(' ', '')))
       retries: 180
       delay: 10
 

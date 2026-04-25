@@ -509,7 +509,9 @@ If `KEY_REGISTRY_ENCRYPTION_KEY` is suspected compromised (leaked `.env`, lost b
 
 ```bash
 # 1. Mint a new Fernet key. Keep the value handy for step 3.
-NEW_KEY="$(docker compose exec tts-service python -c \
+#    The -T flag disables TTY allocation — without it Docker may append \r
+#    to the captured value and silently corrupt the .env write in step 3.
+NEW_KEY="$(docker compose exec -T tts-service python -c \
   'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 
 # 2. Rotate (audited; the success line echoes the new key value for the .env swap).
@@ -521,11 +523,22 @@ docker compose exec tts-service comadre-keys rotate-encryption-key \
 
 # 4. Restart the service so the new env value is loaded.
 docker compose restart tts-service
+
+# 5. POST-ROTATION: prune log surfaces that captured the rotation success
+#    line. Docker's default ``json-file`` log driver writes container stdout
+#    (including the ConfirmationLine echo of the new key) to disk under
+#    /var/lib/docker/containers/<id>/. journald similarly persists it. Even
+#    with the Comadre app's PII-austere INFO log, the operator-facing echo
+#    in step 2's stdout is a real log surface that must be scrubbed.
+docker compose logs tts-service --since 10m --no-color > /tmp/rotation.log  # inspect
+sudo journalctl --rotate && sudo journalctl --vacuum-time=10m  # systemd journal
+docker compose down && docker compose up -d  # cycles json-file log files
+shred -u /tmp/rotation.log  # if you saved the inspect output
 ```
 
 Tombstoned customers are skipped by design — their ciphertext is a zero-length BLOB with no PII to rotate. The audit row's `details_json` carries only the structural count (`{"rows_re_encrypted": N}`); the new key value never appears in logs, error panels, or the audit log. The success line is the single operator-facing surface that echoes the value, and it only prints on success.
 
-Story 4.6 (LGPD documentation & breach runbook) consolidates these procedures into a full operator handbook once it lands; this section is the interim reference.
+The full operator handbook — including the breach-notification runbook (ANPD contact, customer-notification template, evidence-preservation checklist, internal escalation path) and the privacy-policy template paragraph — lives at [docs/monetization.md#lgpd-operator-obligations](monetization.md#lgpd-operator-obligations). This section remains the deploy-time operational reference; the handbook is the legal-posture reference.
 
 ### Backup & restore
 

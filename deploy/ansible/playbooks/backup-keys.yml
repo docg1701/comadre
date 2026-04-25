@@ -47,7 +47,7 @@
           shorter than 16 characters. Generate a fresh passphrase with:
           export COMADRE_BACKUP_PASSPHRASE="$(python -c 'import secrets;
           print(secrets.token_urlsafe(32))')"
-        success_msg: "Backup passphrase is configured ({{ backup_passphrase | length }} chars)."
+        success_msg: "Backup passphrase is configured."
 
     - name: "[Prereq] Validate backup_retention_days is positive"
       ansible.builtin.assert:
@@ -117,6 +117,10 @@
         _backup_script: |
           set -euo pipefail
           umask 077
+          # Belt-and-braces: fail loud if the env var is absent. Bootstrap
+          # already requires it at service-start, but a future helper-container
+          # path that bypasses bootstrap inherits the guarantee here.
+          : "${KEY_REGISTRY_ENCRYPTION_KEY:?KEY_REGISTRY_ENCRYPTION_KEY must be set inside the tts-service container}"
           DB_PATH="${KEY_REGISTRY_DB_PATH:-/var/lib/comadre/registry.db}"
           DB_DIR="$(dirname "$DB_PATH")"
           TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
@@ -124,8 +128,10 @@
           trap "rm -rf \"$STAGING\"" EXIT
           python -c "
           import sqlite3, sys
-          src = sqlite3.connect(sys.argv[1])
-          dst = sqlite3.connect(sys.argv[2])
+          # 30s lock timeout — generous over SQLite's 5s default so a busy
+          # registry under a concurrent CLI write doesn't flake the snapshot.
+          src = sqlite3.connect(sys.argv[1], timeout=30)
+          dst = sqlite3.connect(sys.argv[2], timeout=30)
           with dst:
               src.backup(dst)
           src.close()
@@ -135,7 +141,7 @@
           chmod 0600 "$STAGING/encryption-key.txt"
           tar -C "$STAGING" -czf "$STAGING/bundle.tar.gz" registry.db encryption-key.txt
           ARCHIVE="$DB_DIR/registry.db.backup-$TS.tar.gz.enc"
-          openssl enc -aes-256-cbc -pbkdf2 -salt \
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt \
             -in "$STAGING/bundle.tar.gz" \
             -out "$ARCHIVE" \
             -pass env:BACKUP_PASSPHRASE
@@ -181,6 +187,10 @@
     # Summary
     # =========================================================================
 
+    - name: "[Summary] Compute scp-safe ansible_host (IPv6 → bracket form)"
+      ansible.builtin.set_fact:
+        _scp_host: "{{ '[' ~ ansible_host ~ ']' if ':' in ansible_host else ansible_host }}"
+
     - name: "[Summary] Report backup status"
       ansible.builtin.debug:
         msg: |
@@ -197,7 +207,7 @@
           {{ backup_result.stdout | default('(none)') }}
 
           Off-VPS archival hint — rotate this file to cold storage weekly:
-            scp {{ ansible_user }}@{{ ansible_host }}:{{ newest_archive.stdout | trim }} \
+            scp {{ ansible_user }}@{{ _scp_host }}:{{ newest_archive.stdout | trim }} \
               ./backups/
 
           ============================================

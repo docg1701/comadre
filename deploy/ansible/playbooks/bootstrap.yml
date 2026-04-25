@@ -413,10 +413,13 @@
         # /bin/bash -c + ``set -o pipefail`` so ``cmd | logger`` preserves the
         # playbook's exit code through the pipe. Matches the suspension-sweep
         # cron pattern.
+        # ``inventory_file`` is passed by ansible-playbook; falls back to
+        # production.yml so an Oracle host bootstrapped with -i oracle.yml
+        # writes the cron pointing at oracle.yml, not at the wrong inventory.
         job: >-
           /bin/bash -c 'set -o pipefail;
           cd ~/comadre &&
-          ansible-playbook -i deploy/ansible/inventory/production.yml
+          ansible-playbook -i {{ inventory_file | default('deploy/ansible/inventory/production.yml') }}
           deploy/ansible/playbooks/backup-keys.yml 2>&1 |
           logger -t comadre-keys-backup'
 
