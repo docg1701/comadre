@@ -1,8 +1,8 @@
 # Deferred Work
 
-Items surfaced during code reviews that remain after the 2026-04-25 hardening pass. Re-triage when picking up a related story.
+Items surfaced during code reviews that remain after the 2026-04-25 (round 2) hardening pass. Re-triage when picking up a related story.
 
-> **Provenance:** This file was pruned on 2026-04-25 to remove all entries that landed in the in-flight hardening pass (35 SHIPPED + 11 NO-OP closures). Status of every Epic 4-era deferred item is tracked in `_bmad-output/implementation-artifacts/epic-4-retro-2026-04-24.md` §5.3 (`[SHIPPED]` / `[NO-OP]` / `[REMAINING]`). The 35 `[REMAINING]` items below are the only Epic 4-era backlog still open.
+> **Provenance:** This file was pruned on 2026-04-25 (round 2) to remove all entries that landed in the in-flight hardening pass (43 SHIPPED + 13 NO-OP closures). Status of every Epic 4-era deferred item is tracked in `_bmad-output/implementation-artifacts/epic-4-retro-2026-04-24.md` §5.3 (`[SHIPPED]` / `[NO-OP]` / `[REMAINING]`). The 26 `[REMAINING]` items below are the only Epic 4-era backlog still open.
 
 ## Deferred from: code review of story-4-6 (2026-04-24)
 
@@ -22,20 +22,11 @@ Items surfaced during code reviews that remain after the 2026-04-25 hardening pa
 - **`bash -c '{{ _backup_script }}'` quoting fragility.** Current content works (verified via `shlex.split` simulation), but any future edit introducing quote-sensitive content could silently break. Candidate to move scripts to `deploy/ansible/scripts/*.sh`. **F6 — REMAINING.** [`deploy/ansible/playbooks/backup-keys.yml:96-137`, `restore-keys.yml:96-137`]
 - **`backup_file` operator-supplied via `-e` interpolates into `test -r "{{ backup_file }}"` / `openssl -in "{{ backup_file }}"`.** Command-injection surface under operator-in-the-loop DR. Pass through a `-e BACKUP_FILE=` env var + `$BACKUP_FILE` in the script as hardening. **F4 — REMAINING.** [`deploy/ansible/playbooks/restore-keys.yml:77-85, 112-115`]
 
-## Deferred from: code review of story-3-4 (2026-04-19)
-
-- **Marker `cron_tz` vs app's `BILLING_TIMEZONE` drift not cross-validated.** `_check_cron_marker` surfaces `CRON_TZ` as written by `bootstrap.yml` but never compares against the runtime `BILLING_TIMEZONE` env var. CLAUDE.md flags this drift as a known gotcha; surfacing it in `health` would catch the exact misconfiguration operators are most likely to hit. **F57 — REMAINING.** [`src/comadre/keys/health.py:344-389`]
-
 ## Deferred from: code review of story-3-3 (2026-04-19) — HARDENING-PASS REMAINING
 
 - **`cast(Settings, settings_obj)` is a typing escape hatch on `load_settings_and_tz`.** Tighten the helper's return annotation to `tuple[Settings, ZoneInfo] | None` so mypy audits the bridge; the cast becomes redundant. **F36 — REMAINING (cross-cutting refactor).** [`src/comadre/keys/cli/commands/system.py:~316-317`]
 - **Ansible `billing_timezone` has no validation — a typo (`America/Sao-Paulo`) silently desyncs cron from the app.** Python-side IANA validator landed in `src/comadre/config.py` (2026-04-25 hardening pass); ansible-side `assert` task in `bootstrap.yml` validating against `zoneinfo.available_timezones()` is the remaining half. [`deploy/ansible/playbooks/bootstrap.yml:308-312`]
 - **CLI tests patch `system_cmd.resolve_today_in_tz` instead of the source module `comadre.keys.cli._clock.resolve_today_in_tz`.** Story spec's "Test-flake avoidance" explicitly prefers patching the source module for refactor resilience. Works today via the import-in-module binding; brittle against a future refactor that re-resolves the symbol dynamically. **F56 — REMAINING.** [`tests/test_keys_cli_suspend_sweep.py:~67-68`]
-
-## Deferred from: code review of story-2-3 (2026-04-18)
-
-- **AC19 PII test narrower than wording.** Current test asserts only `cmdr_live_` and 64-hex absence; AC19 lists customer name, email, and CPF/CNPJ 11–14 digit runs. Coverage-only — snapshot has no writer path that could leak those by construction. Add a combined regex assertion on the next test-hygiene pass. **F50 — REMAINING (trivial test edit).** [`tests/test_counters.py:169-180`]
-- **`TestPeakAndAverage` monkeypatch ordering.** `monkeypatch(time.monotonic)` applied after `RequestCounters(...)` construction means `process_start` captures the real monotonic clock. Test-only latent flake. Fix by constructing `rc` after the patch. **F51 — REMAINING (trivial test edit).** [`tests/test_counters.py::TestPeakAndAverage`]
 
 ## Deferred from: code review of story-2-2 second pass (2026-04-18) — HARDENING-PASS REMAINING
 
@@ -48,11 +39,6 @@ Items surfaced during code reviews that remain after the 2026-04-25 hardening pa
 - **Timing-observable latency between `AuthCache` hit and miss.** With the legacy single-API_KEY hmac fast path retired, every request now goes through hash + SELECT (cache miss) or cache get (hit). The delta is measurable and can be used to enumerate which keys are recently active. **F18 — REMAINING (security-critical, needs bench).** [`src/comadre/keys/auth.py`]
 - **`api_key.rate_limit_rpm` CHECK has no upper bound.** Schema enforces `> 0`; CLI caps 1..10000, but a direct SQL edit or malformed backup restore could set `rpm=10^9`. Add a CHECK (`rate_limit_rpm BETWEEN 1 AND 10000`) in a v002 migration. **F19 — REMAINING.** [`src/comadre/keys/migrations/v001_initial.sql:17`]
 - **Denied-key spam never hits the rate-limit bucket.** FastAPI dependency order runs `verify_api_key` before `check_rate_limit`; suspended / revoked / unknown keys 401 before paying any bucket cost. Mitigation belongs in the DoS-hardening story (combine with F14). **F20 — REMAINING.** [`src/comadre/keys/auth.py`, `src/comadre/rate_limit.py`]
-
-## Deferred from: code review of story-2-2 (2026-04-18)
-
-- **AC14 literal "each helper invoked exactly once per request" vs slowapi's actual 1–2 calls.** Committed regression test relaxes the assertion to `1 <= x <= 2`. Amend AC14 to "at most twice per request" in the spec post-hoc. **F22 — REMAINING (story-spec doc edit only; skip-candidate).** [`tests/test_api.py:1141-1143`]
-- **429 access log lacks `key_id` attribution.** Operators currently cannot pin a 429 burst to a specific API key from the access log. Add a structured log at the 429 path with the hashed `key_id` prefix. **F21 — REMAINING.** [`src/comadre/api.py:60-62`]
 
 ## Deferred from: code review of story-1-6 (2026-04-17)
 
@@ -109,12 +95,10 @@ Items surfaced during code reviews that remain after the 2026-04-25 hardening pa
 
 - **Backup-archive assertion counts 0-byte / truncated files as "present"** [`deploy/ansible/playbooks/health.yml:296-314`] — a crashed `backup-keys.yml` mid-`openssl enc` leaves an empty tarball that passes the count-based assertion. **F13 — REMAINING.**
 - **Multi-replica test is in-process only; cross-process scenario deferred to Task 8 VPS smoke** [`tests/test_keys_db_multi_replica.py` whole file] — spec-sanctioned. File name sets an expectation of cross-process that the test doesn't fulfil; consider renaming to `test_keys_db_connection_contract.py` or spawning a `subprocess` child.
-- **Test for missing backup cron marker only exercises JSON exit 7; table-mode warn path untested** [`tests/test_keys_cli_health.py::TestBackupCronRow::test_missing_marker_flips_json_to_exit_7`] — table mode `exit 0 on warn` is contract-documented in CLAUDE.md. **F53 — REMAINING (trivial test addition).**
 
 ## Deferred from: code review of 4-5a-ci-security-headers-regression (2026-04-21) — HARDENING-PASS REMAINING
 
 - **`Caddyfile-no-landing` not exercised in CI** — the primary `Caddyfile` is covered; the no-landing variant has a byte-identical `header { ... }` block today. Promote to an explicit parametrised test the day the two files legitimately diverge. **F48 — REMAINING.**
-- **`deploy/landing/` is assumed to hold `index.html`** — fixture currently only asserts the dir exists. Add an `(landing_dir / "index.html").is_file()` guard with a clear error message. **F54 — REMAINING.**
 - **404/405 + file_server header-middleware bypass (Caddyfile `handle_errors` hardening)** — already captured in Story 4.5a §Deferred-work; surfaced again by the Acceptance Auditor. A dedicated hardening story should add a site-block `handle_errors` that re-applies the 6 headers + `-Server`/`-Via` to 404/405 responses, then un-hook `_skip_if_file_server_error_path` and refresh `feedback_caddy_server_header.md` (user memory). **F67 + F68 — REMAINING (HIGH PRI).**
 
 ## Deferred from: code review of story-4-5d (2026-04-24)

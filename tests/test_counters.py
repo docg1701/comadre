@@ -84,10 +84,11 @@ class TestPeakAndAverage:
     """AC3, AC4 — peak_rpm is max-observed; avg_rpm_last_60s is post-prune count."""
 
     def test_peak_rpm_is_non_decreasing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        rc = RequestCounters()
-        # Freeze monotonic clock to inject controlled timestamps. All 10
-        # hits in the same second → peak_rpm = 10.
+        # Patch monotonic BEFORE constructing RequestCounters so the recorded
+        # process_start uses the controlled clock, not the real one.
         monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+        rc = RequestCounters()
+        # All 10 hits in the same second → peak_rpm = 10.
         for _ in range(10):
             rc.incr_request("key_aaa")
         assert rc.per_key["key_aaa"].peak_rpm == 10
@@ -104,9 +105,9 @@ class TestPeakAndAverage:
     def test_avg_rpm_last_60s_equals_window_length(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rc = RequestCounters()
         now = [100.0]
         monkeypatch.setattr(time, "monotonic", lambda: now[0])
+        rc = RequestCounters()
         # 8 fresh hits within the window.
         for _ in range(8):
             rc.incr_request("key_aaa")
@@ -176,6 +177,13 @@ class TestSnapshotSchema:
         import re
 
         assert re.search(r"[0-9a-f]{64}", serialized) is None
+        # Defense-in-depth: any 11-14 consecutive digits would match a Brazilian
+        # CPF (11) or CNPJ (14, also matches 11-13 prefixes); explicitly assert
+        # absence even though the snapshot has no writer path that emits them.
+        assert re.search(r"\d{11,14}", serialized) is None
+        # Email-shaped runs (something@something.tld) -- same defense-in-depth.
+        email_pattern = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+        assert re.search(email_pattern, serialized) is None
 
 
 class TestAtomicWrite:

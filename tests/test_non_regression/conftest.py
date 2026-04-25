@@ -241,6 +241,16 @@ def compose_stack(
         pytest.fail(f"Caddyfile missing at {caddyfile}")
     if not landing_dir.is_dir():
         pytest.fail(f"Landing dir missing at {landing_dir}")
+    # Caddy's `file_server` serves `/` from this directory; without an
+    # index.html the root probe returns 404 and the security-headers
+    # assertions silently exercise the error path instead of the
+    # documented happy path. Surface the misconfiguration loudly.
+    landing_index = landing_dir / "index.html"
+    if not landing_index.is_file():
+        pytest.fail(
+            f"Landing index missing at {landing_index} — "
+            "deploy/landing/ must contain an index.html for Caddy file_server"
+        )
 
     tmp_dir = tmp_path_factory.mktemp("non-regression")
     nginx_conf = tmp_dir / "nginx.conf"

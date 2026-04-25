@@ -133,7 +133,7 @@ def _write_backup(db_path: str) -> Path:
     return archive
 
 
-def _write_backup_cron_marker(db_path: str) -> Path:
+def _write_backup_cron_marker(db_path: str, *, content: str | None = None) -> Path:
     """Drop the ``<db>.backup-cron-installed`` marker bootstrap.yml writes.
 
     Story 4.4: the ``Backup cron`` health row now demands the marker to
@@ -141,7 +141,9 @@ def _write_backup_cron_marker(db_path: str) -> Path:
     """
     marker = Path(f"{db_path}.backup-cron-installed")
     marker.write_text(
-        "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=14\n",
+        content
+        if content is not None
+        else "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=14\n",
         encoding="utf-8",
     )
     marker.chmod(0o600)
@@ -340,7 +342,7 @@ class TestJsonMode:
             "fail_count",
             "checks",
         }
-        assert len(payload["checks"]) == 9
+        assert len(payload["checks"]) == 10
         labels = {c["label"] for c in payload["checks"]}
         assert labels == {
             "Database",
@@ -350,6 +352,7 @@ class TestJsonMode:
             "Last suspension sweep",
             "Cron",
             "Backup cron",
+            "Timezone drift",
             "Last backup",
             "Auth cache",
         }
@@ -377,14 +380,25 @@ class TestJsonMode:
 
 
 class TestMarkerRendering:
-    def test_marker_schedule_rendered_verbatim(self, env: dict[str, str]) -> None:
+    def test_marker_schedule_rendered_verbatim(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Align runtime BILLING_TIMEZONE with the marker's cron_tz so the
+        # F57 drift-detection row stays ``ok`` and we can assert the
+        # marker-rendering contract in isolation.
+        monkeypatch.setenv("BILLING_TIMEZONE", "America/Sao_Paulo")
         _seed_real_registry(env["db_path"])
         _write_marker(
             env["db_path"],
             content="schedule=30 0 * * *\ncron_tz=America/Sao_Paulo",
         )
         _write_backup(env["db_path"])
-        _write_backup_cron_marker(env["db_path"])
+        _write_backup_cron_marker(
+            env["db_path"],
+            content=(
+                "schedule=0 2 * * *\ncron_tz=America/Sao_Paulo\nretention_days=14"
+            ),
+        )
         result = runner.invoke(app, ["health", "--format", "json"])
         assert result.exit_code == 0
         payload = json.loads(_buffers()[0])
@@ -442,6 +456,90 @@ class TestBackupCronRow:
         assert backup_cron["severity"] == "warn"
         assert backup_cron["value"] == "Not installed"
         assert backup_cron["detail"] == "run ansible-playbook bootstrap.yml"
+        assert payload["is_healthy"] is False
+
+    def test_missing_marker_table_mode_warns_but_exits_zero(
+        self, env: dict[str, str]
+    ) -> None:
+        """Table mode follows the read-tier UX rule: warn rendered, exit 0.
+
+        Mirrors test_missing_marker_flips_json_to_exit_7 on the JSON side;
+        the contract is JSON-mode propagates exit 7, table-mode does not.
+        """
+        _seed_real_registry(env["db_path"])
+        _write_marker(env["db_path"])
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        # Deliberately omit _write_backup_cron_marker.
+        result = runner.invoke(app, ["health"])
+        assert result.exit_code == 0, _buffers()
+        stdout, _ = _buffers()
+        assert "Backup cron" in stdout
+        assert "Not installed" in stdout
+
+    def test_billing_tz_drift_warns_when_marker_disagrees_with_runtime(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F57 — runtime BILLING_TIMEZONE != marker cron_tz flips warn.
+
+        Marker says cron fires in America/Sao_Paulo but the app runtime
+        thinks "today" is UTC. The CLAUDE.md gotcha says this silently
+        misaligns suspensions; the new ``Timezone drift`` row catches it.
+        """
+        monkeypatch.setenv("BILLING_TIMEZONE", "UTC")
+        _seed_real_registry(env["db_path"])
+        _write_marker(
+            env["db_path"],
+            content="schedule=30 0 * * *\ncron_tz=America/Sao_Paulo",
+        )
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])  # default cron_tz=UTC
+        result = runner.invoke(app, ["health", "--format", "json"])
+        assert result.exit_code == 7
+        payload = json.loads(_buffers()[0])
+        drift = next(c for c in payload["checks"] if c["label"] == "Timezone drift")
+        assert drift["severity"] == "warn"
+        assert drift["data"]["runtime"] == "UTC"
+        assert drift["data"]["suspension_cron_tz"] == "America/Sao_Paulo"
+        assert drift["data"]["backup_cron_tz"] == "UTC"
+        assert drift["data"]["matches"] is False
+
+    def test_billing_tz_drift_ok_when_all_markers_agree(
+        self, env: dict[str, str]
+    ) -> None:
+        _seed_real_registry(env["db_path"])
+        _write_marker(env["db_path"])  # cron_tz=UTC
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])  # cron_tz=UTC
+        result = runner.invoke(app, ["health", "--format", "json"])
+        assert result.exit_code == 0
+        payload = json.loads(_buffers()[0])
+        drift = next(c for c in payload["checks"] if c["label"] == "Timezone drift")
+        assert drift["severity"] == "ok"
+        assert drift["data"]["matches"] is True
+
+    def test_suspension_cron_missing_does_not_flip_backup_cron(
+        self, env: dict[str, str]
+    ) -> None:
+        """F52 symmetry — Cron and Backup cron flip is_healthy independently.
+
+        Suspension-cron marker absent, backup-cron marker present: Cron warns,
+        Backup cron stays ok, is_healthy=False (carried by Cron alone).
+        """
+        _seed_real_registry(env["db_path"])
+        _write_snapshot(env["db_path"])
+        _write_backup(env["db_path"])
+        _write_backup_cron_marker(env["db_path"])
+        # Deliberately omit _write_marker (suspension-cron marker).
+        result = runner.invoke(app, ["health", "--format", "json"])
+        assert result.exit_code == 7
+        payload = json.loads(_buffers()[0])
+        cron = next(c for c in payload["checks"] if c["label"] == "Cron")
+        backup_cron = next(c for c in payload["checks"] if c["label"] == "Backup cron")
+        assert cron["severity"] == "warn"
+        assert backup_cron["severity"] == "ok"
         assert payload["is_healthy"] is False
 
 

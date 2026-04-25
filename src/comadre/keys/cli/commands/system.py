@@ -408,6 +408,7 @@ def health_cmd(
                 schema_version_expected=_SCHEMA_VERSION,
                 cron_marker_path=cron_marker_path,
                 backup_parent=backup_parent,
+                runtime_billing_tz=settings.billing_timezone,
             )
         except (sqlite3.Error, OSError) as exc:
             render_error("Database error", str(exc))

@@ -386,6 +386,78 @@ def _check_cron_marker(marker_path: Path) -> HealthCheck:
     )
 
 
+def _check_billing_timezone_drift(
+    cron_check: HealthCheck,
+    backup_cron_check: HealthCheck,
+    *,
+    runtime_billing_tz: str,
+) -> HealthCheck:
+    """Cross-validate marker ``cron_tz`` against runtime ``BILLING_TIMEZONE``.
+
+    The CLAUDE.md gotcha: drift between the cron's ``CRON_TZ`` (set by
+    ``bootstrap.yml`` from ``billing_timezone`` at install time) and the
+    app's runtime ``BILLING_TIMEZONE`` env var silently shifts the app's
+    "today" relative to the cron schedule — suspensions fire at the wrong
+    operator-local time. This check surfaces the drift loudly.
+
+    Severity model:
+      - info: no marker present (cron not installed) — caller already
+        warned via the Cron row; no need to double-warn.
+      - ok:   both markers' tz match the runtime tz.
+      - warn: any marker's tz disagrees with the runtime tz.
+    """
+    cron_tz = (cron_check.data or {}).get("tz")
+    backup_tz = (backup_cron_check.data or {}).get("tz")
+    observed: list[tuple[str, str]] = []
+    if isinstance(cron_tz, str) and cron_tz:
+        observed.append(("suspension cron", cron_tz))
+    if isinstance(backup_tz, str) and backup_tz:
+        observed.append(("backup cron", backup_tz))
+    if not observed:
+        return HealthCheck(
+            label="Timezone drift",
+            value="No cron markers — nothing to compare",
+            severity="info",
+            detail=None,
+            data={
+                "runtime": runtime_billing_tz,
+                "suspension_cron_tz": cron_tz if isinstance(cron_tz, str) else None,
+                "backup_cron_tz": backup_tz if isinstance(backup_tz, str) else None,
+                "matches": None,
+            },
+        )
+    mismatches = [(label, tz) for (label, tz) in observed if tz != runtime_billing_tz]
+    if not mismatches:
+        return HealthCheck(
+            label="Timezone drift",
+            value=f"All cron markers agree with BILLING_TIMEZONE={runtime_billing_tz}",
+            severity="ok",
+            detail=None,
+            data={
+                "runtime": runtime_billing_tz,
+                "suspension_cron_tz": cron_tz if isinstance(cron_tz, str) else None,
+                "backup_cron_tz": backup_tz if isinstance(backup_tz, str) else None,
+                "matches": True,
+            },
+        )
+    drift_pairs = ", ".join(f"{label}={tz}" for (label, tz) in mismatches)
+    return HealthCheck(
+        label="Timezone drift",
+        value=f"BILLING_TIMEZONE={runtime_billing_tz} but {drift_pairs}",
+        severity="warn",
+        detail=(
+            "re-run ansible-playbook bootstrap.yml after aligning "
+            "billing_timezone with the runtime BILLING_TIMEZONE"
+        ),
+        data={
+            "runtime": runtime_billing_tz,
+            "suspension_cron_tz": cron_tz if isinstance(cron_tz, str) else None,
+            "backup_cron_tz": backup_tz if isinstance(backup_tz, str) else None,
+            "matches": False,
+        },
+    )
+
+
 def _check_backup_cron_marker(marker_path: Path) -> HealthCheck:
     """Backup-cron marker — written by ``bootstrap.yml`` at install time.
 
@@ -660,6 +732,7 @@ def collect_health_report(
     backup_pattern: str = "*.backup-*.tar.gz.enc",
     backup_cron_marker_path: str | None = None,
     sweep_staleness_warn_seconds: int = _SWEEP_STALENESS_WARN_SECONDS,
+    runtime_billing_tz: str | None = None,
 ) -> HealthReport:
     """Build the full HealthReport.
 
@@ -693,6 +766,19 @@ def collect_health_report(
     snapshots = read_all_snapshots(db_path)
     cache_status = aggregate_cache_status(snapshots)
 
+    # F57 — TZ drift cross-validation. Suppressed entirely when caller did
+    # not pass ``runtime_billing_tz`` (legacy callers that haven't adopted
+    # the new kwarg keep working unchanged).
+    extra_checks: tuple[HealthCheck, ...] = ()
+    if runtime_billing_tz is not None:
+        extra_checks = (
+            _check_billing_timezone_drift(
+                cron_check,
+                backup_cron_check,
+                runtime_billing_tz=runtime_billing_tz,
+            ),
+        )
+
     checks: tuple[HealthCheck, ...] = (
         _check_db_path(db_path_obj),
         _check_schema_version(conn, expected=schema_version_expected),
@@ -705,6 +791,7 @@ def collect_health_report(
         ),
         cron_check,
         backup_cron_check,
+        *extra_checks,
         _check_last_backup(
             backup_parent_obj,
             backup_pattern,

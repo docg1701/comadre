@@ -271,6 +271,37 @@ class TestPopulated:
             assert label in stdout
         assert "4 keys found." in stdout
 
+    def test_notes_column_absent_from_table(self, env: dict[str, str]) -> None:
+        """AC23 negative — operator-supplied ``notes`` must NOT render in the
+        list-keys table (private operator scratchpad, not a roster column).
+
+        Seed a key with a unique sentinel note, then assert the sentinel is
+        absent from rendered stdout. The neighbouring test_all_statuses_visible
+        positively asserts every column that DOES render; this is the
+        defense-in-depth negative of that contract.
+        """
+        customer_id = _seed_customer(env)
+        sentinel = "ZZNOTESENTINELZZ"
+        # Direct SQL because no command sets api_key.notes today; bypassing
+        # the CLI is the point of this test (we want to exercise the
+        # render path against any future writer that ends up populating the
+        # column).
+        key_id = _raw_insert_key(env, customer_id=customer_id, key_prefix="WITHNOTE")
+        conn = sqlite3.connect(env["db_path"])
+        try:
+            conn.execute(
+                "UPDATE api_key SET notes = ? WHERE id = ?", (sentinel, key_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result = runner.invoke(app, ["list-keys"])
+        stdout, stderr = _buffers()
+        assert result.exit_code == 0, stderr
+        assert sentinel not in stdout, (
+            f"notes column leaked into list-keys table: {stdout!r}"
+        )
+
 
 class TestFilterByStatus:
     """AC6 — --status filter + title."""
