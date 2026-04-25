@@ -27,6 +27,8 @@ repos:
       - id: shellcheck
 
   # markdownlint — Markdown linting
+  # Requires node>=20 (markdownlint-cli2 >=0.14). Repo pins node via .nvmrc;
+  # pre-commit picks up whatever `node` is on PATH (default `language: system`).
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.17.2
     hooks:
