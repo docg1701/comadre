@@ -13,6 +13,7 @@ EXISTS` in the v001 SQL — that SQL runs only on fresh DBs).
 from __future__ import annotations
 
 import importlib.resources
+import json
 import sqlite3
 import stat
 from collections.abc import Sequence
@@ -39,7 +40,7 @@ from comadre.keys.models import (
 )
 
 ShowTargetKind = Literal["customer", "key_single", "key_ambiguous", "not_found"]
-UpdatedField = Literal["email", "notes"]
+UpdatedField = Literal["email", "notes", "name"]
 UpdateKeyField = Literal["notes", "price", "rpm"]
 
 
@@ -110,6 +111,7 @@ class UpdateCustomerResult:
 
     customer: CustomerDetailRow
     updated_fields: tuple[UpdatedField, ...]
+    notes_op: Literal["append", "replace"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -556,10 +558,12 @@ def update_customer(
     *,
     new_email: str | None,
     add_note: str | None,
+    new_name: str | None = None,
+    replace_notes: str | None = None,
     actor: str,
     today: date,
 ) -> UpdateCustomerResult | None:
-    """Apply the email/notes mutation inside a single transaction.
+    """Apply the email/name/notes mutation inside a single transaction.
 
     Returns ``None`` when the customer is missing or tombstoned. Otherwise
     commits the mutation + an ``update_customer`` audit row and returns the
@@ -569,6 +573,11 @@ def update_customer(
     transaction so the UPDATE and the audit write either both commit or
     both roll back (same contract as ``insert_customer`` / ``insert_api_key``).
 
+    ``add_note`` (append-mode) and ``replace_notes`` (replace-mode) are
+    mutually exclusive; passing both raises ``ValueError`` (the CLI layer
+    rejects pre-call, this is defense-in-depth for future programmatic
+    callers).
+
     ``today`` is the operator-TZ date used to stamp the appended note
     (``[YYYY-MM-DD] text``). The caller resolves it via the existing
     ``cli._clock.resolve_today_in_tz`` seam so tests freeze the clock with
@@ -576,7 +585,11 @@ def update_customer(
     """
     from comadre.keys.audit import log_event
 
+    if add_note is not None and replace_notes is not None:
+        raise ValueError("add_note and replace_notes are mutually exclusive")
+
     updated: list[UpdatedField] = []
+    notes_op: Literal["append", "replace"] | None = None
     with conn:
         row = conn.execute(
             "SELECT notes FROM customer WHERE id = ? AND deleted_at IS NULL",
@@ -589,14 +602,18 @@ def update_customer(
 
         # Build the SET clause dynamically so only the touched columns are
         # rewritten. The predicate fragments are literal column-name strings
-        # (``"email = ?"`` / ``"notes = ?"``) — operator input only lands in
-        # the positional ``?`` bindings, never in SQL text.
+        # (``"email = ?"`` / ``"notes = ?"`` / ``"name = ?"``) — operator
+        # input only lands in the positional ``?`` bindings, never in SQL text.
         set_parts: list[str] = []
         params: list[object] = []
         if new_email is not None:
             set_parts.append("email = ?")
             params.append(new_email)
             updated.append("email")
+        if new_name is not None:
+            set_parts.append("name = ?")
+            params.append(new_name)
+            updated.append("name")
         if add_note is not None:
             stamped = f"[{today.isoformat()}] {add_note}"
             new_notes = (
@@ -605,6 +622,12 @@ def update_customer(
             set_parts.append("notes = ?")
             params.append(new_notes)
             updated.append("notes")
+            notes_op = "append"
+        elif replace_notes is not None:
+            set_parts.append("notes = ?")
+            params.append(replace_notes)
+            updated.append("notes")
+            notes_op = "replace"
 
         if not set_parts:
             # Defensive: the CLI layer rejects neither-flag before we get
@@ -618,7 +641,7 @@ def update_customer(
         # mutation slipping through if a future caller restructures the
         # SELECT-then-UPDATE pair.
         sql = (
-            f"UPDATE customer SET {', '.join(set_parts)} "  # nosec B608  # set_parts is a hardcoded column-allowlist ("email = ?", "name = ?", ...); only ? placeholders bind values
+            f"UPDATE customer SET {', '.join(set_parts)} "  # nosec B608  # set_parts is a hardcoded column-allowlist ("email = ?", "name = ?", "notes = ?"); only ? placeholders bind values
             "WHERE id = ? AND deleted_at IS NULL"
         )
         conn.execute(sql, params)
@@ -641,7 +664,83 @@ def update_customer(
         raise RuntimeError(
             f"update_customer: row vanished after commit for {customer_id!r}"
         )
-    return UpdateCustomerResult(customer=refreshed, updated_fields=fields_sorted)
+    return UpdateCustomerResult(
+        customer=refreshed, updated_fields=fields_sorted, notes_op=notes_op
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectTaxIdResult:
+    """Return payload from ``correct_customer_tax_id``."""
+
+    customer: CustomerDetailRow
+    old_tax_id_kind: TaxIdKind
+    new_tax_id_kind: TaxIdKind
+
+
+def correct_customer_tax_id(
+    conn: sqlite3.Connection,
+    customer_id: str,
+    *,
+    new_tax_id_encrypted: bytes,
+    new_tax_id_kind: TaxIdKind,
+    reason: str,
+    actor: str,
+) -> CorrectTaxIdResult | None:
+    """Replace ``customer.tax_id_encrypted`` (and ``tax_id_kind``) atomically.
+
+    Story 5.1 Gap 7. Returns ``None`` when the customer is missing or
+    tombstoned. The audit row records ``old_kind`` / ``new_kind`` / ``reason``
+    — never the tax-ID value (FR37 / NFR15 PII non-leak).
+
+    Callers MUST NOT wrap this in ``with conn:`` — the function owns its
+    transaction so the UPDATE and the audit write either both commit or both
+    roll back. The encryption is the caller's responsibility (single-Fernet
+    invariant: ``crypto.py::encrypt_tax_id``)."""
+    from comadre.keys.audit import log_event
+
+    with conn:
+        row = conn.execute(
+            "SELECT tax_id_kind FROM customer WHERE id = ? AND deleted_at IS NULL",
+            (customer_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        old_kind = cast(TaxIdKind, row["tax_id_kind"])
+
+        cursor = conn.execute(
+            "UPDATE customer SET tax_id_encrypted = ?, tax_id_kind = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (new_tax_id_encrypted, new_tax_id_kind, customer_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "correct_customer_tax_id: update failed to match any row "
+                f"after SELECT succeeded for {customer_id!r}"
+            )
+        log_event(
+            conn,
+            actor=actor,
+            action="correct_tax_id",
+            target_type="customer",
+            target_id=customer_id,
+            details={
+                "old_kind": old_kind,
+                "new_kind": new_tax_id_kind,
+                "reason": reason,
+            },
+        )
+
+    refreshed = get_customer_detail(conn, customer_id)
+    if refreshed is None:
+        raise RuntimeError(
+            f"correct_customer_tax_id: row vanished after commit for {customer_id!r}"
+        )
+    return CorrectTaxIdResult(
+        customer=refreshed,
+        old_tax_id_kind=old_kind,
+        new_tax_id_kind=new_tax_id_kind,
+    )
 
 
 def delete_customer_hard(
@@ -1156,6 +1255,190 @@ def list_audit_events(
     ]
 
 
+def earliest_audit_date(conn: sqlite3.Connection) -> date | None:
+    """Return the date of the oldest ``audit_log`` row, or ``None`` if empty.
+
+    Used by ``revenue --as-of`` (Story 5.1 Gap 8) to validate that the
+    operator-supplied replay date isn't earlier than any recorded history.
+    Pulls only the ``MIN(occurred_at)`` aggregate so the query is O(index)
+    on ``idx_audit_occurred``."""
+    row = conn.execute("SELECT MIN(occurred_at) FROM audit_log").fetchone()
+    if row is None or row[0] is None:
+        return None
+    iso = str(row[0])
+    try:
+        return date.fromisoformat(iso[:10])
+    except ValueError:
+        return None
+
+
+def reconstruct_key_state_at(
+    conn: sqlite3.Connection,
+    as_of: date,
+) -> list[ApiKeyListRow]:
+    """Return the ``api_key`` row set as it would have looked on ``as_of``.
+
+    Story 5.1 Gap 8 — ``revenue --as-of`` audit replay.
+
+    Forward-replay over ``audit_log`` rows up to ``as_of``, applied to the
+    keys that already existed on that date. Returns ``ApiKeyListRow`` rows
+    with reconstructed ``status`` / ``paid_until`` / ``price_monthly`` so
+    the caller can feed them straight into ``_bucketize_for_revenue``.
+
+    **Audit coverage caveat (documented limitation):**
+      ``status`` and ``paid_until`` are fully audit-tracked (``mark_paid`` /
+      ``suspend_key`` / ``reactivate_key`` / ``revoke_key``).
+      ``price_monthly`` is partially tracked: ``mark_paid`` rows from
+      Story 5.1 onward carry old/new (``price_monthly_changed=True``); pre-5.1
+      ``mark_paid`` and any ``update_key`` price change are NOT recorded with
+      old/new in the audit row. The replay bootstraps each key's price from
+      the FIRST post-as_of ``mark_paid`` event's ``old`` field when present,
+      otherwise from the current ``api_key.price_monthly`` value. MRR for
+      keys whose price changed via ``update_key`` between ``as_of`` and now
+      reflects the current price, not the historical one.
+
+      ``billing_mode`` is recorded on ``issue_key`` and is treated as
+      immutable (no CLI verb mutates it post-issue).
+
+    Keys created AFTER ``as_of`` are excluded from the result entirely
+    (they didn't exist yet)."""
+    from datetime import datetime as _dt
+
+    all_rows = list_api_keys(conn)
+    if not all_rows:
+        return []
+    rows_by_id = {row.id: row for row in all_rows}
+
+    valid_ids: list[str] = []
+    for row in all_rows:
+        try:
+            created_dt = _dt.fromisoformat(row.created_at)
+        except (ValueError, TypeError):
+            continue
+        if created_dt.date() <= as_of:
+            valid_ids.append(row.id)
+
+    if not valid_ids:
+        return []
+
+    placeholders = ",".join("?" * len(valid_ids))
+    sql = (
+        "SELECT id, occurred_at, action, target_id, details_json "
+        "FROM audit_log "
+        f"WHERE target_id IN ({placeholders}) "  # nosec B608  # placeholders is ",".join("?" * n) — only ? tokens; key ids bind via positional params
+        "ORDER BY occurred_at ASC, id ASC"
+    )
+    cursor = conn.execute(sql, tuple(valid_ids))
+    events = list(cursor)
+
+    snapshots: dict[str, dict[str, object]] = {}
+    for kid in valid_ids:
+        row = rows_by_id[kid]
+        snapshots[kid] = {
+            "status": "active",
+            "billing_mode": row.billing_mode,
+            "paid_until": None,
+            "price_monthly": row.price_monthly,
+        }
+
+    # First pass — find the earliest post-as_of mark_paid that carries a
+    # ``price_monthly_changed`` payload; the ``old`` field is the price at
+    # ``as_of``. Bootstrap the snapshot's price with it.
+    bootstrap_price: dict[str, float] = {}
+    for ev in events:
+        kid = ev["target_id"]
+        if kid not in snapshots or kid in bootstrap_price:
+            continue
+        if ev["action"] != "mark_paid":
+            continue
+        try:
+            ev_date = date.fromisoformat(str(ev["occurred_at"])[:10])
+        except ValueError:
+            continue
+        if ev_date <= as_of:
+            continue
+        if not ev["details_json"]:
+            continue
+        try:
+            bootstrap_details = json.loads(ev["details_json"])
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(bootstrap_details, dict)
+            and bootstrap_details.get("price_monthly_changed")
+            and "old" in bootstrap_details
+        ):
+            old = bootstrap_details["old"]
+            if isinstance(old, (int, float)):
+                bootstrap_price[kid] = float(old)
+    for kid, price in bootstrap_price.items():
+        snapshots[kid]["price_monthly"] = price
+
+    # Second pass — forward-replay events at or before as_of.
+    for ev in events:
+        kid = ev["target_id"]
+        if kid not in snapshots:
+            continue
+        try:
+            ev_date = date.fromisoformat(str(ev["occurred_at"])[:10])
+        except ValueError:
+            continue
+        if ev_date > as_of:
+            continue
+        snap = snapshots[kid]
+        details: dict[str, object] = {}
+        if ev["details_json"]:
+            try:
+                parsed = json.loads(ev["details_json"])
+                if isinstance(parsed, dict):
+                    details = parsed
+            except json.JSONDecodeError:
+                pass
+        action = ev["action"]
+        if action == "mark_paid":
+            if "paid_until" in details:
+                # Schema NOT NULL/TEXT shields the live row, but a corrupt
+                # or out-of-band audit row could carry an int / null here;
+                # _bucketize_for_revenue calls date.fromisoformat on this
+                # field downstream and would TypeError on non-string input.
+                paid_until_value = details["paid_until"]
+                if paid_until_value is None or isinstance(paid_until_value, str):
+                    snap["paid_until"] = paid_until_value
+            if details.get("reactivated"):
+                snap["status"] = "active"
+            if details.get("price_monthly_changed") and "new" in details:
+                new = details["new"]
+                if isinstance(new, (int, float)):
+                    snap["price_monthly"] = float(new)
+        elif action == "suspend_key":
+            snap["status"] = "suspended"
+        elif action == "reactivate_key":
+            snap["status"] = "active"
+        elif action == "revoke_key":
+            snap["status"] = "revoked"
+
+    result: list[ApiKeyListRow] = []
+    for kid, snap in snapshots.items():
+        row = rows_by_id[kid]
+        result.append(
+            ApiKeyListRow(
+                id=row.id,
+                customer_id=row.customer_id,
+                customer_name=row.customer_name,
+                key_prefix=row.key_prefix,
+                status=cast(CustomerStatus, snap["status"]),
+                billing_mode=cast(BillingMode, snap["billing_mode"]),
+                rate_limit_rpm=row.rate_limit_rpm,
+                price_monthly=cast(float, snap["price_monthly"]),
+                paid_until=cast("str | None", snap["paid_until"]),
+                created_at=row.created_at,
+                last_used_at=row.last_used_at,
+                notes=row.notes,
+            )
+        )
+    return result
+
+
 def resolve_show_target(
     conn: sqlite3.Connection,
     raw: str,
@@ -1548,6 +1831,8 @@ def mark_key_paid(
     paid_until: str,
     actor: str,
     today: date,
+    new_price_monthly: float | None = None,
+    audit_extra: dict[str, object] | None = None,
 ) -> MarkPaidResult | None:
     """Extend ``paid_until`` and auto-reactivate a suspended key (FR15 / FR20).
 
@@ -1566,6 +1851,12 @@ def mark_key_paid(
     verbatim. Past dates are accepted — retroactive payment logging is a
     legitimate operator workflow (see Story 3.1 AC8).
 
+    ``new_price_monthly`` (Story 5.1 Gap 4) is the optional price override.
+    When non-None the same UPDATE writes ``price_monthly``; the audit row
+    captures the old/new values under ``price_monthly_changed``. ``audit_extra``
+    merges into the audit ``details_json`` payload — used by the Story 5.1
+    ``--months`` mode to record ``{"mode": "months", "months": N}``.
+
     Callers MUST NOT wrap this in ``with conn:`` — the function owns its
     transaction so the UPDATE and audit row either both commit or both roll
     back.
@@ -1575,7 +1866,7 @@ def mark_key_paid(
     reactivated: bool
     with conn:
         row = conn.execute(
-            "SELECT status, billing_mode FROM api_key WHERE id = ?",
+            "SELECT status, billing_mode, price_monthly FROM api_key WHERE id = ?",
             (key_id,),
         ).fetchone()
         if row is None:
@@ -1586,14 +1877,27 @@ def mark_key_paid(
             raise ValueError("cannot mark-paid a complimentary key")
 
         reactivated = row["status"] == "suspended"
-
-        cursor = conn.execute(
-            "UPDATE api_key SET "
-            "paid_until = ?, "
-            "status = CASE WHEN status = 'suspended' THEN 'active' ELSE status END "
-            "WHERE id = ? AND status != 'revoked'",
-            (paid_until, key_id),
+        old_price = (
+            float(row["price_monthly"]) if row["price_monthly"] is not None else None
         )
+
+        if new_price_monthly is not None:
+            cursor = conn.execute(
+                "UPDATE api_key SET "
+                "paid_until = ?, "
+                "price_monthly = ?, "
+                "status = CASE WHEN status = 'suspended' THEN 'active' ELSE status END "
+                "WHERE id = ? AND status != 'revoked'",
+                (paid_until, new_price_monthly, key_id),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE api_key SET "
+                "paid_until = ?, "
+                "status = CASE WHEN status = 'suspended' THEN 'active' ELSE status END "
+                "WHERE id = ? AND status != 'revoked'",
+                (paid_until, key_id),
+            )
         if cursor.rowcount != 1:
             # Concurrent writer revoked the row between SELECT and UPDATE;
             # the ``status != 'revoked'`` predicate made our UPDATE a no-op.
@@ -1602,13 +1906,23 @@ def mark_key_paid(
                 "mark_key_paid: update failed to match any row after SELECT "
                 f"succeeded for {key_id!r}"
             )
+        details: dict[str, object] = {
+            "paid_until": paid_until,
+            "reactivated": reactivated,
+        }
+        if new_price_monthly is not None:
+            details["price_monthly_changed"] = True
+            details["old"] = old_price
+            details["new"] = new_price_monthly
+        if audit_extra:
+            details.update(audit_extra)
         log_event(
             conn,
             actor=actor,
             action="mark_paid",
             target_type="api_key",
             target_id=key_id,
-            details={"paid_until": paid_until, "reactivated": reactivated},
+            details=details,
         )
 
     _touch_auth_cache_sentinel(conn)

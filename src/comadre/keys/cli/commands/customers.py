@@ -18,6 +18,7 @@ import contextlib
 import json
 import re
 import sqlite3
+import sys
 from datetime import UTC, datetime
 from typing import cast
 
@@ -29,7 +30,7 @@ from pydantic import EmailStr, TypeAdapter, ValidationError
 from comadre.config import get_registry_settings
 from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
-from comadre.keys.audit import get_cli_actor
+from comadre.keys.audit import filter_forbidden_keys, get_cli_actor
 from comadre.keys.cli import _clock
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
@@ -58,8 +59,10 @@ from comadre.keys.crypto import (
     validate_cpf,
 )
 from comadre.keys.db import (
+    CorrectTaxIdResult,
     UpdateCustomerResult,
     _apply_migrations,
+    correct_customer_tax_id,
     count_tombstones,
     delete_customer_hard,
     generate_customer_id,
@@ -682,7 +685,11 @@ def show_cmd(
 _EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
 _UPDATE_CUSTOMER_NEITHER_HINT = (
-    'Provide --email NEW_EMAIL or --add-note "text" (or both).'
+    "Provide at least one of --name, --email, --add-note, or --notes."
+)
+_UPDATE_CUSTOMER_NOTES_MUTEX_HINT = (
+    "Use either --add-note (append a dated entry) OR --notes (replace the "
+    "whole notes column), not both."
 )
 _UPDATE_CUSTOMER_NOTE_EMPTY_HINT = (
     "Provide note text with content. Whitespace-only notes are rejected."
@@ -695,19 +702,31 @@ _UPDATE_CUSTOMER_NOTE_NEWLINE_HINT = (
 _UPDATE_CUSTOMER_NOT_FOUND_HINT = (
     "Run 'comadre-keys list-customers' to see registered records."
 )
+_UPDATE_CUSTOMER_NAME_MAX = 200
+_UPDATE_CUSTOMER_NOTE_MAX = 1024
+# Replace-mode allows newlines (operators consolidate dated entries) so the
+# cap is generous compared to the per-line --add-note ceiling. Bounded so a
+# stray paste-the-whole-logfile mistake stays catchable.
+_UPDATE_CUSTOMER_NOTES_REPLACE_MAX = 8192
 
 
-def _update_confirmation_suffix(updated_fields: tuple[str, ...]) -> str:
+def _update_confirmation_suffix(
+    updated_fields: tuple[str, ...],
+    notes_op: str | None = None,
+) -> str:
     """Map ``updated_fields`` to the ConfirmationLine human suffix.
 
-    Grammar is fixed: ``email changed`` / ``note added`` joined with
-    ``, `` (comma-space) when both fire. Story 1.5 AC1/AC2/AC3.
+    Grammar is fixed: ``email changed`` / ``name changed`` /
+    ``note added`` / ``notes replaced`` joined with ``, `` (comma-space)
+    when multiple fire. Story 1.5 AC1/AC2/AC3 + Story 5.1 Gaps 1/2.
     """
     parts: list[str] = []
+    if "name" in updated_fields:
+        parts.append("name changed")
     if "email" in updated_fields:
         parts.append("email changed")
     if "notes" in updated_fields:
-        parts.append("note added")
+        parts.append("notes replaced" if notes_op == "replace" else "note added")
     return ", ".join(parts)
 
 
@@ -719,6 +738,13 @@ def update_customer_cmd(
         help=(
             "Customer ID from create-customer / list-customers. "
             "Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
+        ),
+    ),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help=(
+            'Replace the stored display name. Example: --name "Helena Ribeiro Silva".'
         ),
     ),
     email: str | None = typer.Option(
@@ -737,22 +763,64 @@ def update_customer_cmd(
             'Example: --add-note "paga tarde - lembrar dia 3".'
         ),
     ),
+    notes: str | None = typer.Option(
+        None,
+        "--notes",
+        help=(
+            "Replace the entire notes column (multi-line allowed). "
+            'Mutually exclusive with --add-note. Example: --notes "rebuilt '
+            'history\\n[2026-04-25] consolidated".'
+        ),
+    ),
 ) -> None:
-    """Update a customer's email and/or append a dated operator note.
+    """Update a customer's name, email, and/or notes (append OR replace).
 
     Example: comadre-keys update-customer cust_01j8xr3e4c5m7kn9p2qt8vwy
              --add-note "paga tarde - lembrar dia 3"
     """
     # 1. Neither-flag check — runs before any DB / settings work so the
     # cheapest usage mistake never opens a connection.
-    if email is None and add_note is None:
+    if name is None and email is None and add_note is None and notes is None:
         render_error(
-            "Usage error: at least one of --email or --add-note is required",
+            "Usage error: at least one of --name, --email, --add-note, "
+            "or --notes is required",
             _UPDATE_CUSTOMER_NEITHER_HINT,
         )
         raise typer.Exit(code=2)
 
-    # 2. Email shape check (if provided). Pre-strip before pydantic so
+    # 1b. Mutual exclusion: --add-note (append) vs --notes (replace).
+    if add_note is not None and notes is not None:
+        render_error(
+            "Usage error: --add-note and --notes are mutually exclusive",
+            _UPDATE_CUSTOMER_NOTES_MUTEX_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 2. Name shape check (if provided). Mirrors create-customer's
+    # control-byte / whitespace / length pipeline.
+    if name is not None:
+        if any(ord(ch) < 0x20 and ch != "\t" for ch in name):
+            render_error(
+                "Usage error: --name contains illegal control characters",
+                "Provide --name without NUL, newline, or ANSI-escape bytes.",
+            )
+            raise typer.Exit(code=2)
+        stripped_name = name.strip()
+        if not stripped_name:
+            render_error(
+                "Usage error: --name must not be empty or whitespace-only",
+                "Provide a non-empty --name.",
+            )
+            raise typer.Exit(code=2)
+        if len(stripped_name) > _UPDATE_CUSTOMER_NAME_MAX:
+            render_error(
+                f"Usage error: --name exceeds {_UPDATE_CUSTOMER_NAME_MAX} characters",
+                f"Trim --name to {_UPDATE_CUSTOMER_NAME_MAX} chars or fewer.",
+            )
+            raise typer.Exit(code=2)
+        name = stripped_name
+
+    # 3. Email shape check (if provided). Pre-strip before pydantic so
     # operators who copy-paste with trailing whitespace get the same
     # normalized storage as other commands.
     if email is not None:
@@ -763,10 +831,9 @@ def update_customer_cmd(
             render_error("Usage error: invalid email", first_error_msg(exc))
             raise typer.Exit(code=2) from None
 
-    # 3. Note shape check (if provided). Strip outer whitespace, reject
+    # 4. Note shape check (if provided). Strip outer whitespace, reject
     # empty-after-strip, and reject NUL bytes (Story 1.1 deferred UX edge
     # picked up here — SQLite accepts NULs but they break later greps).
-    note_max = 1024
     if add_note is not None:
         if "\x00" in add_note:
             render_error(
@@ -802,13 +869,51 @@ def update_customer_cmd(
                 _UPDATE_CUSTOMER_NOTE_EMPTY_HINT,
             )
             raise typer.Exit(code=2)
-        if len(stripped_note) > note_max:
+        if len(stripped_note) > _UPDATE_CUSTOMER_NOTE_MAX:
             render_error(
-                f"Usage error: --add-note exceeds {note_max} characters",
-                f"Trim --add-note to {note_max} chars or fewer.",
+                f"Usage error: --add-note exceeds {_UPDATE_CUSTOMER_NOTE_MAX} "
+                "characters",
+                f"Trim --add-note to {_UPDATE_CUSTOMER_NOTE_MAX} chars or fewer.",
             )
             raise typer.Exit(code=2)
         add_note = stripped_note
+
+    # 4b. Replace-mode notes shape check. Newlines are allowed (operators
+    # consolidate dated entries here) but NUL / C0-controls (except
+    # tab/CR/LF) are still rejected — same anti-forgery / anti-ANSI posture.
+    if notes is not None:
+        if not notes.strip():
+            # Empty / whitespace-only --notes would silently wipe the column;
+            # an operator who types --notes "" almost certainly wants a no-op.
+            # Refuse explicitly — actual erasure is delete-customer --hard.
+            render_error(
+                "Usage error: --notes must not be empty or whitespace-only",
+                "Provide --notes content. Whitespace-only would silently "
+                "wipe the column.",
+            )
+            raise typer.Exit(code=2)
+        if "\x00" in notes:
+            render_error(
+                "Usage error: --notes contains illegal characters",
+                _UPDATE_CUSTOMER_NOTE_NUL_HINT,
+            )
+            raise typer.Exit(code=2)
+        if any(ord(ch) < 0x20 and ch not in ("\t", "\n", "\r") for ch in notes):
+            render_error(
+                "Usage error: --notes contains illegal control characters",
+                (
+                    "Notes must not contain ANSI escape (\\x1b) or other "
+                    "C0 control bytes (newlines / tabs are allowed)."
+                ),
+            )
+            raise typer.Exit(code=2)
+        if len(notes) > _UPDATE_CUSTOMER_NOTES_REPLACE_MAX:
+            render_error(
+                f"Usage error: --notes exceeds "
+                f"{_UPDATE_CUSTOMER_NOTES_REPLACE_MAX} characters",
+                f"Trim --notes to {_UPDATE_CUSTOMER_NOTES_REPLACE_MAX} chars or fewer.",
+            )
+            raise typer.Exit(code=2)
 
     # 4. Settings load (F38 — adopt shared ladder).
     loaded = load_settings_and_tz()
@@ -839,6 +944,8 @@ def update_customer_cmd(
                 customer_id,
                 new_email=email,
                 add_note=add_note,
+                new_name=name,
+                replace_notes=notes,
                 actor=get_cli_actor(),
                 today=today,
             )
@@ -866,7 +973,7 @@ def update_customer_cmd(
         customer_id,
         ",".join(result.updated_fields),
     )
-    suffix = _update_confirmation_suffix(result.updated_fields)
+    suffix = _update_confirmation_suffix(result.updated_fields, result.notes_op)
     render_confirmation(
         f"Updated: {result.customer.id} ({result.customer.name}) \u2014 {suffix}"
     )
@@ -891,6 +998,33 @@ _EXPORT_DECRYPT_HINT = (
 )
 
 
+_EXPORT_AUDIT_LIMIT = 1000  # matches list_audit_events upper bound
+
+
+def _audit_event_to_export_dict(event: AuditEventRow) -> dict[str, object]:
+    """Project an ``AuditEventRow`` to the export envelope shape.
+
+    Always emits ``action``, ``actor``, ``occurred_at``. Emits ``details``
+    only when the source row carried a non-empty payload (post forbidden-key
+    filter). The filter is defense-in-depth — ``log_event`` already enforces
+    the same blocklist at write time."""
+    out: dict[str, object] = {
+        "action": event.action,
+        "actor": event.actor,
+        "occurred_at": event.occurred_at,
+    }
+    if event.details_json:
+        try:
+            raw = json.loads(event.details_json)
+        except json.JSONDecodeError:
+            raw = None
+        if isinstance(raw, dict):
+            cleaned = filter_forbidden_keys(raw)
+            if cleaned:
+                out["details"] = cleaned
+    return out
+
+
 @app.command("export-customer")
 def export_customer_cmd(
     customer_id: str = typer.Argument(
@@ -908,6 +1042,16 @@ def export_customer_cmd(
             "Output format: json (default, machine-readable) or yaml "
             "(human-readable for data-subject access response). "
             "Example: --format yaml."
+        ),
+    ),
+    include_audit: bool = typer.Option(
+        False,
+        "--include-audit",
+        help=(
+            "Append the customer's audit history to the export envelope under "
+            "``audit_events``. Default off — the LGPD minimum-necessary "
+            "reading is the lean export. Opt in when legal counsel reads "
+            "Art. 18 II/V broadly. Story 5.1 Gap 6."
         ),
     ),
 ) -> None:
@@ -989,6 +1133,22 @@ def export_customer_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
+
+        audit_events: list[AuditEventRow] = []
+        if include_audit:
+            # Audit rows live on customer-id targets (create_customer,
+            # update_customer, delete_customer, correct_tax_id) AND on
+            # key-id targets (issue_key, mark_paid, suspend_key, rotate_key,
+            # revoke_key, update_key). Pull both buckets in one query so
+            # the export reads as a unified history.
+            try:
+                target_ids = [customer_id, *(k.id for k in keys)]
+                audit_events = list_audit_events(
+                    conn, target_ids, limit=_EXPORT_AUDIT_LIMIT
+                )
+            except (sqlite3.Error, OSError, RuntimeError) as exc:
+                render_error("Database error", str(exc))
+                raise typer.Exit(code=5) from None
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
@@ -1030,13 +1190,18 @@ def export_customer_cmd(
             for k in keys
         ],
     }
+    if include_audit:
+        payload["audit_events"] = [
+            _audit_event_to_export_dict(event) for event in audit_events
+        ]
 
     # 8. PII-austere INFO log. Never tax_id / name / email / ciphertext.
     _logger.info(
-        "Customer exported | id=%s | key_count=%d | format=%s",
+        "Customer exported | id=%s | key_count=%d | format=%s | include_audit=%s",
         row.id,
         len(keys),
         format,
+        include_audit,
     )
 
     # 9. Render branch.
@@ -1044,6 +1209,254 @@ def export_customer_cmd(
         render_export_json(payload)
     else:
         render_export_yaml(payload)
+
+
+# ---------------------------------------------------------------------------
+# `correct-tax-id` — LGPD Art. 18 III correction without losing audit history
+# (Story 5.1 Gap 7). Replaces the encrypted tax-ID atomically; ``customer_id``
+# and every ``api_key.customer_id`` FK survive (vs ``delete-customer --hard``
+# + ``create-customer``, which orphans the audit chain).
+# ---------------------------------------------------------------------------
+
+_CORRECT_TAX_ID_NOT_FOUND_HINT = (
+    "Run 'comadre-keys list-customers' to see registered records."
+)
+_CORRECT_TAX_ID_REASON_NUL_HINT = "Reason text must not contain NUL bytes."
+_CORRECT_TAX_ID_REASON_NEWLINE_HINT = "Reason text must be a single line."
+_CORRECT_TAX_ID_REASON_EMPTY_HINT = (
+    "Provide --reason text with content. Whitespace-only reasons are rejected."
+)
+_CORRECT_TAX_ID_MUTEX_HINT = "Provide exactly one of --new-cpf or --new-cnpj."
+_CORRECT_TAX_ID_REASON_MAX = 1024
+
+
+@app.command("correct-tax-id")
+def correct_tax_id_cmd(
+    customer_id: str = typer.Argument(
+        ...,
+        metavar="CUSTOMER_ID",
+        help=(
+            "Customer ID whose tax-ID should be replaced. "
+            "Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
+        ),
+    ),
+    new_cpf: str | None = typer.Option(
+        None,
+        "--new-cpf",
+        help=(
+            "New CPF (replaces the stored value). Mutually exclusive with "
+            '--new-cnpj. Example: --new-cpf "111.444.777-35".'
+        ),
+    ),
+    new_cnpj: str | None = typer.Option(
+        None,
+        "--new-cnpj",
+        help=(
+            "New CNPJ (replaces the stored value). Mutually exclusive with "
+            '--new-cpf. Example: --new-cnpj "12.345.678/0001-95".'
+        ),
+    ),
+    reason: str = typer.Option(
+        ...,
+        "--reason",
+        help=(
+            "Free-form reason (<=1024 chars, single line). Stored in the "
+            'audit log. Example: --reason "operator-typo correction".'
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Skip the interactive confirmation prompt (for scripting).",
+    ),
+) -> None:
+    """Replace a customer's tax-ID atomically; preserves customer_id + FKs.
+
+    Example: comadre-keys correct-tax-id cust_01j8xr3e4c5m7kn9p2qt8vwy
+             --new-cpf "111.444.777-35" --reason "typo correction"
+    """
+    # 1. Tax-ID mutex.
+    if (new_cpf is None) == (new_cnpj is None):
+        if new_cpf is not None:
+            render_error(
+                "Usage error: --new-cpf and --new-cnpj are mutually exclusive",
+                _CORRECT_TAX_ID_MUTEX_HINT,
+            )
+        else:
+            render_error(
+                "Usage error: exactly one of --new-cpf or --new-cnpj is required",
+                _CORRECT_TAX_ID_MUTEX_HINT,
+            )
+        raise typer.Exit(code=2)
+
+    # 2. --reason shape (mirrors revoke-key --reason validators).
+    if "\x00" in reason:
+        render_error(
+            "Usage error: --reason contains illegal characters",
+            _CORRECT_TAX_ID_REASON_NUL_HINT,
+        )
+        raise typer.Exit(code=2)
+    if "\n" in reason or "\r" in reason:
+        render_error(
+            "Usage error: --reason must be a single line",
+            _CORRECT_TAX_ID_REASON_NEWLINE_HINT,
+        )
+        raise typer.Exit(code=2)
+    stripped_reason = reason.strip()
+    if not stripped_reason:
+        render_error(
+            "Usage error: --reason must be non-empty",
+            _CORRECT_TAX_ID_REASON_EMPTY_HINT,
+        )
+        raise typer.Exit(code=2)
+    if len(stripped_reason) > _CORRECT_TAX_ID_REASON_MAX:
+        render_error(
+            f"Usage error: --reason exceeds {_CORRECT_TAX_ID_REASON_MAX} characters",
+            f"Trim --reason to {_CORRECT_TAX_ID_REASON_MAX} chars or fewer.",
+        )
+        raise typer.Exit(code=2)
+    reason = stripped_reason
+
+    # 2b. Customer ID shape validation — pre-DB so typos / pasted secrets
+    # never open a connection (parity with export-customer / delete-customer).
+    if not _CUSTOMER_ID_PATTERN.match(customer_id):
+        render_error(
+            "Usage error: invalid customer id",
+            _EXPORT_BAD_ID_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 3. Resolve kind + canonical digits + checksum (exit 4 on bad CPF/CNPJ).
+    if new_cpf is not None:
+        new_kind: TaxIdKind = "cpf"
+        digits = strip_tax_id(new_cpf)
+    else:
+        new_kind = "cnpj"
+        digits = strip_tax_id(cast(str, new_cnpj))
+    try:
+        if new_kind == "cpf":
+            validate_cpf(digits)
+        else:
+            validate_cnpj(digits)
+    except InvalidTaxIdError as exc:
+        render_error(exc.message, exc.hint)
+        raise typer.Exit(code=4) from None
+
+    # 4. Settings ladder (exit 6).
+    try:
+        settings = get_registry_settings()
+    except ValidationError as exc:
+        if is_missing_encryption_key(exc):
+            render_error(
+                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+                _missing_key_hint,
+            )
+        else:
+            render_error("Configuration error", first_error_msg(exc))
+        raise typer.Exit(code=6) from None
+    except (OSError, PermissionError) as exc:
+        render_error("Configuration error: settings file unreadable", str(exc))
+        raise typer.Exit(code=6) from None
+
+    if settings.key_registry_encryption_key is None:
+        render_error(
+            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
+            _missing_key_hint,
+        )
+        raise typer.Exit(code=6)
+
+    # 5. Encrypt new tax-ID via the single-Fernet boundary.
+    new_encrypted = encrypt_tax_id(digits, settings.key_registry_encryption_key)
+
+    # 6. Open DB + migrations (exit 5).
+    try:
+        conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+
+    result: CorrectTaxIdResult | None = None
+    try:
+        try:
+            _apply_migrations(conn)
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+
+        # 7. Pre-fetch the customer for the confirmation prompt + tombstone
+        # check; exit 3 on missing.
+        existing = get_customer(conn, customer_id)
+        if existing is None:
+            render_error(
+                f"Customer not found: {customer_id}",
+                _CORRECT_TAX_ID_NOT_FOUND_HINT,
+            )
+            raise typer.Exit(code=3)
+
+        # 8. Confirmation gate (Destroy-tier symmetry — irreversible
+        # overwrite of operator-supplied PII).
+        if not yes:
+            try:
+                typer.confirm(
+                    f"Replace tax-ID for {existing.id} ({existing.name}). "
+                    "The previous value will be overwritten and cannot be "
+                    "recovered. Continue?",
+                    default=False,
+                    abort=True,
+                    err=True,
+                )
+            except click.exceptions.Abort:
+                stderr_console().print("Aborted.")
+                if not sys.stdin.isatty():
+                    stderr_console().print(
+                        "Hint: stdin is not a TTY — pass --yes to confirm "
+                        "scripted correction under nohup / systemd / docker exec."
+                    )
+                raise typer.Exit(code=2) from None
+
+        # 9. Helper dispatch.
+        try:
+            result = correct_customer_tax_id(
+                conn,
+                customer_id,
+                new_tax_id_encrypted=new_encrypted,
+                new_tax_id_kind=new_kind,
+                reason=reason,
+                actor=get_cli_actor(),
+            )
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+
+    if result is None:
+        # Customer was tombstoned between the pre-fetch and the helper
+        # transaction — vanishingly rare under the single-writer CLI but
+        # still surface it as a not-found rather than a stale success.
+        render_error(
+            f"Customer not found: {customer_id}",
+            _CORRECT_TAX_ID_NOT_FOUND_HINT,
+        )
+        raise typer.Exit(code=3)
+
+    # 10. PII-austere INFO log — never the new tax-ID value.
+    _logger.info(
+        "Tax-ID corrected | id=%s | old_kind=%s | new_kind=%s",
+        result.customer.id,
+        result.old_tax_id_kind,
+        result.new_tax_id_kind,
+    )
+
+    suffix = (
+        f"kind {result.old_tax_id_kind}→{result.new_tax_id_kind}"
+        if result.old_tax_id_kind != result.new_tax_id_kind
+        else f"kind {result.new_tax_id_kind}"
+    )
+    render_confirmation(
+        f"Tax-ID corrected: {result.customer.id} ({result.customer.name}) — {suffix}"
+    )
 
 
 # ---------------------------------------------------------------------------

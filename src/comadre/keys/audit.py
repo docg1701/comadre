@@ -18,7 +18,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 _FORBIDDEN_DETAIL_KEYS = frozenset(
@@ -42,6 +42,35 @@ def _assert_no_forbidden_keys(payload: Mapping[str, object]) -> None:
             )
         if isinstance(value, Mapping):
             _assert_no_forbidden_keys(value)
+
+
+def _filter_forbidden_value(value: object) -> object:
+    """Recurse into mappings and sequences, scrubbing forbidden keys."""
+    if isinstance(value, Mapping):
+        return filter_forbidden_keys(value)
+    # str / bytes are Sequences but never carry nested keys; explicit guard.
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_filter_forbidden_value(item) for item in value]
+    return value
+
+
+def filter_forbidden_keys(payload: Mapping[str, object]) -> dict[str, object]:
+    """Recursively strip any ``_FORBIDDEN_DETAIL_KEYS`` from ``payload``.
+
+    The audit-write path's ``_assert_no_forbidden_keys`` guarantees stored
+    rows cannot carry forbidden keys, so this filter is pure defense-in-depth
+    for read paths (Story 5.1 ``export-customer --include-audit``) — if a
+    corrupt or out-of-band INSERT ever sneaks a PII key through, the export
+    still won't echo it. Recurses into nested ``Mapping`` AND ``Sequence``
+    values so a forbidden key buried in ``[{"name": "..."}]`` is also
+    stripped. Returns a fresh dict; never mutates the input.
+    """
+    out: dict[str, object] = {}
+    for key, value in payload.items():
+        if key.lower() in _FORBIDDEN_DETAIL_KEYS:
+            continue
+        out[key] = _filter_forbidden_value(value)
+    return out
 
 
 def _utcnow_iso() -> str:

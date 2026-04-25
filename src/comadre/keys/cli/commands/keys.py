@@ -962,6 +962,11 @@ def rotate_key_cmd(
             'Example: "Pq_abc12".'
         ),
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Skip the interactive confirmation prompt (for scripting).",
+    ),
 ) -> None:
     """Rotate an API key — same key_<id>, fresh plaintext, old hash dies.
 
@@ -1004,6 +1009,28 @@ def rotate_key_cmd(
                 _ROTATE_KEY_REVOKED_HINT,
             )
             raise typer.Exit(code=3)
+
+        # 4b. Confirmation gate — symmetry with revoke-key / delete-customer
+        # / rotate-encryption-key. Rotation invalidates the old plaintext
+        # immediately, so scripted callers MUST pass --yes; interactive
+        # operators get the prompt.
+        if not yes:
+            try:
+                typer.confirm(
+                    f"This will rotate key {key_row.key_prefix} — the old "
+                    f"plaintext stops working immediately. Continue?",
+                    default=False,
+                    abort=True,
+                    err=True,
+                )
+            except click.exceptions.Abort:
+                stderr_console().print("Aborted.")
+                if not sys.stdin.isatty():
+                    stderr_console().print(
+                        "Hint: stdin is not a TTY — pass --yes to confirm "
+                        "scripted rotation under nohup / systemd / docker exec."
+                    )
+                raise typer.Exit(code=2) from None
 
         # 5. Generate the new plaintext.
         new_plaintext = generate_api_key_plaintext()

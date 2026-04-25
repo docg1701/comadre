@@ -1,8 +1,9 @@
-"""End-to-end CLI tests for ``comadre-keys rotate-key`` (Story 1.6).
+"""End-to-end CLI tests for ``comadre-keys rotate-key`` (Story 1.6 / 5.1).
 
 Lean by design (test-suite review 2026-04-25): one happy path that
 proves the security-critical contract (new plaintext, new hash, old
-plaintext no longer matches), one already-revoked / not-found.
+plaintext no longer matches), one already-revoked / not-found, and
+the Story 5.1 ``--yes`` confirmation gate (closed-stdin abort hint).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ def test_rotate_key_yes_flag_emits_new_plaintext_and_invalidates_old(
     _, kid, prefix = seed_by_prefix(env["db_path"])
     old_hash = "a" * 64
 
-    result = runner.invoke(app, ["rotate-key", prefix])
+    result = runner.invoke(app, ["rotate-key", prefix, "--yes"])
     stdout, _ = buffers()
     assert result.exit_code == 0
     new_plaintext_match = re.search(r"cmdr_live_[A-Za-z0-9_-]{43}", stdout)
@@ -45,9 +46,22 @@ def test_rotate_key_yes_flag_emits_new_plaintext_and_invalidates_old(
 
 def test_rotate_key_revoked_or_missing_exits_3(env: dict[str, str]) -> None:
     _, _, prefix = seed_by_prefix(env["db_path"], status="revoked")
-    result = runner.invoke(app, ["rotate-key", prefix])
+    result = runner.invoke(app, ["rotate-key", prefix, "--yes"])
     assert result.exit_code == 3
     clear_buffers()
 
-    result = runner.invoke(app, ["rotate-key", "NOPENOPE"])
+    result = runner.invoke(app, ["rotate-key", "NOPENOPE", "--yes"])
     assert result.exit_code == 3
+
+
+def test_rotate_key_without_yes_aborts_with_scripting_hint(
+    env: dict[str, str],
+) -> None:
+    """Story 5.1 Gap 5: closed-stdin invocation without --yes aborts at
+    the confirmation gate, exits 2, and emits the scripting hint."""
+    _, _, prefix = seed_by_prefix(env["db_path"])
+    result = runner.invoke(app, ["rotate-key", prefix], input="")
+    _, stderr = buffers()
+    assert result.exit_code == 2
+    assert "Aborted." in stderr
+    assert "--yes" in stderr

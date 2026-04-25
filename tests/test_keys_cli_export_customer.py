@@ -73,3 +73,36 @@ def test_export_customer_not_found_exits_3(env: dict[str, str]) -> None:
     result = runner.invoke(app, ["export-customer", "cust_00000000000000000000000000"])
     assert result.exit_code == 3
     clear_buffers()
+
+
+def test_export_customer_default_omits_audit_events(env: dict[str, str]) -> None:
+    """Story 5.1 Gap 6: without --include-audit, the envelope has no
+    ``audit_events`` key (LGPD minimum-necessary default)."""
+    cid = _seed_with_real_tax_id(env)
+    result = runner.invoke(app, ["export-customer", cid])
+    stdout, _ = buffers()
+    assert result.exit_code == 0
+    parsed = json.loads(stdout)
+    assert "audit_events" not in parsed
+
+
+def test_export_customer_with_include_audit_emits_filtered_events(
+    env: dict[str, str],
+) -> None:
+    """Story 5.1 Gap 6: with --include-audit, ``audit_events`` is a non-empty
+    list whose entries each carry ``action``, ``actor``, ``occurred_at``;
+    every ``details`` payload (if present) passes the forbidden-keys filter."""
+    cid = _seed_with_real_tax_id(env)
+    result = runner.invoke(app, ["export-customer", cid, "--include-audit"])
+    stdout, _ = buffers()
+    assert result.exit_code == 0
+    parsed = json.loads(stdout)
+    assert "audit_events" in parsed
+    events = parsed["audit_events"]
+    assert isinstance(events, list)
+    assert len(events) >= 1  # at least the create_customer row
+    for event in events:
+        assert {"action", "actor", "occurred_at"}.issubset(event.keys())
+        details = event.get("details", {})
+        forbidden = {"cpf", "cnpj", "tax_id", "name", "email", "key_plaintext"}
+        assert not (forbidden & set(details.keys()))

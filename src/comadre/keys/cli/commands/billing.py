@@ -20,12 +20,17 @@ from __future__ import annotations
 
 import calendar
 import contextlib
+import math
 import re
 import sqlite3
 from collections.abc import Iterable
 from datetime import date, timedelta
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
 import typer
+from dateutil.relativedelta import (  # type: ignore[import-untyped]
+    relativedelta,
+)
 
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import first_charge_date
@@ -48,10 +53,12 @@ from comadre.keys.cli.output import (
 )
 from comadre.keys.db import (
     _apply_migrations,
+    earliest_audit_date,
     get_connection,
     list_api_keys,
     mark_key_paid,
     reactivate_key,
+    reconstruct_key_state_at,
     suspend_key,
 )
 from comadre.keys.models import ApiKeyListRow, RevenueReport
@@ -68,6 +75,16 @@ _MARK_PAID_UNTIL_HINT = (
     "Example: --until 2026-06-05. Alternate ISO forms (e.g. 20260605) are "
     "accepted and normalized."
 )
+_MARK_PAID_MUTEX_HINT = (
+    "Provide exactly one of --until <ISO date> OR --months <N>, not both."
+)
+_MARK_PAID_NEITHER_HINT = "Provide one of --until <ISO date> or --months <N> (1..36)."
+_MARK_PAID_MONTHS_RANGE_HINT = "Months must be an integer between 1 and 36."
+_MARK_PAID_PRICE_RANGE_HINT = (
+    "Price must be > 0.00 and ≤ 99999.99 (rounded to two decimals)."
+)
+_MARK_PAID_MONTHS_MAX = 36
+_MARK_PAID_PRICE_MAX = Decimal("99999.99")
 _MARK_PAID_REVOKED_HINT = (
     "Revoked keys are terminal. Issue a new key via issue-key if the customer returns."
 )
@@ -116,6 +133,36 @@ def _parse_until(raw: str) -> date:
         raise typer.Exit(code=2) from None
 
 
+def _quantize_price(raw: float) -> Decimal:
+    """Validate + round a --price-monthly input to two decimals (banker's
+    rounding). Exits 2 on out-of-range / NaN / inf input."""
+    if math.isnan(raw) or math.isinf(raw):
+        render_error(
+            "Usage error: --price-monthly must be a finite number",
+            _MARK_PAID_PRICE_RANGE_HINT,
+        )
+        raise typer.Exit(code=2)
+    try:
+        # Round-trip via str() so the operator's "99.90" doesn't surface as
+        # 99.9000000004 from float repr.
+        quantized = Decimal(str(raw)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_EVEN
+        )
+    except InvalidOperation:
+        render_error(
+            "Usage error: --price-monthly must be a finite number",
+            _MARK_PAID_PRICE_RANGE_HINT,
+        )
+        raise typer.Exit(code=2) from None
+    if quantized <= Decimal("0.00") or quantized > _MARK_PAID_PRICE_MAX:
+        render_error(
+            "Usage error: --price-monthly out of range",
+            _MARK_PAID_PRICE_RANGE_HINT,
+        )
+        raise typer.Exit(code=2)
+    return quantized
+
+
 @app.command("mark-paid")
 def mark_paid_cmd(
     key_prefix: str = typer.Argument(
@@ -126,23 +173,65 @@ def mark_paid_cmd(
             'Example: "Pq_abc12".'
         ),
     ),
-    until: str = typer.Option(
-        ...,
+    until: str | None = typer.Option(
+        None,
         "--until",
         help=(
             "Extend paid_until to this ISO date (YYYY-MM-DD). Past dates "
-            "are accepted (retroactive logging). "
-            "Example: --until 2026-06-05."
+            "are accepted (retroactive logging). Mutually exclusive with "
+            "--months. Example: --until 2026-06-05."
+        ),
+    ),
+    months: int | None = typer.Option(
+        None,
+        "--months",
+        min=1,
+        max=_MARK_PAID_MONTHS_MAX,
+        help=(
+            "Extend paid_until by N calendar months (1..36). When the key "
+            "is currently paid, anchor = current paid_until; when expired "
+            "or unpaid, anchor = today. Mutually exclusive with --until. "
+            "Example: --months 2."
+        ),
+    ),
+    price_monthly: float | None = typer.Option(
+        None,
+        "--price-monthly",
+        help=(
+            "Override the stored monthly price (BRL, 2 decimals, "
+            "0.00 < x <= 99999.99). Atomic with the paid_until write. "
+            "Example: --price-monthly 99.90."
         ),
     ),
 ) -> None:
     """Confirm payment for a key and extend its validity (auto-reactivates).
 
     Example: comadre-keys mark-paid Pq_abc12 --until 2026-06-05
+             comadre-keys mark-paid Pq_abc12 --months 2 --price-monthly 99.90
     """
-    # 1. --until shape + canonicalization (exit 2).
-    until_date = _parse_until(until)
-    until_iso = until_date.isoformat()
+    # 1. Mutex + neither-flag check (exit 2).
+    if until is not None and months is not None:
+        render_error(
+            "Usage error: --until and --months are mutually exclusive",
+            _MARK_PAID_MUTEX_HINT,
+        )
+        raise typer.Exit(code=2)
+    if until is None and months is None:
+        render_error(
+            "Usage error: --until or --months is required",
+            _MARK_PAID_NEITHER_HINT,
+        )
+        raise typer.Exit(code=2)
+
+    # 1b. Pre-validate price (cheapest mistake, no DB needed).
+    price_decimal: Decimal | None = None
+    if price_monthly is not None:
+        price_decimal = _quantize_price(price_monthly)
+
+    # 1c. Pre-canonicalize --until (only when supplied).
+    until_iso_from_flag: str | None = None
+    if until is not None:
+        until_iso_from_flag = _parse_until(until).isoformat()
 
     # 2. Settings + TZ (exit 6).
     loaded = load_settings_and_tz()
@@ -176,6 +265,29 @@ def mark_paid_cmd(
             )
             return
 
+        # 5b. Resolve --months against current key state. Anchor =
+        # ``paid_until`` if it is today-or-later (extend the existing
+        # window), else ``today`` (start a new window from now). The
+        # complimentary short-circuit above ensures we are on a billing key.
+        if months is not None:
+            current_paid_until: date | None = None
+            if key_row.paid_until:
+                try:
+                    current_paid_until = date.fromisoformat(key_row.paid_until)
+                except ValueError:
+                    current_paid_until = None
+            anchor = (
+                current_paid_until
+                if current_paid_until is not None and current_paid_until >= today
+                else today
+            )
+            until_iso = (anchor + relativedelta(months=months)).isoformat()
+            audit_extra: dict[str, object] = {"mode": "months", "months": months}
+        else:
+            assert until_iso_from_flag is not None  # CLI-validated above
+            until_iso = until_iso_from_flag
+            audit_extra = {"mode": "until"}
+
         # 6. Helper dispatch.
         try:
             result = mark_key_paid(
@@ -184,6 +296,10 @@ def mark_paid_cmd(
                 paid_until=until_iso,
                 actor=get_cli_actor(),
                 today=today,
+                new_price_monthly=(
+                    float(price_decimal) if price_decimal is not None else None
+                ),
+                audit_extra=audit_extra,
             )
         except ValueError as exc:
             msg = str(exc)
@@ -221,17 +337,26 @@ def mark_paid_cmd(
     # 7. Structured INFO log — no customer name / email / CPF / CNPJ / plaintext.
     with contextlib.suppress(Exception):
         _logger.info(
-            "Marked paid | id=%s | paid_until=%s | reactivated=%s",
+            "Marked paid | id=%s | paid_until=%s | reactivated=%s | mode=%s",
             result.key.id,
             until_iso,
             result.reactivated,
+            audit_extra["mode"],
         )
 
-    # 8. ConfirmationLine (UX-DR7). U+2192 arrow, optional "(reactivated)".
+    # 8. ConfirmationLine (UX-DR7). U+2192 arrow, optional "(reactivated)",
+    # plus extras describing months / price changes when those flags fired.
+    extra_parts: list[str] = []
+    if months is not None:
+        extra_parts.append(f"extended {months} month{'s' if months != 1 else ''}")
+    if price_decimal is not None:
+        extra_parts.append(f"price R$ {price_decimal:.2f}/mo")
+    extras = f" ({', '.join(extra_parts)})" if extra_parts else ""
     suffix = " (reactivated)" if result.reactivated else ""
     render_confirmation(
         f"Marked paid: {result.key.key_prefix} "
-        f"({result.key.customer_name}) \u2192 paid until {until_iso}{suffix}"
+        f"({result.key.customer_name}) \u2192 paid until {until_iso}"
+        f"{extras}{suffix}"
     )
 
 
@@ -731,15 +856,27 @@ def revenue_cmd(
             "Example: --month 2026-05 --format json."
         ),
     ),
+    as_of: str | None = typer.Option(
+        None,
+        "--as-of",
+        help=(
+            "Replay portfolio state as it would have looked on this ISO "
+            "date (YYYY-MM-DD), then bucketize against --month. Walks the "
+            "audit log to reconstruct status / paid_until / price_monthly "
+            "per key. Must be in [earliest_audit_row_date, today]. "
+            "Story 5.1 Gap 8. Example: --as-of 2026-04-15."
+        ),
+    ),
 ) -> None:
     """Monthly revenue report: paid / pending / suspended / complimentary.
 
     Shows live portfolio state filtered by the reporting month's
-    ``paid_until`` coverage. For strict forensic "state as of Day 06 of
-    that month", an ``--as-of`` replay is a future story; this command
-    reports what is true now, filtered by the reporting calendar month.
+    ``paid_until`` coverage. With ``--as-of YYYY-MM-DD``, replays the audit
+    log to reconstruct the state of every key on that date and bucketizes
+    that historical snapshot against ``--month`` (Story 5.1 Gap 8).
 
     Example: comadre-keys revenue --month current
+             comadre-keys revenue --month 2026-04 --as-of 2026-04-15
     """
     # 1. --format membership.
     if format not in LIST_FORMAT_CHOICES:
@@ -753,6 +890,25 @@ def revenue_cmd(
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
     today = _clock.resolve_today_in_tz(billing_tz)
+
+    # 2b. --as-of shape + bounds (exit 2; pre-DB except for the lower-bound
+    # check which needs the audit-log MIN — done after the DB opens).
+    as_of_date: date | None = None
+    if as_of is not None:
+        try:
+            as_of_date = date.fromisoformat(as_of.strip())
+        except ValueError:
+            render_error(
+                "Usage error: --as-of must be an ISO date (YYYY-MM-DD)",
+                "Example: --as-of 2026-04-15.",
+            )
+            raise typer.Exit(code=2) from None
+        if as_of_date > today:
+            render_error(
+                "Usage error: --as-of cannot be in the future",
+                f"Today (in billing TZ) is {today.isoformat()}.",
+            )
+            raise typer.Exit(code=2)
 
     # 3. --month shape + bounds (exit 2).
     year, month_int = _parse_month(month, today=today)
@@ -792,7 +948,26 @@ def revenue_cmd(
             raise typer.Exit(code=5) from None
 
         # 6. Enumerate the whole row set; bucketize in Python.
-        all_rows = list_api_keys(conn)
+        if as_of_date is not None:
+            # Lower-bound check needs the audit MIN — do it now that the
+            # connection is open. Empty audit_log + --as-of supplied is an
+            # operator error (no history to replay).
+            earliest = earliest_audit_date(conn)
+            if earliest is None:
+                render_error(
+                    "Usage error: --as-of has nothing to replay",
+                    "The audit log is empty.",
+                )
+                raise typer.Exit(code=2)
+            if as_of_date < earliest:
+                render_error(
+                    "Usage error: --as-of predates the audit log",
+                    f"Earliest audit row: {earliest.isoformat()}.",
+                )
+                raise typer.Exit(code=2)
+            all_rows = reconstruct_key_state_at(conn, as_of_date)
+        else:
+            all_rows = list_api_keys(conn)
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()

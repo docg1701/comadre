@@ -104,3 +104,14 @@ development_status:
   4-5g-ci-sql-injection-static-analysis-bandit: done
   4-6-lgpd-documentation-breach-runbook: done
   epic-4-retrospective: done
+
+  # ------------------------------------------------------------------
+  # Epic 5: Operator UX Completion Pass
+  # Reconciles PRD↔story-spec drift surfaced by the Epic 4 retrospective.
+  # CLI surface only — zero schema changes, zero auth-path changes,
+  # zero ansible changes. See _bmad-output/implementation-artifacts/
+  # 5-1-operator-ux-completion-pass.md.
+  # ------------------------------------------------------------------
+  epic-5: in-progress
+  5-1-operator-ux-completion-pass: in-progress
+  epic-5-retrospective: optional
