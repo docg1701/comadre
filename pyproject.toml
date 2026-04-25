@@ -72,6 +72,6 @@ testpaths = ["tests"]
 addopts = "-m 'not non_regression'"
 markers = [
     "slow: integration tests requiring model files",
-    "non_regression: integration tests that exercise the prod docker-compose stack",
+    "non_regression: CI non-regression suite (PRD Non-Regression Contract coverage; some tests spawn docker, others use ASGI TestClient)",
 ]
 

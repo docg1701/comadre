@@ -16,6 +16,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -47,6 +48,20 @@ def _utcnow_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_ACTOR_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_actor(username: str) -> str:
+    """Replace any character outside [A-Za-z0-9._-] with `?` for log safety.
+
+    Defends against utmp poisoning that would otherwise inject control bytes
+    or audit-log-row separators (`|`, newline) into the actor column. Cap at
+    64 chars so a pathological username cannot bloat audit-row sizes.
+    """
+    cleaned = _ACTOR_SAFE_RE.sub("?", username)[:64]
+    return cleaned
+
+
 def get_cli_actor() -> str:
     """Return `cli:<username>` with fallbacks to getpass then `cli:unknown`."""
     try:
@@ -58,7 +73,7 @@ def get_cli_actor() -> str:
             username = getpass.getuser()
         except (OSError, KeyError):
             username = ""
-    return f"cli:{username or 'unknown'}"
+    return f"cli:{_sanitize_actor(username) or 'unknown'}"
 
 
 def log_event(

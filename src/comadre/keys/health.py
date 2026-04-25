@@ -624,8 +624,9 @@ def _check_auth_cache(status: AggregatedCacheStatus | None) -> HealthCheck:
         )
     hit_rate_pct = status.hit_rate * 100.0
     age_label = format_seconds_ago(status.snapshot_age_seconds)
+    replica_word = "replica" if status.replicas == 1 else "replicas"
     value = (
-        f"{status.replicas} replicas, {status.entries} entries, "
+        f"{status.replicas} {replica_word}, {status.entries} entries, "
         f"{hit_rate_pct:.1f}% hit rate, {age_label}"
     )
     return HealthCheck(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
 from pydantic import Field, HttpUrl, SecretStr, field_validator
@@ -189,6 +190,25 @@ class Settings(BaseSettings):
         except (ValueError, TypeError) as exc:
             raise ValueError(
                 "KEY_REGISTRY_ENCRYPTION_KEY must be a valid Fernet key"
+            ) from exc
+        return v
+
+    @field_validator("billing_timezone")
+    @classmethod
+    def _validate_iana_timezone(cls, v: str) -> str:
+        """Reject non-IANA timezone strings at config load time.
+
+        Without this, a typo like ``America/Sao-Paulo`` or ``BRT`` silently
+        desyncs the runtime BILLING_TIMEZONE from the cron's CRON_TZ — see
+        the CLAUDE.md gotcha. Failing fast at boot makes the misconfiguration
+        immediately operator-visible.
+        """
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"BILLING_TIMEZONE {v!r} is not a valid IANA timezone "
+                "(e.g. UTC, America/Sao_Paulo, Europe/Lisbon)"
             ) from exc
         return v
 

@@ -129,6 +129,30 @@ def create_customer(
     ),
 ) -> None:
     """Register a new customer with CPF/CNPJ validation and at-rest encryption."""
+    # 0. Reject NUL / control bytes in --name / --email and whitespace-only
+    # --name. CustomerCreate's pydantic validators catch many shape errors
+    # but accept embedded NUL bytes that SQLite stores but later greps and
+    # log aggregators mishandle. Whitespace-only names pass min_length but
+    # produce an opaque "Customer  " identity in audit logs.
+    if any(ord(ch) < 0x20 and ch != "\t" for ch in name):
+        render_error(
+            "Usage error: --name contains illegal control characters",
+            "Provide --name without NUL, newline, or ANSI-escape bytes.",
+        )
+        raise typer.Exit(code=2)
+    if not name.strip():
+        render_error(
+            "Usage error: --name must not be empty or whitespace-only",
+            "Provide a non-empty --name.",
+        )
+        raise typer.Exit(code=2)
+    if any(ord(ch) < 0x20 and ch != "\t" for ch in email):
+        render_error(
+            "Usage error: --email contains illegal control characters",
+            "Provide --email without NUL, newline, or ANSI-escape bytes.",
+        )
+        raise typer.Exit(code=2)
+
     # 1. Mutex check for --cpf / --cnpj.
     if (cpf is None) == (cnpj is None):
         if cpf is not None:
@@ -771,6 +795,7 @@ def update_customer_cmd(
     # 3. Note shape check (if provided). Strip outer whitespace, reject
     # empty-after-strip, and reject NUL bytes (Story 1.1 deferred UX edge
     # picked up here — SQLite accepts NULs but they break later greps).
+    note_max = 1024
     if add_note is not None:
         if "\x00" in add_note:
             render_error(
@@ -788,11 +813,28 @@ def update_customer_cmd(
                 _UPDATE_CUSTOMER_NOTE_NEWLINE_HINT,
             )
             raise typer.Exit(code=2)
+        # Reject ANSI escape (\x1b) and other C0 controls except TAB. They
+        # forge terminal formatting on later render via Rich/journalctl/etc.
+        if any(ord(ch) < 0x20 and ch not in ("\t", "\n", "\r") for ch in add_note):
+            render_error(
+                "Usage error: --add-note contains illegal control characters",
+                (
+                    "Note text must not contain ANSI escape (\\x1b) or "
+                    "other C0 control bytes."
+                ),
+            )
+            raise typer.Exit(code=2)
         stripped_note = add_note.strip()
         if not stripped_note:
             render_error(
                 "Usage error: --add-note must be non-empty",
                 _UPDATE_CUSTOMER_NOTE_EMPTY_HINT,
+            )
+            raise typer.Exit(code=2)
+        if len(stripped_note) > note_max:
+            render_error(
+                f"Usage error: --add-note exceeds {note_max} characters",
+                f"Trim --add-note to {note_max} chars or fewer.",
             )
             raise typer.Exit(code=2)
         add_note = stripped_note

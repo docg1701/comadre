@@ -258,10 +258,8 @@ class TestRotateEncryptionKeyHappyPath:
         )
         stdout, _ = _buffers()
         assert result.exit_code == 0
-        assert (
-            "This will re-encrypt 2 active customer tax ID(s) with the "
-            "new key. Continue?"
-        ) in result.stderr
+        assert "This will re-encrypt 2 active customer tax ID(s) in " in result.stderr
+        assert "with the new key. Continue?" in result.stderr
         assert f"Update KEY_REGISTRY_ENCRYPTION_KEY in .env to: {new_key}" in stdout
 
     def test_interactive_n_aborts_without_mutation(self, env: dict[str, str]) -> None:
@@ -442,11 +440,9 @@ class TestRotateEncryptionKeyTombstones:
         )
         _buffers()
         assert result.exit_code == 0
-        # Prompt quotes the active-only count.
-        assert (
-            "This will re-encrypt 2 active customer tax ID(s) with the new key."
-            in result.stderr
-        )
+        # Prompt quotes the active-only count + the DB path.
+        assert "This will re-encrypt 2 active customer tax ID(s) in " in result.stderr
+        assert "with the new key" in result.stderr
         # Tombstoned row unchanged.
         post = _read_ciphertexts(env["db_path"])
         assert post[tomb_cid] == b""

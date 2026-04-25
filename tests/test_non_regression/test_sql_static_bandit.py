@@ -1,6 +1,6 @@
 """SQL-injection non-regression — bandit B608 static check (Story 4.5g).
 
-Subprocess-invokes ``bandit -r src/comadre/keys/ -t B608 -ll -c <sentinel> -f
+Subprocess-invokes ``bandit -r src/comadre/ -t B608 -ll -c <sentinel> -f
 json -q`` and asserts the ``results`` list is empty. Scoped to the bandit
 ``hardcoded_sql_expressions`` (B608) plugin specifically — other bandit
 plugins (B101 assert_used, B404 subprocess-module-use, etc.) are explicitly
@@ -26,7 +26,7 @@ test interpreter's bandit module directly. This succeeds whenever the
 shim is not on ``$PATH``. If bandit cannot be imported at all, the helper
 fails loudly under CI and skips on developer laptops.
 
-The four currently-legitimate B608 sites under ``src/comadre/keys/db.py``
+The currently-legitimate B608 sites under ``src/comadre/keys/db.py``
 (column-allowlist f-string splicing in UPDATE/SELECT/IN-clause construction)
 carry inline ``# nosec B608  # <reason>`` two-comment annotations — bandit
 reads only test-ids after ``# nosec`` until the next ``#``, so the reason
@@ -70,7 +70,7 @@ def _find_project_root() -> Path:
 
 
 _PROJECT_ROOT: Path = _find_project_root()
-_SRC_KEYS_ROOT: Path = _PROJECT_ROOT / "src" / "comadre" / "keys"
+_SRC_KEYS_ROOT: Path = _PROJECT_ROOT / "src" / "comadre"
 _FIXTURES_ROOT: Path = (
     Path(__file__).resolve().parent / "fixtures" / "sql_static_bandit"
 )
@@ -231,7 +231,9 @@ def _run_bandit(paths: list[Path]) -> list[_Finding]:
 @pytest.mark.non_regression
 def test_src_comadre_keys_has_no_b608_findings() -> None:
     """Non-regression: bandit B608 (hardcoded_sql_expressions) reports zero
-    findings against ``src/comadre/keys/``.
+    findings across all of ``src/comadre/`` (widened from ``src/comadre/keys/``
+    so any future SQL surface added outside the ``keys/`` subtree is also
+    covered).
 
     Controlled-input column/identifier f-string splicing sites are
     annotated ``# nosec B608  # <reason>`` (two-comment form,
@@ -242,7 +244,7 @@ def test_src_comadre_keys_has_no_b608_findings() -> None:
     findings = _run_bandit([_SRC_KEYS_ROOT])
     assert not findings, (
         "bandit B608 (hardcoded_sql_expressions) reported findings in "
-        "src/comadre/keys/.\n"
+        "src/comadre/.\n"
         "This regression breaks the PRD Non-Regression Contract row "
         "'parameterized queries exclusively' (PRD §Technical Constraints "
         "line 192, §Continuity with Existing Hardening line 703). Use a "

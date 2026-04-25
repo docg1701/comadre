@@ -546,7 +546,12 @@ class TestZoneInfoFailureFailsClosed:
         try:
             _apply_migrations(conn)
             plaintext, _kid, _cid = _seed_key(conn)
-            settings = _settings(billing_timezone="Atlantis/Lost_City")
+            # The IANA validator now blocks bogus timezones at Settings()
+            # construction. This defense-in-depth test still runs the auth
+            # path with a bogus value (e.g. monkeypatched after boot) — set
+            # the field directly via __setattr__ to bypass the validator.
+            settings = _settings()
+            object.__setattr__(settings, "billing_timezone", "Atlantis/Lost_City")
             cache = AuthCache()
             request = _make_request(conn, cache, settings)
 

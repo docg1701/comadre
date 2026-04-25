@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import math
 import sqlite3
+import sys
 from datetime import UTC, date, datetime
 from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1216,8 +1217,16 @@ def revoke_key_cmd(
             except click.exceptions.Abort:
                 # Click writes nothing when we catch before escape — emit our
                 # own terminal message and remap exit 1 (Click default) to
-                # exit 2 (usage tier per UX-DR10).
+                # exit 2 (usage tier per UX-DR10). When stdin is not a TTY,
+                # add a hint pointing operators toward --yes so scripted
+                # invocations under nohup / systemd / docker exec do not
+                # die with a bare "Aborted." with no actionable signal.
                 stderr_console().print("Aborted.")
+                if not sys.stdin.isatty():
+                    stderr_console().print(
+                        "Hint: stdin is not a TTY — pass --yes to confirm "
+                        "scripted revocation under nohup / systemd / docker exec."
+                    )
                 raise typer.Exit(code=2) from None
 
         # 6. Helper call.

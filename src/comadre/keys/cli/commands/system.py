@@ -514,13 +514,15 @@ def rotate_encryption_key_cmd(
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from exc
 
-        # 5. Confirmation gate (UX-DR11).
+        # 5. Confirmation gate (UX-DR11). Identifies the target DB path so
+        # operators running staging + prod registries cannot misdirect.
         if not yes:
             try:
                 typer.confirm(
                     (
                         f"This will re-encrypt {pre_count} active customer "
-                        f"tax ID(s) with the new key. Continue?"
+                        f"tax ID(s) in {settings.key_registry_db_path} "
+                        f"with the new key. Continue?"
                     ),
                     default=False,
                     abort=True,

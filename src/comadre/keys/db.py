@@ -12,7 +12,6 @@ EXISTS` in the v001 SQL — that SQL runs only on fresh DBs).
 
 from __future__ import annotations
 
-import contextlib
 import importlib.resources
 import sqlite3
 import stat
@@ -290,9 +289,22 @@ def _touch_auth_cache_sentinel(conn: sqlite3.Connection) -> None:
     if row is None or not row[0]:
         return
     sentinel = Path(row[0] + ".invalidate")
-    with contextlib.suppress(OSError):
+    try:
         sentinel.touch(exist_ok=True)
         _chmod_0600(sentinel)
+    except OSError as exc:
+        # The DB commit is authoritative; cache staleness falls back to
+        # AuthCache's 60s TTL in this window. WARN so operators with disk-
+        # full / EPERM / read-only-FS scenarios see why cross-process
+        # invalidation has degraded to TTL-only.
+        from comadre.logging import get_logger
+
+        get_logger("keys.db").warning(
+            "auth-cache sentinel touch failed (%s: %s); cross-process "
+            "invalidation degraded to AuthCache 60s TTL until resolved",
+            type(exc).__name__,
+            exc,
+        )
 
 
 def get_connection(path: str | Path) -> sqlite3.Connection:
@@ -306,6 +318,8 @@ def get_connection(path: str | Path) -> sqlite3.Connection:
       write lock instead of failing immediately with SQLITE_BUSY.
     - `row_factory = sqlite3.Row` so callers can use name-based access.
     """
+    from comadre.logging import get_logger
+
     db_path = Path(path)
     parent = db_path.parent
     if not parent.exists():
@@ -313,8 +327,14 @@ def get_connection(path: str | Path) -> sqlite3.Connection:
     else:
         # Best-effort tightening on an existing parent that may have been
         # created with broader defaults. Ignored on bind mounts / shared dirs.
-        with contextlib.suppress(PermissionError):
+        try:
             parent.chmod(0o700)
+        except PermissionError:
+            get_logger("keys.db").warning(
+                "could not chmod 0700 on registry parent dir %s "
+                "(insufficient privileges); the file itself is still 0600",
+                parent,
+            )
 
     conn = sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
     try:
@@ -329,6 +349,11 @@ def get_connection(path: str | Path) -> sqlite3.Connection:
         conn.close()
         raise
     return conn
+
+
+def apply_migrations(conn: sqlite3.Connection) -> None:
+    """Apply pending migrations. Idempotent. Public alias of `_apply_migrations`."""
+    _apply_migrations(conn)
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -795,29 +820,31 @@ def list_api_keys(
     NULL and ``paid_until <= ?`` rows (NULL treated as "not yet billed"
     so the operator's "who owes me?" query catches trial-window keys).
     """
-    predicates: list[str] = []
-    params: list[object] = []
-    if status is not None:
-        predicates.append("k.status = ?")
-        params.append(status)
-    if billing_mode is not None:
-        predicates.append("k.billing_mode = ?")
-        params.append(billing_mode)
-    if customer_id is not None:
-        predicates.append("k.customer_id = ?")
-        params.append(customer_id)
-    if paid_until_lte is not None:
-        predicates.append("(k.paid_until IS NULL OR k.paid_until <= ?)")
-        params.append(paid_until_lte)
-    where_clause = ("WHERE " + " AND ".join(predicates)) if predicates else ""
-    sql = (
+    # WHERE 1=1 + AND-appended predicates removes the f-string SQL assembly
+    # entirely (defensive: a future contributor cannot accidentally splice
+    # operator input via the where_clause concatenation pattern).
+    sql_parts: list[str] = [
         "SELECT k.id, k.customer_id, c.name AS customer_name, "
         "k.key_prefix, k.status, k.billing_mode, k.rate_limit_rpm, "
         "k.price_monthly, k.paid_until, k.created_at, k.last_used_at, k.notes "
         "FROM api_key AS k JOIN customer AS c ON c.id = k.customer_id "
-        f"{where_clause} "  # nosec B608  # where_clause is assembled from a hardcoded predicate-allowlist ("k.status = ?", "k.billing_mode = ?", ...); every value binds via ?
-        "ORDER BY k.created_at ASC"
-    )
+        "WHERE 1=1"
+    ]
+    params: list[object] = []
+    if status is not None:
+        sql_parts.append(" AND k.status = ?")
+        params.append(status)
+    if billing_mode is not None:
+        sql_parts.append(" AND k.billing_mode = ?")
+        params.append(billing_mode)
+    if customer_id is not None:
+        sql_parts.append(" AND k.customer_id = ?")
+        params.append(customer_id)
+    if paid_until_lte is not None:
+        sql_parts.append(" AND (k.paid_until IS NULL OR k.paid_until <= ?)")
+        params.append(paid_until_lte)
+    sql_parts.append(" ORDER BY k.created_at ASC")
+    sql = "".join(sql_parts)
     cursor = conn.execute(sql, params)
     rows: list[ApiKeyListRow] = []
     for row in cursor:

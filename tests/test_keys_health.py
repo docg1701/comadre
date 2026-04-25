@@ -850,7 +850,8 @@ class TestAuthCacheCheck:
             conn.close()
         check = _check_by_label(report, "Auth cache")
         assert check.severity == "ok"
-        assert "1 replicas" in check.value
+        assert "1 replica," in check.value
+        assert "1 replicas" not in check.value  # plural correct at N=1
         assert "%" in check.value  # hit rate rendered
 
 

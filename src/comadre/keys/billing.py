@@ -35,11 +35,23 @@ class ManualBillingProvider(BillingProvider):
     def is_payment_current(self, key: ApiKeyRecord, *, today: date) -> bool:
         if key.billing_mode == "complimentary":
             return True
+        if key.billing_mode == "automated":
+            # No PSP adapter exists in 2.0.0; an `automated` row was either
+            # planted by a future-version write or by direct SQL edit. Refuse
+            # rather than silently treating as `manual` — the manual paid_until
+            # field is meaningless for automated billing.
+            raise ValueError(
+                "billing_mode='automated' is not supported in 2.0.0 "
+                "(no PSP adapter); use 'manual' or 'complimentary'."
+            )
         if key.paid_until is None:
             # Never marked paid — trial window. Story 2.1's auth path
             # treats this as allow-while-active (SLA). Story 3.3's sweep
             # won't suspend it because NULL < today is NULL, not true.
             return False
+        # Malformed paid_until raises ``ValueError``; the auth path catches
+        # it, logs ERROR, and fails closed via ``ApiKeySuspendedError`` —
+        # see ``comadre.keys.auth.verify_api_key_registry``.
         return date.fromisoformat(key.paid_until) >= today
 
     def on_key_issued(self, key: ApiKeyRecord) -> None:

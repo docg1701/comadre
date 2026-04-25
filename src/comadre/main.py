@@ -246,6 +246,25 @@ async def validation_error_handler(
     )
 
 
+_REFLECTION_MAX_LEN = 200
+
+
+def _sanitize_for_reflection(value: str) -> str:
+    """Strip control bytes and cap length before echoing into a JSON body.
+
+    The 404/405 handlers reflect the request method + path back to the caller
+    for diagnostic clarity. Without sanitisation, an attacker-controlled URL
+    with control bytes (CR, ANSI escape, NUL, other C0 controls) lands in
+    log-aggregator JSON fields and either misrenders or, on TTY-rendering
+    aggregators, forges terminal formatting. JSON-encoding makes the body
+    XSS-safe; this guard makes it log-aggregator-safe and operator-safe.
+    """
+    cleaned = "".join(ch for ch in value if ch == "\t" or ord(ch) >= 0x20)
+    if len(cleaned) > _REFLECTION_MAX_LEN:
+        cleaned = cleaned[:_REFLECTION_MAX_LEN] + "…"
+    return cleaned
+
+
 def _not_found_handler(request: Request, exc: Exception) -> JSONResponse:
     """Convert Starlette HTTPException(404) to our standard error format.
 
@@ -256,16 +275,17 @@ def _not_found_handler(request: Request, exc: Exception) -> JSONResponse:
     voice-not-found 404s are both "resource not found," distinguished by
     ``message`` and ``hint``.
     """
+    method = _sanitize_for_reflection(request.method)
+    path = _sanitize_for_reflection(request.url.path)
     return JSONResponse(
         status_code=404,
         content={
             "error": {
-                "message": f"Not found: {request.method} {request.url.path}",
+                "message": f"Not found: {method} {path}",
                 "type": "not_found_error",
                 "hint": (
                     "Check the URL. The Comadre API surface is /v1/audio/speech"
-                    " and /health. See docs/api-reference.md for the full"
-                    " endpoint list."
+                    " and /health."
                 ),
             }
         },
@@ -284,16 +304,15 @@ def _method_not_allowed_handler(request: Request, exc: Exception) -> JSONRespons
     exc_headers = getattr(exc, "headers", None)
     if isinstance(exc_headers, dict) and "Allow" in exc_headers:
         headers = {"Allow": exc_headers["Allow"]}
+    method = _sanitize_for_reflection(request.method)
+    path = _sanitize_for_reflection(request.url.path)
     return JSONResponse(
         status_code=405,
         content={
             "error": {
-                "message": f"Method {request.method} not allowed on {request.url.path}",
+                "message": f"Method {method} not allowed on {path}",
                 "type": "method_not_allowed_error",
-                "hint": (
-                    "Use POST for /v1/audio/speech and GET for /health."
-                    " See docs/api-reference.md for the full method list."
-                ),
+                "hint": "Use POST for /v1/audio/speech and GET for /health.",
             }
         },
         headers=headers,
