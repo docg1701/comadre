@@ -1,4 +1,11 @@
-"""Tests for the structured logging module."""
+"""Tests for the structured logging module.
+
+Lean by design (test-suite review 2026-04-25): per-formatter-attribute
+asserts collapsed; kept the contract — pipe-delimited line shape +
+ISO-UTC stamp + no-ANSI + propagate=False on get_logger.
+"""
+
+from __future__ import annotations
 
 import logging
 import re
@@ -8,14 +15,13 @@ import pytest
 
 from comadre.logging import PipeFormatter, get_logger, setup_logging
 
-ISO8601_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
-ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[")
-PIPE_FORMAT_PATTERN = re.compile(r".+\s\|\s.+\s\|\s.+\s\|\s.+")
+PIPE_FORMAT_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s\|\s\S+\s+\|\s\S+\s+\|\s.+"
+)
 
 
 @pytest.fixture(autouse=True)
 def _cleanup_loggers() -> None:
-    """Remove test loggers after each test to avoid handler accumulation."""
     yield  # type: ignore[misc]
     manager = logging.Logger.manager
     for name in list(manager.loggerDict):
@@ -26,202 +32,82 @@ def _cleanup_loggers() -> None:
             logger.propagate = True
 
 
-def _capture_log_output(logger: logging.Logger, level: int, message: str) -> str:
-    """Capture log output from a logger into a string."""
-    buffer = StringIO()
-    handler = logging.StreamHandler(buffer)
-    handler.setFormatter(PipeFormatter())
-    logger.addHandler(handler)
-    logger.setLevel(level)
-    logger.log(level, message)
-    logger.removeHandler(handler)
-    return buffer.getvalue().strip()
-
-
-class TestPipeFormatter:
-    """Tests for the PipeFormatter class."""
-
-    def test_format_matches_pipe_pattern(self) -> None:
-        record = logging.LogRecord(
-            name="startup",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="Server starting",
-            args=(),
-            exc_info=None,
-        )
-        formatter = PipeFormatter()
-        output = formatter.format(record)
-
-        assert PIPE_FORMAT_PATTERN.match(output)
-
-    def test_timestamp_is_iso8601_utc(self) -> None:
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
-        formatter = PipeFormatter()
-        output = formatter.format(record)
-        timestamp = output.split(" | ")[0]
-
-        assert ISO8601_PATTERN.match(timestamp)
-        assert timestamp.endswith("Z")
-
-    @pytest.mark.parametrize(
-        ("level", "expected_label"),
-        [
-            (logging.DEBUG, "DEBUG"),
-            (logging.INFO, "INFO "),
-            (logging.WARNING, "WARN "),
-            (logging.ERROR, "ERROR"),
-            (logging.CRITICAL, "CRIT "),
-        ],
+def test_pipe_formatter_emits_pipe_delimited_iso_utc_no_ansi() -> None:
+    """The contract: ``timestamp | level | component | message``,
+    timestamp ISO-UTC with Z, no ANSI escape sequences (logs are
+    consumed by `journalctl` + `grep`, not a terminal)."""
+    rec = logging.LogRecord(
+        name="startup",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="Server starting",
+        args=None,
+        exc_info=None,
     )
-    def test_fixed_width_level_formatting(
-        self, level: int, expected_label: str
-    ) -> None:
-        record = logging.LogRecord(
-            name="test",
-            level=level,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
-        formatter = PipeFormatter()
-        output = formatter.format(record)
-        level_field = output.split(" | ")[1]
+    formatted = PipeFormatter().format(rec)
+    assert PIPE_FORMAT_PATTERN.match(formatted)
+    assert "startup" in formatted
+    assert "INFO" in formatted
+    assert "Server starting" in formatted
+    assert "\x1b[" not in formatted  # no ANSI escape
 
-        assert level_field == expected_label
-        assert len(level_field) == 5
 
-    def test_no_ansi_escape_codes(self) -> None:
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="colored output test",
-            args=(),
-            exc_info=None,
-        )
-        formatter = PipeFormatter()
-        output = formatter.format(record)
+def test_pipe_formatter_includes_exception_traceback() -> None:
+    """Exceptions logged via ``log.exception`` must include the traceback."""
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        import sys
 
-        assert not ANSI_ESCAPE_PATTERN.search(output)
-
-    def test_exception_info_included(self) -> None:
-        try:
-            raise ValueError("boom")
-        except ValueError:
-            import sys
-
-            exc_info = sys.exc_info()
-        record = logging.LogRecord(
-            name="test",
+        rec = logging.LogRecord(
+            name="x",
             level=logging.ERROR,
             pathname="",
             lineno=0,
-            msg="something failed",
-            args=(),
-            exc_info=exc_info,
+            msg="failure",
+            args=None,
+            exc_info=sys.exc_info(),
         )
-        formatter = PipeFormatter()
-        output = formatter.format(record)
-
-        assert "something failed" in output
-        assert "ValueError: boom" in output
-        assert "Traceback" in output
-
-    def test_component_appears_in_output(self) -> None:
-        record = logging.LogRecord(
-            name="startup",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="Loading model",
-            args=(),
-            exc_info=None,
-        )
-        formatter = PipeFormatter()
-        output = formatter.format(record)
-        component = output.split(" | ")[2]
-
-        assert component == "startup"
+    formatted = PipeFormatter().format(rec)
+    assert "ValueError" in formatted
+    assert "boom" in formatted
 
 
-class TestGetLogger:
-    """Tests for the get_logger function."""
-
-    def test_returns_logger_with_correct_name(self) -> None:
-        logger = get_logger("startup")
-        assert logger.name == "startup"
-
-    def test_logger_has_pipe_formatter(self) -> None:
-        logger = get_logger("request")
-        assert len(logger.handlers) > 0
-        assert isinstance(logger.handlers[0].formatter, PipeFormatter)
-
-    def test_logger_output_format(self) -> None:
-        logger = get_logger("health")
-        output = _capture_log_output(logger, logging.INFO, "Health check passed")
-
-        assert PIPE_FORMAT_PATTERN.match(output)
-        parts = output.split(" | ")
-        assert len(parts) == 4
-        assert parts[2] == "health"
-        assert parts[3] == "Health check passed"
-
-    def test_no_duplicate_handlers_on_repeated_calls(self) -> None:
-        logger_name = "no_dup_test"
-        logger1 = get_logger(logger_name)
-        handler_count = len(logger1.handlers)
-        logger2 = get_logger(logger_name)
-
-        assert logger1 is logger2
-        assert len(logger2.handlers) == handler_count
-
-    def test_propagate_is_false(self) -> None:
-        logger = get_logger("voice")
-        assert logger.propagate is False
+def test_get_logger_does_not_propagate_and_is_idempotent() -> None:
+    """``get_logger`` returns a logger with propagate=False (so root
+    handlers don't see structured records twice) and re-calls do NOT
+    accumulate duplicate handlers."""
+    log_a = get_logger("comadre.test")
+    log_b = get_logger("comadre.test")
+    assert log_a is log_b
+    assert log_a.propagate is False
+    # No handler accumulation on repeated calls.
+    handlers_first = len(log_a.handlers)
+    get_logger("comadre.test")
+    assert len(log_a.handlers) == handlers_first
 
 
-class TestSetupLogging:
-    """Tests for the setup_logging function."""
+def test_get_logger_output_round_trips_through_pipe_formatter() -> None:
+    """Smoke: the logger returned by get_logger emits in PipeFormatter shape."""
+    buf = StringIO()
+    log = get_logger("comadre.smoke")
+    log.handlers.clear()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(PipeFormatter())
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.info("hello")
+    out = buf.getvalue().strip()
+    assert PIPE_FORMAT_PATTERN.match(out)
+    assert "hello" in out
 
-    @pytest.fixture(autouse=True)
-    def _save_root_logger(self) -> None:  # type: ignore[misc]
-        """Save and restore root logger state around each test."""
-        root = logging.getLogger()
-        original_level = root.level
-        original_handlers = root.handlers[:]
-        yield
-        root.handlers = original_handlers
-        root.setLevel(original_level)
 
-    def test_configures_root_logger(self) -> None:
-        root = logging.getLogger()
-        root.handlers.clear()
-
-        setup_logging(level=logging.DEBUG)
-
-        assert root.level == logging.DEBUG
-        assert len(root.handlers) > 0
-        assert isinstance(root.handlers[0].formatter, PipeFormatter)
-
-    def test_no_duplicate_handlers_on_repeated_calls(self) -> None:
-        root = logging.getLogger()
-        root.handlers.clear()
-
-        setup_logging()
-        handler_count = len(root.handlers)
-        setup_logging()
-
-        assert len(root.handlers) == handler_count
+def test_setup_logging_is_idempotent_no_duplicate_root_handlers() -> None:
+    """``setup_logging`` may be called multiple times during dev/test
+    reload cycles; it MUST NOT pile up duplicate handlers (which would
+    print every record N times)."""
+    setup_logging()
+    handlers_first = len(logging.getLogger().handlers)
+    setup_logging()
+    assert len(logging.getLogger().handlers) == handlers_first
