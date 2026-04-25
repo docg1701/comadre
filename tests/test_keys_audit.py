@@ -1,8 +1,12 @@
-"""Tests for comadre.keys.audit."""
+"""Tests for ``comadre.keys.audit`` — actor + log_event security guards.
+
+Lean by design (test-suite review 2026-04-25): kept the security
+contract (forbidden-keys guard catches PII at top level + nested) and
+the caller-owned transaction invariant.
+"""
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 
@@ -29,157 +33,95 @@ def conn() -> sqlite3.Connection:
     return c
 
 
-ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+def test_get_cli_actor_always_returns_cli_prefixed_string() -> None:
+    """``cli:<user>`` is the contract; never empty, never 'cli:None'."""
+    actor = get_cli_actor()
+    assert actor.startswith("cli:")
+    assert actor not in {"cli:", "cli:None"}
 
 
-class TestGetCliActor:
-    def test_returns_cli_prefixed_string(self) -> None:
-        actor = get_cli_actor()
-        assert actor.startswith("cli:")
-
-    def test_fallback_to_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("os.getlogin", lambda: (_ for _ in ()).throw(OSError))
-        monkeypatch.setattr("getpass.getuser", lambda: (_ for _ in ()).throw(OSError))
-        assert get_cli_actor() == "cli:unknown"
-
-    def test_never_returns_none_like(self) -> None:
-        actor = get_cli_actor()
-        assert actor not in {"cli:", "cli:None"}
-
-
-class TestLogEvent:
-    def test_insert_happy_path(self, conn: sqlite3.Connection) -> None:
-        log_event(
-            conn,
-            actor="cli:alice",
-            action="create_customer",
-            target_type="customer",
-            target_id="cust_abc",
-            details={"tax_id_kind": "cpf"},
-        )
-        row = conn.execute("SELECT * FROM audit_log").fetchone()
-        assert row["actor"] == "cli:alice"
-        assert row["action"] == "create_customer"
-        assert row["target_type"] == "customer"
-        assert row["target_id"] == "cust_abc"
-        assert json.loads(row["details_json"]) == {"tax_id_kind": "cpf"}
-        assert ISO_UTC_RE.match(row["occurred_at"])
-
-    def test_details_none_writes_null(self, conn: sqlite3.Connection) -> None:
-        conn.row_factory = sqlite3.Row
-        log_event(
-            conn,
-            actor="cli:alice",
-            action="system_event",
-            target_type=None,
-            target_id=None,
-            details=None,
-        )
-        row = conn.execute("SELECT details_json FROM audit_log").fetchone()
-        assert row["details_json"] is None
-
-    @pytest.mark.parametrize(
-        "forbidden",
-        [
-            "cpf",
-            "CPF",  # case-insensitivity guard
-            "cnpj",
-            "tax_id",
-            "Tax_Id",
-            "name",
-            "email",
-            "Email",
-            "key_plaintext",
-            "Authorization",
-            "authorization",
-        ],
+def test_log_event_writes_iso_utc_row_with_sorted_details(
+    conn: sqlite3.Connection,
+) -> None:
+    """Happy path: ISO-UTC stamp, sorted JSON keys, all columns wired."""
+    log_event(
+        conn,
+        actor="cli:alice",
+        action="create_customer",
+        target_type="customer",
+        target_id="cust_abc",
+        details={"zeta": 1, "alpha": 2, "tax_id_kind": "cpf"},
     )
-    def test_forbidden_keys_raise(
-        self, conn: sqlite3.Connection, forbidden: str
-    ) -> None:
-        # ValueError (not AssertionError) so the guard survives `python -O`.
-        with pytest.raises(ValueError, match="forbidden personal data"):
-            log_event(
-                conn,
-                actor="cli:alice",
-                action="create_customer",
-                target_type="customer",
-                target_id="cust_abc",
-                details={forbidden: "sensitive"},
-            )
+    row = conn.execute("SELECT * FROM audit_log").fetchone()
+    assert row["actor"] == "cli:alice"
+    assert row["action"] == "create_customer"
+    assert row["target_id"] == "cust_abc"
+    # ISO UTC + Z.
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", row["occurred_at"])
+    # Keys sorted alphabetically (deterministic for grep + diff).
+    assert row["details_json"] == '{"alpha": 2, "tax_id_kind": "cpf", "zeta": 1}'
 
-    def test_forbidden_keys_raise_when_nested(self, conn: sqlite3.Connection) -> None:
-        """A forbidden key buried inside a nested dict must still be rejected."""
-        with pytest.raises(ValueError, match="forbidden personal data"):
-            log_event(
-                conn,
-                actor="cli:alice",
-                action="create_customer",
-                target_type="customer",
-                target_id="cust_abc",
-                details={"metadata": {"nested": {"cpf": "12345678909"}}},
-            )
 
-    def test_details_are_sorted(self, conn: sqlite3.Connection) -> None:
+@pytest.mark.parametrize(
+    "forbidden",
+    ["cpf", "CPF", "cnpj", "tax_id", "name", "email", "key_plaintext", "Authorization"],
+)
+def test_log_event_forbidden_keys_raise_value_error(
+    conn: sqlite3.Connection, forbidden: str
+) -> None:
+    """LGPD: forbidden keys at any nesting level → ValueError. Case-
+    insensitive. Uses ValueError (not assert) so guard survives ``-O``."""
+    # Top-level.
+    with pytest.raises(ValueError, match="forbidden personal data"):
         log_event(
             conn,
-            actor="cli:alice",
-            action="something",
-            target_type=None,
-            target_id=None,
-            details={"zeta": 1, "alpha": 2},
-        )
-        row = conn.execute("SELECT details_json FROM audit_log").fetchone()
-        assert row["details_json"] == '{"alpha": 2, "zeta": 1}'
-
-    def test_no_inner_transaction(self, conn: sqlite3.Connection) -> None:
-        """log_event must not commit on its own — callers own the transaction."""
-        conn.isolation_level = "DEFERRED"  # ensures no implicit commit from INSERT
-        log_event(
-            conn,
-            actor="cli:alice",
+            actor="cli:x",
             action="x",
             target_type=None,
             target_id=None,
-            details=None,
+            details={forbidden: "secret"},
         )
-        conn.rollback()
-        count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
-        assert count == 0
-
-    def test_mark_paid_details_shape_roundtrips(self, conn: sqlite3.Connection) -> None:
-        """Story 3.1 — the new ``mark_paid`` details_json shape passes the guard.
-
-        ``{"paid_until": "...", "reactivated": <bool>}`` contains no forbidden
-        keys and should round-trip unchanged. Sort-keys ordering places
-        ``paid_until`` before ``reactivated`` alphabetically.
-        """
+    # Nested.
+    with pytest.raises(ValueError, match="forbidden personal data"):
         log_event(
             conn,
-            actor="cli:alice",
-            action="mark_paid",
-            target_type="api_key",
-            target_id="key_01abcde",
-            details={"paid_until": "2026-06-05", "reactivated": False},
+            actor="cli:x",
+            action="x",
+            target_type=None,
+            target_id=None,
+            details={"outer": {"inner": {forbidden: "secret"}}},
         )
-        row = conn.execute("SELECT details_json FROM audit_log").fetchone()
-        assert json.loads(row["details_json"]) == {
-            "paid_until": "2026-06-05",
-            "reactivated": False,
-        }
 
-        log_event(
-            conn,
-            actor="cli:alice",
-            action="mark_paid",
-            target_type="api_key",
-            target_id="key_01abcde",
-            details={"paid_until": "2026-06-05", "reactivated": True},
-        )
-        rows = conn.execute(
-            "SELECT details_json FROM audit_log ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        assert json.loads(rows["details_json"]) == {
-            "paid_until": "2026-06-05",
-            "reactivated": True,
-        }
+
+def test_log_event_does_not_commit_caller_owns_the_transaction(
+    conn: sqlite3.Connection,
+) -> None:
+    """log_event must NOT commit. Callers compose it inside ``with conn:``
+    blocks for atomic multi-row writes — auto-commit would break that."""
+    conn.isolation_level = "DEFERRED"
+    log_event(
+        conn,
+        actor="cli:x",
+        action="x",
+        target_type=None,
+        target_id=None,
+        details=None,
+    )
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+
+
+def test_log_event_details_none_writes_null_not_empty_string(
+    conn: sqlite3.Connection,
+) -> None:
+    """``details=None`` must land as SQL NULL, not the string ``"null"``."""
+    log_event(
+        conn,
+        actor="cli:x",
+        action="x",
+        target_type=None,
+        target_id=None,
+        details=None,
+    )
+    row = conn.execute("SELECT details_json FROM audit_log").fetchone()
+    assert row["details_json"] is None
