@@ -15,7 +15,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from comadre.exceptions import VoiceNotFoundError
 from tests._keys_fixtures import seed_customer_and_key
@@ -40,8 +40,7 @@ def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_speech_happy_path_ogg_and_wav(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
-    """OGG default + WAV variant — content-type, content-disposition,
-    body bytes piped from router."""
+    """OGG default + WAV variant — content-type, content-disposition, body bytes."""
     for fmt, ctype in (("ogg", "audio/ogg"), ("wav", "audio/wav")):
         response = await client.post(
             "/v1/audio/speech",
@@ -50,21 +49,21 @@ async def test_speech_happy_path_ogg_and_wav(
         )
         assert response.status_code == 200
         assert response.headers["content-type"] == ctype
-        expected_cd = f'attachment; filename="speech.{fmt}"'
-        assert response.headers["content-disposition"] == expected_cd
+        assert (
+            response.headers["content-disposition"]
+            == f'attachment; filename="speech.{fmt}"'
+        )
         assert response.content == b"fake-audio-bytes"
 
 
 async def test_speech_405_envelope_on_get_and_post_health(
     client: AsyncClient,
 ) -> None:
-    """405 on the wrong verb returns the project's error envelope, NOT
-    the FastAPI default. Allow header preserved."""
+    """405 returns the project's error envelope, not the FastAPI default."""
     response = await client.get("/v1/audio/speech")
     assert response.status_code == 405
-    body = response.json()
-    assert body["error"]["type"] == "method_not_allowed_error"
-    assert "GET" in body["error"]["message"]
+    assert response.json()["error"]["type"] == "method_not_allowed_error"
+    assert "GET" in response.json()["error"]["message"]
     assert "Allow" in response.headers
 
     response = await client.post("/health", json={})
@@ -75,9 +74,7 @@ async def test_speech_405_envelope_on_get_and_post_health(
 async def test_speech_validation_400_envelope(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
-    """Pydantic validation failures (missing/empty input) → 400, not 422.
-
-    The error-handler remaps so machine consumers see a uniform envelope."""
+    """Pydantic validation failures (missing/empty input) → 400, not 422."""
     for bad_body in (
         {"voice": "kokoro/pm_santa"},
         {"input": "", "voice": "kokoro/pm_santa"},
@@ -104,12 +101,8 @@ async def test_speech_unknown_voice_returns_404(
     assert response.json()["error"]["type"] == "not_found_error"
 
 
-async def test_speech_warmup_503_takes_priority_over_auth(
-    app: Any,
-) -> None:
-    """503 from ``ready=False`` fires before 401 auth, by dependency order."""
-    from httpx import ASGITransport
-
+async def test_speech_warmup_503_takes_priority_over_auth(app: Any) -> None:
+    """503 from ``ready=False`` fires before 401, by dependency order."""
     app.state.ready = False
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -124,30 +117,25 @@ async def test_speech_warmup_503_takes_priority_over_auth(
     assert response.headers["retry-after"] == "30"
 
 
-async def test_registry_auth_active_key_200_complimentary_200(
+async def test_registry_auth_active_and_complimentary_keys_authenticate(
     app: Any, client: AsyncClient
 ) -> None:
     """Active manual key + complimentary key both authenticate."""
-    pt_active, _, _ = seed_customer_and_key(app.state.registry_db)
-    response = await client.post(
-        "/v1/audio/speech",
-        json=_SPEECH_BODY,
-        headers={"Authorization": f"Bearer {pt_active}"},
-    )
-    assert response.status_code == 200
-
-    pt_comp, _, _ = seed_customer_and_key(
-        app.state.registry_db,
-        customer_email="comp@x.com",
-        billing_mode="complimentary",
-        paid_until=None,
-    )
-    response = await client.post(
-        "/v1/audio/speech",
-        json=_SPEECH_BODY,
-        headers={"Authorization": f"Bearer {pt_comp}"},
-    )
-    assert response.status_code == 200
+    for kwargs in (
+        {},
+        {
+            "customer_email": "comp@x.com",
+            "billing_mode": "complimentary",
+            "paid_until": None,
+        },
+    ):
+        pt, _, _ = seed_customer_and_key(app.state.registry_db, **kwargs)  # type: ignore[arg-type]
+        response = await client.post(
+            "/v1/audio/speech",
+            json=_SPEECH_BODY,
+            headers={"Authorization": f"Bearer {pt}"},
+        )
+        assert response.status_code == 200, kwargs
 
 
 async def test_registry_auth_suspended_revoked_expired_all_401_with_hint(
@@ -182,26 +170,23 @@ async def test_registry_auth_unknown_or_malformed_401_envelope(
 ) -> None:
     """Unknown bearer + malformed Authorization headers → 401 with the
     enumeration-resistant envelope (same shape regardless of cause)."""
-    # Unknown valid-shape token.
-    response = await client.post(
-        "/v1/audio/speech",
-        json=_SPEECH_BODY,
-        headers={"Authorization": "Bearer cmdr_live_" + "a" * 43},
-    )
-    assert response.status_code == 401
-    body = response.json()
-    assert body["error"]["type"] == "authentication_error"
-    assert body["error"]["message"] == "Invalid or missing API key"
-
-    # Malformed shapes.
-    for header in ("", "Basic xyz", "Bearer", "BearerXYZ"):
+    for header in (
+        "Bearer cmdr_live_" + "a" * 43,  # unknown valid-shape
+        "",
+        "Basic xyz",
+        "Bearer",
+        "BearerXYZ",
+    ):
         response = await client.post(
             "/v1/audio/speech",
             json=_SPEECH_BODY,
             headers={"Authorization": header} if header else {},
         )
         assert response.status_code == 401, header
-        assert response.json()["error"]["type"] == "authentication_error"
+        body = response.json()
+        assert body["error"]["type"] == "authentication_error"
+        if "cmdr_live_" in header:
+            assert body["error"]["message"] == "Invalid or missing API key"
 
 
 async def test_no_audit_log_writes_on_any_speech_outcome(
@@ -225,55 +210,37 @@ async def test_no_audit_log_writes_on_any_speech_outcome(
     assert after == before
 
 
-async def test_rate_limit_429_envelope_and_x_ratelimit_headers(
+async def test_rate_limit_429_envelope_and_independent_per_key(
     app: Any, client: AsyncClient, mock_router: MagicMock
 ) -> None:
     """Rate-limit contract: rpm=2 admits 2 requests then 429 with envelope
-    + retry-after + X-RateLimit-* headers; engine NOT invoked on 429."""
-    pt, _, _ = seed_customer_and_key(app.state.registry_db, rate_limit_rpm=2)
-    headers = {"Authorization": f"Bearer {pt}"}
+    + retry-after + X-RateLimit-* headers; engine NOT invoked on 429.
+    Two keys for the same customer bucket independently on key_id."""
+    pt_a, _, _ = seed_customer_and_key(
+        app.state.registry_db, customer_email="a@x.com", rate_limit_rpm=2
+    )
+    pt_b, _, _ = seed_customer_and_key(
+        app.state.registry_db, customer_email="b@x.com", rate_limit_rpm=2
+    )
+    headers_a = {"Authorization": f"Bearer {pt_a}"}
     mock_router.generate_speech.reset_mock()
 
     for _ in range(2):
-        r = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+        r = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers_a)
         assert r.status_code == 200
         assert r.headers["x-ratelimit-limit"] == "2"
 
-    trip = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
+    trip = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers_a)
     assert trip.status_code == 429
     body = trip.json()
     assert body["error"]["type"] == "rate_limit_error"
     assert body["error"]["message"] == "Rate limit exceeded"
     assert 1 <= int(trip.headers["retry-after"]) <= 60
     assert trip.headers["x-ratelimit-remaining"] == "0"
-    # Engine called rpm times, NOT rpm+1 — 429 short-circuits before TTS.
+    # Engine called rpm times only — 429 short-circuits before TTS.
     assert mock_router.generate_speech.call_count == 2
 
-
-async def test_rate_limit_independent_buckets_per_key(
-    app: Any, client: AsyncClient
-) -> None:
-    """Two keys for the same customer bucket independently on key_id."""
-    pt_a, _, _ = seed_customer_and_key(
-        app.state.registry_db,
-        customer_name="Alice",
-        customer_email="alice@x.com",
-        rate_limit_rpm=2,
-    )
-    pt_b, _, _ = seed_customer_and_key(
-        app.state.registry_db,
-        customer_name="Bob",
-        customer_email="bob@x.com",
-        rate_limit_rpm=2,
-    )
-    # Trip key A.
-    for _ in range(3):
-        await client.post(
-            "/v1/audio/speech",
-            json=_SPEECH_BODY,
-            headers={"Authorization": f"Bearer {pt_a}"},
-        )
-    # Key B still gets its full budget.
+    # Key B in independent bucket — gets full budget.
     r = await client.post(
         "/v1/audio/speech",
         json=_SPEECH_BODY,

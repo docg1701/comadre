@@ -156,14 +156,14 @@ def test_rotate_encryption_keys_happy_path_and_rollback(tmp_path: Path) -> None:
     old_key = SecretStr(Fernet.generate_key().decode())
     new_key = SecretStr(Fernet.generate_key().decode())
 
-    # --- Happy path ---
+    # Happy: all active rows re-encrypted; old key no longer decrypts; one audit.
     conn = get_connection(tmp_path / "happy.db")
     try:
         _apply_migrations(conn)
-        for cid, canonical, kind in [
+        for cid, canonical, kind in (
             ("cust_01aaaaaa", "12345678909", "cpf"),
             ("cust_01bbbbbb", "12345678000195", "cnpj"),
-        ]:
+        ):
             _seed_active(conn, cid=cid, canonical=canonical, kind=kind, key=old_key)
 
         result = rotate_encryption_keys(
@@ -171,16 +171,13 @@ def test_rotate_encryption_keys_happy_path_and_rollback(tmp_path: Path) -> None:
         )
         assert result.rows_re_encrypted == 2
 
-        rows = {
-            r["id"]: bytes(r["tax_id_encrypted"])
-            for r in conn.execute(
-                "SELECT id, tax_id_encrypted FROM customer WHERE deleted_at IS NULL"
-            )
-        }
-        assert decrypt_tax_id(rows["cust_01aaaaaa"], new_key) == "12345678909"
-        assert decrypt_tax_id(rows["cust_01bbbbbb"], new_key) == "12345678000195"
+        rows = dict(
+            conn.execute("SELECT id, tax_id_encrypted FROM customer").fetchall()
+        )
+        assert decrypt_tax_id(bytes(rows["cust_01aaaaaa"]), new_key) == "12345678909"
+        assert decrypt_tax_id(bytes(rows["cust_01bbbbbb"]), new_key) == "12345678000195"
         with pytest.raises(InvalidToken):
-            decrypt_tax_id(rows["cust_01aaaaaa"], old_key)
+            decrypt_tax_id(bytes(rows["cust_01aaaaaa"]), old_key)
 
         audit = conn.execute(
             "SELECT details_json FROM audit_log WHERE action = 'rotate_encryption_key'"
@@ -190,8 +187,7 @@ def test_rotate_encryption_keys_happy_path_and_rollback(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    # --- Rollback path: wrong old key must leave state intact ---
-    wrong_old_key = SecretStr(Fernet.generate_key().decode())
+    # Rollback: a wrong old_key leaves every row byte-identical, zero audit rows.
     conn = get_connection(tmp_path / "rollback.db")
     try:
         _apply_migrations(conn)
@@ -203,22 +199,22 @@ def test_rotate_encryption_keys_happy_path_and_rollback(tmp_path: Path) -> None:
                 kind="cpf",
                 key=old_key,
             )
-
-        pre = {
-            r["id"]: bytes(r["tax_id_encrypted"])
-            for r in conn.execute("SELECT id, tax_id_encrypted FROM customer")
-        }
+        pre = dict(conn.execute("SELECT id, tax_id_encrypted FROM customer").fetchall())
 
         with pytest.raises(InvalidToken):
             rotate_encryption_keys(
-                conn, old_key=wrong_old_key, new_key=new_key, actor="cli:tester"
+                conn,
+                old_key=SecretStr(Fernet.generate_key().decode()),  # wrong
+                new_key=new_key,
+                actor="cli:tester",
             )
 
-        post = {
-            r["id"]: bytes(r["tax_id_encrypted"])
-            for r in conn.execute("SELECT id, tax_id_encrypted FROM customer")
+        post = dict(
+            conn.execute("SELECT id, tax_id_encrypted FROM customer").fetchall()
+        )
+        assert {k: bytes(v) for k, v in post.items()} == {
+            k: bytes(v) for k, v in pre.items()
         }
-        assert post == pre
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM audit_log WHERE action = 'rotate_encryption_key'"

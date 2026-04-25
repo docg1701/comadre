@@ -1,7 +1,7 @@
 """Tests for the monetization-gated Phase 2a lifespan bootstrap.
 
-The legacy lifespan is covered indirectly by every other `test_api` /
-`test_health` case; this module only validates the branch Story 2.1 adds.
+The legacy lifespan is covered indirectly by every other test_api / test_health
+case; this module only validates the branch Story 2.1 adds.
 """
 
 from __future__ import annotations
@@ -18,43 +18,18 @@ from comadre.config import get_settings
 from comadre.main import lifespan
 
 
-async def _run_lifespan(app: FastAPI) -> None:
-    """Open the lifespan context manager, then close it immediately."""
-    cm = lifespan(app)
-    await cm.__aenter__()
-    await cm.__aexit__(None, None, None)
-
-
 def _stub_engine_init(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bypass heavy startup phases — engines / downloads / warm-ups.
-
-    Swaps the cooperating pieces that would otherwise try to hit the
-    filesystem / model files: KokoroEngine/QwenEngine instantiation,
-    ``ensure_*_models`` downloads, and engine warm-up. What's left is the
-    skeleton the Phase 2a branch operates on.
-    """
+    """Bypass heavy startup phases: KokoroEngine/QwenEngine instantiation,
+    ``ensure_*_models`` downloads, and engine warm-up."""
     import comadre.main as main_module
 
-    class _StubKokoro:
+    class _StubEngine:
         def load_model(self, **_: object) -> None:
-            """No-op."""
-
-        def warm_up(self) -> None:
-            """No-op."""
-
-    class _StubQwen:
-        def load_model(self, **_: object) -> None:
-            """No-op."""
+            pass
 
         def warm_up(self, **_: object) -> None:
-            """No-op."""
+            pass
 
-    monkeypatch.setattr(main_module, "KokoroEngine", _StubKokoro)
-    monkeypatch.setattr(main_module, "QwenEngine", _StubQwen)
-    monkeypatch.setattr(main_module, "ensure_kokoro_models", lambda **_: None)
-    monkeypatch.setattr(main_module, "ensure_qwen3_models", lambda **_: None)
-
-    # Stub the router so the `available_voices()` sanity-check passes.
     class _StubRouter:
         def __init__(self, **_: object) -> None:
             pass
@@ -65,6 +40,10 @@ def _stub_engine_init(monkeypatch: pytest.MonkeyPatch) -> None:
         def _parse_voice(self, _voice: str) -> None:
             return None
 
+    monkeypatch.setattr(main_module, "KokoroEngine", _StubEngine)
+    monkeypatch.setattr(main_module, "QwenEngine", _StubEngine)
+    monkeypatch.setattr(main_module, "ensure_kokoro_models", lambda **_: None)
+    monkeypatch.setattr(main_module, "ensure_qwen3_models", lambda **_: None)
     monkeypatch.setattr(main_module, "EngineRouter", _StubRouter)
 
 
@@ -81,68 +60,48 @@ def registry_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return db_path
 
 
-class TestRegistryBootstrap:
-    async def test_opens_registry_and_runs_migrations(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        registry_env: Path,
-    ) -> None:
-        _stub_engine_init(monkeypatch)
-        app = FastAPI()
-        await _run_lifespan(app)
-        # After lifespan exits the connection is closed — check the file
-        # state before/after lifespan cycle for migration application.
-        conn = sqlite3.connect(registry_env)
-        try:
-            version_row = conn.execute(
-                "SELECT MAX(version) FROM schema_version"
-            ).fetchone()
-            from comadre.keys.db import _SCHEMA_VERSION
+async def test_registry_bootstrap_migrates_caches_and_closes_db(
+    monkeypatch: pytest.MonkeyPatch, registry_env: Path
+) -> None:
+    """Single integration cover: lifespan opens the registry, applies
+    migrations, attaches the auth-cache, and closes the connection on
+    shutdown."""
+    _stub_engine_init(monkeypatch)
 
-            assert version_row[0] == _SCHEMA_VERSION
-        finally:
-            conn.close()
+    opened: list[sqlite3.Connection] = []
+    import comadre.main as main_module
 
-    async def test_auth_cache_initialised(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        registry_env: Path,
-    ) -> None:
-        _stub_engine_init(monkeypatch)
-        app = FastAPI()
-        cm = lifespan(app)
-        await cm.__aenter__()
-        try:
-            assert hasattr(app.state, "auth_cache")
-            snapshot = app.state.auth_cache.snapshot()
-            assert snapshot["maxsize"] == 4096
-            assert snapshot["ttl_seconds"] == 60
-        finally:
-            await cm.__aexit__(None, None, None)
+    real_get_connection = main_module.get_connection
 
-    async def test_shutdown_closes_db_connection(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        registry_env: Path,
-    ) -> None:
-        _stub_engine_init(monkeypatch)
-        opened: list[sqlite3.Connection] = []
+    def spy(path: Any) -> sqlite3.Connection:
+        conn = real_get_connection(path)
+        opened.append(conn)
+        return conn
 
-        import comadre.main as main_module
+    monkeypatch.setattr(main_module, "get_connection", spy)
 
-        real_get_connection = main_module.get_connection
+    app = FastAPI()
+    cm = lifespan(app)
+    await cm.__aenter__()
+    try:
+        # Auth cache wired with contractual sizing.
+        snapshot = app.state.auth_cache.snapshot()
+        assert snapshot["maxsize"] == 4096
+        assert snapshot["ttl_seconds"] == 60
+    finally:
+        await cm.__aexit__(None, None, None)
 
-        def spy_get_connection(path: Any) -> sqlite3.Connection:
-            conn = real_get_connection(path)
-            opened.append(conn)
-            return conn
+    # Migrations applied — schema_version row matches the constant.
+    from comadre.keys.db import _SCHEMA_VERSION
 
-        monkeypatch.setattr(main_module, "get_connection", spy_get_connection)
+    conn = sqlite3.connect(registry_env)
+    try:
+        version_row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        assert version_row[0] == _SCHEMA_VERSION
+    finally:
+        conn.close()
 
-        app = FastAPI()
-        await _run_lifespan(app)
-
-        assert len(opened) == 1
-        # Post-shutdown the connection must be closed.
-        with pytest.raises(sqlite3.ProgrammingError):
-            opened[0].execute("SELECT 1").fetchone()
+    # Connection closed on shutdown — using it raises ProgrammingError.
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1").fetchone()

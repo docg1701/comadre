@@ -12,12 +12,9 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
-from pathlib import Path
 
-import pytest
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
-from typer.testing import CliRunner
 
 from comadre.keys.cli.app import app
 from comadre.keys.crypto import encrypt_tax_id
@@ -28,21 +25,10 @@ from comadre.keys.db import (
     insert_customer,
 )
 from comadre.keys.models import CustomerRecord
-from tests._keys_cli_helpers import buffers as _buffers
-
-runner = CliRunner()
+from tests._keys_cli_helpers import buffers, runner
 
 
-@pytest.fixture()
-def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    key = Fernet.generate_key().decode()
-    db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
-    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
-    return {"db_path": str(db_path), "key": key}
-
-
-def _seed_customer(env: dict[str, str]) -> None:
+def _seed_with_real_tax_id(env: dict[str, str]) -> None:
     conn = get_connection(env["db_path"])
     try:
         _apply_migrations(conn)
@@ -69,15 +55,15 @@ def test_rotate_encryption_key_yes_writes_audit_and_echoes_new_key(
 ) -> None:
     """--yes runs the rotation, writes one audit row, echoes the new key
     on stdout (single sanctioned key-material echo per Story 4.2)."""
-    _seed_customer(env)
+    _seed_with_real_tax_id(env)
     new_key = Fernet.generate_key().decode()
 
     result = runner.invoke(
         app, ["rotate-encryption-key", "--new-key", new_key, "--yes"]
     )
-    stdout, _ = _buffers()
+    stdout, _ = buffers()
     assert result.exit_code == 0
-    assert new_key in stdout  # operator copy-paste hint
+    assert new_key in stdout
 
     conn = sqlite3.connect(env["db_path"])
     try:

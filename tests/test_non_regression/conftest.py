@@ -1,9 +1,8 @@
 """Shared fixtures for the CI non-regression suite.
 
-Boots the production Caddy image with the production ``Caddyfile`` against
-a stubbed nginx upstream so assertions exercise the real reverse-proxy
-header surface without the Kokoro/Qwen3 model-download cost. See
-``tests/test_non_regression/README.md`` for rationale.
+Boots the production Caddy image with the production Caddyfile against a
+stubbed nginx upstream so assertions exercise the real reverse-proxy
+header surface without the Kokoro/Qwen3 model-download cost.
 """
 
 from __future__ import annotations
@@ -64,8 +63,8 @@ def _docker(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _prepull_images() -> None:
-    """Pre-pull images so a slow pull surfaces as a pull error, not a
-    confusing 'Caddy did not come up' timeout under DockerHub throttling."""
+    """Pre-pull so a slow pull surfaces as a pull error, not a confusing
+    'Caddy did not come up' timeout under DockerHub throttling."""
     for image in ("caddy:2-alpine", "nginx:alpine"):
         subprocess.run(["docker", "pull", image], capture_output=True, check=False)
 
@@ -87,17 +86,16 @@ def _tear_down_stack() -> None:
 
 def _verify_upstream_reachable() -> None:
     """Probe ``GET /health`` (matches @api, proxied to stub) so a stub that
-    failed to start surfaces as a clean fixture error rather than a confusing
-    'stub signature missing' assertion in every test. ``/`` would not catch
-    this — Caddy serves it from file_server without touching reverse_proxy.
-    """
+    failed to start surfaces as a fixture error rather than a confusing
+    'stub signature missing' assertion. ``/`` would not catch this — Caddy
+    serves it from file_server without touching reverse_proxy."""
     try:
         resp = httpx.get(
             f"{_BASE_URL}/health", verify=False, follow_redirects=False, timeout=2.0
         )
     except _READY_EXCEPTIONS as exc:
         raise RuntimeError(
-            f"Stub unreachable through Caddy: GET /health raised {exc!r}. "
+            f"Stub unreachable through Caddy: {exc!r}. "
             f"Check `docker logs {_UPSTREAM_CONTAINER}`."
         ) from exc
     if resp.status_code >= 500:
@@ -112,11 +110,9 @@ def _verify_upstream_reachable() -> None:
 def _wait_for_caddy(timeout_seconds: float = 30.0) -> None:
     """Poll HTTP+HTTPS until both return non-5xx, then verify upstream stub.
 
-    Earlier impl returned on first HTTPS success (regardless of status), which
-    fired before Caddy's self-signed cert was provisioned or port 80 was
-    bound — both latent flakes. ``_READY_EXCEPTIONS`` narrowed from blanket
-    ``Exception`` so real bugs do not get swallowed.
-    """
+    Earlier impl returned on first HTTPS success regardless of status,
+    which fired before Caddy's self-signed cert was provisioned or port 80
+    was bound — both latent flakes."""
     deadline = time.monotonic() + timeout_seconds
     last_error: object = None
     while time.monotonic() < deadline:
@@ -146,8 +142,7 @@ def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """Yield the HTTPS base URL of a locally-spawned Caddy + nginx stack.
 
     Skips (not fails) when docker is unavailable so a developer running
-    ``pytest -m non_regression`` without docker gets a clear reason.
-    """
+    ``pytest -m non_regression`` without docker gets a clear reason."""
     if shutil.which("docker") is None:
         pytest.skip("docker CLI not on PATH")
     probe = subprocess.run(
@@ -235,8 +230,7 @@ def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 @pytest.fixture()
 def probe_client(compose_stack: str) -> Iterator[httpx.Client]:
     """HTTPS client for the locally-spawned Caddy stack. ``verify=False``
-    (self-signed) and ``follow_redirects=False`` (the 308 is a probe target,
-    AC6, not a transparent detail to hide)."""
+    (self-signed) and ``follow_redirects=False`` (the 308 is a probe target)."""
     with httpx.Client(
         base_url=compose_stack, verify=False, follow_redirects=False, timeout=5.0
     ) as client:

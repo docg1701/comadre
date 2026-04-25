@@ -60,12 +60,8 @@ def _hostile_row(*, customer_name: str = "EvilCorp", notes: str = "") -> ApiKeyL
 def test_render_customer_detail_does_not_leak_ciphertext(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LGPD: tax_id_encrypted must NEVER reach the operator's terminal.
-
-    A future refactor that wires the ciphertext column into
-    CustomerDetailRow would be caught here — the dataclass MUST not even
-    carry the field.
-    """
+    """LGPD: tax_id_encrypted must NEVER reach the operator's terminal —
+    the dataclass MUST not even carry the field."""
     buf = _capture(monkeypatch)
     row = CustomerDetailRow(
         id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
@@ -81,64 +77,56 @@ def test_render_customer_detail_does_not_leak_ciphertext(
     assert "gAAAAA" not in buf.getvalue()
 
 
-def test_render_revenue_report_escapes_markup_in_complimentary_notes(
+def test_renderers_escape_markup_in_operator_supplied_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F24: operator-supplied notes must not be interpreted as Rich markup."""
-    buf = _capture(monkeypatch)
-    hostile = _hostile_row(notes="[red]evil[/]")
-    report = RevenueReport(
-        month_label="May 2026",
-        month_iso="2026-05",
-        paid_count=12,
-        pending_count=2,
-        suspended_count=0,
-        complimentary_count=1,
-        mrr=1788.0,
-        projected=2086.0,
-        next_charge_date="2026-05-05",
-        complimentary_rows=(hostile,),
-    )
-    render_revenue_report(report)
-    out = buf.getvalue()
-    assert "evil" in out  # text survives
-    assert "\x1b[" not in out  # no ANSI styling leaked
-
-
-def test_render_suspend_sweep_preview_escapes_markup_in_customer_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F24: customer_name with markup tokens must render as plain text."""
+    """F24: operator-supplied free-form fields (notes, customer_name,
+    HealthCheck.value/detail) must not be interpreted as Rich markup —
+    text survives without ANSI escape leakage."""
     from datetime import date
 
+    # Revenue report: ``notes`` field carries markup tokens.
     buf = _capture(monkeypatch)
-    hostile = _hostile_row(customer_name="[red]evil[/]")
-    render_suspend_sweep_preview([hostile], cutoff_date=date(2026, 4, 6))
-    out = buf.getvalue()
-    assert "evil" in out
-    assert "\x1b[" not in out
-
-
-def test_render_health_report_escapes_markup_in_check_value(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """F24: HealthCheck.value rendered verbatim, no markup interpretation."""
-    buf = _capture(monkeypatch)
-    report = HealthReport(
-        checks=(
-            HealthCheck(
-                label="Evil",
-                value="[red]evil[/]",
-                severity="ok",
-                detail="[bold]hostile[/]",
-            ),
-        ),
-        is_healthy=True,
-        generated_at="2026-04-19T18:42:07Z",
+    render_revenue_report(
+        RevenueReport(
+            month_label="May 2026",
+            month_iso="2026-05",
+            paid_count=12,
+            pending_count=2,
+            suspended_count=0,
+            complimentary_count=1,
+            mrr=1788.0,
+            projected=2086.0,
+            next_charge_date="2026-05-05",
+            complimentary_rows=(_hostile_row(notes="[red]evil[/]"),),
+        )
     )
-    render_health_report(report)
-    out = buf.getvalue()
-    assert "[red]evil[/]" in out  # literal escape preserved
+    assert "evil" in buf.getvalue() and "\x1b[" not in buf.getvalue()
+
+    # Suspend sweep preview: ``customer_name`` carries markup.
+    buf = _capture(monkeypatch)
+    render_suspend_sweep_preview(
+        [_hostile_row(customer_name="[red]evil[/]")], cutoff_date=date(2026, 4, 6)
+    )
+    assert "evil" in buf.getvalue() and "\x1b[" not in buf.getvalue()
+
+    # Health report: ``value`` + ``detail`` carry markup.
+    buf = _capture(monkeypatch)
+    render_health_report(
+        HealthReport(
+            checks=(
+                HealthCheck(
+                    label="Evil",
+                    value="[red]evil[/]",
+                    severity="ok",
+                    detail="[bold]hostile[/]",
+                ),
+            ),
+            is_healthy=True,
+            generated_at="2026-04-19T18:42:07Z",
+        )
+    )
+    assert "[red]evil[/]" in buf.getvalue()  # literal escape preserved
 
 
 def test_render_export_json_and_yaml_round_trip_preserving_order(

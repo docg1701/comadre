@@ -1,7 +1,7 @@
 """Unit tests for ``comadre.counters.RequestCounters`` (Story 2.3).
 
 Lean by design (test-suite review 2026-04-25): per-AC unit tests
-collapsed into integration-style covers — counters survive a request/
+collapsed into integration-style covers — counters survive a request /
 429 cycle, snapshot is JSON-serializable + PII-clean, atomic write
 produces 0600 file, multi-replica aggregation works.
 """
@@ -36,10 +36,9 @@ def test_counters_track_requests_429_independently_per_key() -> None:
     rc.incr_request("key_bbb")
     rc.incr_auth_success("key_bbb")
 
-    a = rc.per_key["key_aaa"]
-    b = rc.per_key["key_bbb"]
-    assert a.requests_total == 3 and a.auth_success == 3 and a.rate_limit_429 == 1
-    assert b.requests_total == 1 and b.auth_success == 1 and b.rate_limit_429 == 0
+    a, b = rc.per_key["key_aaa"], rc.per_key["key_bbb"]
+    assert (a.requests_total, a.auth_success, a.rate_limit_429) == (3, 3, 1)
+    assert (b.requests_total, b.auth_success, b.rate_limit_429) == (1, 1, 0)
 
 
 def test_counters_peak_rpm_non_decreasing_window_prunes(
@@ -58,14 +57,12 @@ def test_counters_peak_rpm_non_decreasing_window_prunes(
     for _ in range(3):
         rc.incr_request("key_aaa")
     bucket = rc.per_key["key_aaa"]
-    assert bucket.peak_rpm == 10
+    assert bucket.peak_rpm == 10  # still the historic peak
     assert len(bucket.window_hits) == 3
 
 
 def test_snapshot_is_pii_clean_and_json_serializable() -> None:
-    """AC19: snapshot must NEVER contain bearer / hash / CPF / email tokens.
-    Defense-in-depth — the writer has no path that emits them, but the
-    test fails loud if one ever appears."""
+    """AC19: snapshot must NEVER contain bearer / hash / CPF / email tokens."""
     rc = RequestCounters()
     rc.incr_request("key_01ABC")
     rc.incr_429("key_01ABC")
@@ -75,7 +72,7 @@ def test_snapshot_is_pii_clean_and_json_serializable() -> None:
     assert data["per_key"]["key_01ABC"]["requests_total"] == 1
     assert data["per_key"]["key_01ABC"]["rate_limit_429"] == 1
 
-    serialized = json.dumps(data)  # JSON serializable
+    serialized = json.dumps(data)
     assert "cmdr_live_" not in serialized
     assert re.search(r"[0-9a-f]{64}", serialized) is None  # SHA-256 hex
     assert re.search(r"\d{11,14}", serialized) is None  # CPF/CNPJ
@@ -113,84 +110,76 @@ async def test_snapshot_writer_lifecycle_writes_final_snapshot_on_stop(
     await rc.stop_snapshot_writer()
     data = json.loads(path.read_text())
     assert data["per_key"]["key_aaa"]["requests_total"] == 1
-    # Idempotent: a second stop must not raise.
-    await rc.stop_snapshot_writer()
+    await rc.stop_snapshot_writer()  # idempotent — second stop must not raise
+
+
+def _replica_payload(
+    *, hits: int, entries: int, requests: int, peak: int, last_activity: str
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "written_at": "2026-04-18T12:00:00.000Z",
+        "process_uptime_seconds": 60,
+        "auth_cache": {
+            "entries": entries,
+            "hits": hits,
+            "misses": 0,
+            "maxsize": 4096,
+            "ttl_seconds": 60,
+        },
+        "per_key": {
+            "key_x": {
+                "requests_total": requests,
+                "auth_success": requests,
+                "rate_limit_429": 1 if requests == 7 else 0,
+                "peak_rpm": peak,
+                "avg_rpm_last_60s": requests,
+                "last_activity_at": last_activity,
+            },
+        },
+    }
 
 
 def test_aggregate_across_replicas_sums_counters_picks_max_for_peak(
     tmp_path: Path,
 ) -> None:
-    """Multi-replica deployments: ``aggregate_*`` sums counters and
-    picks max for peak_rpm / last_activity_at — operator-visible
-    correctness across replicas."""
+    """Multi-replica deployments: ``aggregate_*`` sums counters and picks
+    max for peak_rpm / last_activity_at — operator-visible correctness."""
     db_base = tmp_path / "registry.db"
-    for replica, payload in (
-        (
-            "alpha",
-            {
-                "schema_version": 1,
-                "written_at": "2026-04-18T12:00:00.000Z",
-                "process_uptime_seconds": 60,
-                "auth_cache": {
-                    "entries": 5,
-                    "hits": 10,
-                    "misses": 1,
-                    "maxsize": 4096,
-                    "ttl_seconds": 60,
-                },
-                "per_key": {
-                    "key_x": {
-                        "requests_total": 10,
-                        "auth_success": 10,
-                        "rate_limit_429": 0,
-                        "peak_rpm": 5,
-                        "avg_rpm_last_60s": 5,
-                        "last_activity_at": "2026-04-18T12:00:00.000Z",
-                    },
-                },
-            },
-        ),
-        (
-            "beta",
-            {
-                "schema_version": 1,
-                "written_at": "2026-04-18T12:00:00.000Z",
-                "process_uptime_seconds": 60,
-                "auth_cache": {
-                    "entries": 3,
-                    "hits": 4,
-                    "misses": 0,
-                    "maxsize": 4096,
-                    "ttl_seconds": 60,
-                },
-                "per_key": {
-                    "key_x": {
-                        "requests_total": 7,
-                        "auth_success": 7,
-                        "rate_limit_429": 1,
-                        "peak_rpm": 9,
-                        "avg_rpm_last_60s": 7,
-                        "last_activity_at": "2026-04-18T12:01:00.000Z",
-                    },
-                },
-            },
-        ),
-    ):
-        snap_path = Path(f"{db_base}.counters.{replica}.json")
-        snap_path.write_text(json.dumps(payload))
+    Path(f"{db_base}.counters.alpha.json").write_text(
+        json.dumps(
+            _replica_payload(
+                hits=10,
+                entries=5,
+                requests=10,
+                peak=5,
+                last_activity="2026-04-18T12:00:00.000Z",
+            )
+        )
+    )
+    Path(f"{db_base}.counters.beta.json").write_text(
+        json.dumps(
+            _replica_payload(
+                hits=4,
+                entries=3,
+                requests=7,
+                peak=9,
+                last_activity="2026-04-18T12:01:00.000Z",  # later
+            )
+        )
+    )
 
     snapshots = read_all_snapshots(str(db_base))
     assert len(snapshots) == 2
 
     cache_agg = aggregate_cache_status(snapshots)
-    assert cache_agg.hits == 14
-    assert cache_agg.entries == 8
+    assert cache_agg.hits == 14 and cache_agg.entries == 8
 
     key_agg = aggregate_key_stats(snapshots, "key_x")
     assert key_agg is not None
     assert key_agg.requests_total == 17  # 10 + 7
     assert key_agg.rate_limit_429 == 1
-    assert key_agg.peak_rpm == 9  # max(5, 9)
+    assert key_agg.peak_rpm == 9  # max
     assert key_agg.last_activity_at == "2026-04-18T12:01:00.000Z"  # latest
 
 

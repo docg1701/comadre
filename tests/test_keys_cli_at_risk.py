@@ -7,14 +7,10 @@ content assertion, one --format json shape.
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Callable
 from datetime import UTC, date, datetime
-from pathlib import Path
 
-import pytest
-from cryptography.fernet import Fernet
-from typer.testing import CliRunner
-
-from comadre.keys.cli import _clock
 from comadre.keys.cli.app import app
 from comadre.keys.db import (
     _apply_migrations,
@@ -25,23 +21,11 @@ from comadre.keys.db import (
     insert_customer,
 )
 from comadre.keys.models import ApiKeyRecord, CustomerRecord
-from tests._keys_cli_helpers import buffers as _buffers
-
-runner = CliRunner()
+from tests._keys_cli_helpers import buffers, runner
 
 
-@pytest.fixture()
-def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    key = Fernet.generate_key().decode()
-    db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
-    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
-    monkeypatch.setattr(_clock, "resolve_today_in_tz", lambda _tz: date(2026, 4, 16))
-    return {"db_path": str(db_path), "key": key}
-
-
-def _seed_at_risk(env: dict[str, str]) -> None:
-    conn = get_connection(env["db_path"])
+def _seed_at_risk(db_path: str) -> None:
+    conn: sqlite3.Connection = get_connection(db_path)
     try:
         _apply_migrations(conn)
         cid = generate_customer_id()
@@ -59,7 +43,6 @@ def _seed_at_risk(env: dict[str, str]) -> None:
             ),
             actor="cli:tester",
         )
-        # Two at-risk keys (paid_until within 5 days of 2026-04-16).
         for prefix, paid_until in (
             ("RISKY1AA", "2026-04-18"),
             ("RISKY2BB", "2026-04-20"),
@@ -86,22 +69,27 @@ def _seed_at_risk(env: dict[str, str]) -> None:
         conn.close()
 
 
-def test_at_risk_table_lists_keys_within_window(env: dict[str, str]) -> None:
-    _seed_at_risk(env)
+def test_at_risk_table_lists_keys_within_window(
+    env: dict[str, str], freeze_today: Callable[[date], None]
+) -> None:
+    freeze_today(date(2026, 4, 16))
+    _seed_at_risk(env["db_path"])
     result = runner.invoke(app, ["at-risk", "--window", "5d"])
-    stdout, _ = _buffers()
+    stdout, _ = buffers()
     assert result.exit_code == 0
     assert "RISKY1AA" in stdout
     assert "RISKY2BB" in stdout
 
 
-def test_at_risk_format_json_emits_array(env: dict[str, str]) -> None:
-    _seed_at_risk(env)
+def test_at_risk_format_json_emits_array(
+    env: dict[str, str], freeze_today: Callable[[date], None]
+) -> None:
+    freeze_today(date(2026, 4, 16))
+    _seed_at_risk(env["db_path"])
     result = runner.invoke(app, ["at-risk", "--window", "5d", "--format", "json"])
-    stdout, _ = _buffers()
+    stdout, _ = buffers()
     assert result.exit_code == 0
     parsed = json.loads(stdout)
-    # Array shape; both rows present.
     assert isinstance(parsed, (dict, list))
     text = json.dumps(parsed)
     assert "RISKY1AA" in text

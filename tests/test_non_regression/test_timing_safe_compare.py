@@ -1,18 +1,16 @@
 """FR48 non-regression — timing-safe key comparison static check (Story 4.5c).
 
-Walks every ``.py`` file under ``src/comadre/`` and asserts no ``==`` / ``!=``
+Walks every ``.py`` under ``src/comadre/`` and asserts no ``==`` / ``!=``
 comparison binds to an identifier whose terminal name component matches
-``_SUSPECT_IDENTIFIER_RE`` (substring match on ``hash`` / ``token`` / ``secret``,
-case-insensitive). ``hmac.compare_digest(...)`` calls are structurally outside
-the visitor's scope (Call node, not Compare node) and are therefore never
-flagged — this is the point: the scan is a negative invariant on bare
-equality, not a positive check on compare_digest presence.
+``hash`` / ``token`` / ``secret`` (case-insensitive). ``hmac.compare_digest``
+is a Call node, structurally outside the visitor's scope. Inline
+``# scan-allow[timing-safe-compare]: <reason>`` suppresses per line.
 
-Inline ``# scan-allow[timing-safe-compare]: <reason>`` on the same source
-line suppresses the scan for that line only; the comment is reviewer-enforced
-at PR time. F45 — the namespace bracket is mandatory, so a comment
-suppressing this scan cannot accidentally silence a sibling scan
-(``no-raw-httpexception``, ``sql-injection``).
+``key`` is deliberately excluded from the suspect set: a 2026-04-23 grep
+showed 15+ legitimate hits across ``keys/cli/commands/`` / ``billing.py``
+that don't compare key MATERIAL. Real key material in this codebase
+binds a ``hash`` / ``token`` / ``secret`` identifier (canonical:
+``token_hash``, ``key_hash``, ``_DUMMY_HASH``, ``bearer_token``).
 """
 
 from __future__ import annotations
@@ -35,19 +33,6 @@ _FIXTURES_ROOT: Path = (
     Path(__file__).resolve().parent / "fixtures" / "timing_safe_compare"
 )
 _SCAN_LABEL: str = "timing-safe-compare"
-
-# AC4 — ``key`` is DELIBERATELY excluded from the suspect-identifier set.
-# A preview grep at story-draft time (2026-04-23) showed 15+ legitimate hits
-# for ``*key*`` identifiers in equality comparisons across
-# ``src/comadre/keys/cli/commands/*.py`` and ``src/comadre/keys/billing.py``
-# (e.g., ``key_row.billing_mode == "complimentary"``,
-# ``resolved.kind == "key_ambiguous"``, ``msg == "cannot update a revoked key"``)
-# — none of which compare key MATERIAL. Flagging them would force an allowlist
-# comment on every line, drowning the signal. Every real key-material
-# identifier in this codebase binds a ``hash``-, ``token``-, or
-# ``secret``-containing name (canonical: ``token_hash``, ``key_hash``,
-# ``_DUMMY_HASH``, ``bearer_token``, ``webhook_secret``), so the
-# substring-match-without-``key`` rule catches the regression class cleanly.
 _SUSPECT_IDENTIFIER_RE: re.Pattern[str] = re.compile(r"(?i)(hash|token|secret)")
 
 
@@ -67,15 +52,8 @@ class _Violation:
 
 
 def _terminal_identifier(node: ast.expr) -> str | None:
-    """Return the rightmost identifier of an operand node, or ``None``.
-
-    - ``Name`` → its ``id``.
-    - ``Attribute`` → its ``attr`` (the rightmost attribute; we do NOT walk
-      the chain root, so ``obj.session.token`` returns ``"token"`` not
-      ``"obj"``).
-    - ``Subscript`` → recurse into the subscripted value.
-    - Anything else → ``None``.
-    """
+    """Rightmost identifier of an operand: ``Name.id``, ``Attribute.attr``,
+    or recurse into ``Subscript.value``. Returns ``None`` otherwise."""
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -86,15 +64,9 @@ def _terminal_identifier(node: ast.expr) -> str | None:
 
 
 def _find_unsafe_comparisons(path: Path) -> list[_Violation]:
-    """Walk ``path`` AST for ``Compare`` nodes containing an ``Eq``/``NotEq``
-    operator whose adjacent-operand terminal identifier matches
-    ``_SUSPECT_IDENTIFIER_RE``.
-
-    A ``# scan-allow[timing-safe-compare]: <reason>`` comment on any physical
-    line the comparison spans (``node.lineno`` through ``node.end_lineno``)
-    suppresses the violation for that node. The allowlist is detected via
-    ``tokenize`` so it cannot be spoofed from string-literal content. Returns
-    a list of ``_Violation`` (empty on success).
+    """AST-walk ``path`` for ``Compare`` nodes whose Eq/NotEq operands have
+    a suspect terminal identifier; ``# scan-allow:`` on any spanned line
+    suppresses (tokenize-based, so string-literal occurrences don't bypass).
     """
     source = path.read_text(encoding="utf-8")
     source_lines = source.splitlines()
@@ -106,8 +78,7 @@ def _find_unsafe_comparisons(path: Path) -> list[_Violation]:
         if not isinstance(node, ast.Compare):
             continue
         # ``any`` (not ``all``) — a chain like ``token_hash == x < y`` mixes
-        # Eq with ordering operators and must still flag the Eq operand. Only
-        # operands adjacent to an Eq/NotEq operator are checked.
+        # Eq with ordering ops and must still flag the Eq operand.
         if not any(isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
             continue
 
@@ -131,24 +102,16 @@ def _find_unsafe_comparisons(path: Path) -> list[_Violation]:
 
         for operand in suspect_operands:
             ident = _terminal_identifier(operand)
-            if ident is None:
-                continue
-            if not _SUSPECT_IDENTIFIER_RE.search(ident):
+            if ident is None or not _SUSPECT_IDENTIFIER_RE.search(ident):
                 continue
             line_index = node.lineno - 1
             line = (
                 source_lines[line_index] if 0 <= line_index < len(source_lines) else ""
             )
             violations.append(
-                _Violation(
-                    path=path,
-                    lineno=node.lineno,
-                    identifier=ident,
-                    source=line,
-                )
+                _Violation(path=path, lineno=node.lineno, identifier=ident, source=line)
             )
-            # One violation per Compare node — the rendered failure message
-            # already names the line; enumerating each operand would be noise.
+            # One violation per Compare node — enumerating each operand is noise.
             break
 
     return violations
@@ -156,124 +119,51 @@ def _find_unsafe_comparisons(path: Path) -> list[_Violation]:
 
 @pytest.mark.non_regression
 def test_src_comadre_has_no_unsafe_key_comparisons() -> None:
-    """FR48 / NFR11 non-regression: bare ``==``/``!=`` on key material is
-    prohibited in ``src/comadre/`` outside ``# scan-allow:``-annotated lines.
-    """
+    """FR48 / NFR11: bare ``==`` / ``!=`` on key material is prohibited in
+    ``src/comadre/`` outside ``# scan-allow:``-annotated lines."""
     paths = sorted(_SRC_ROOT.rglob("*.py"))
-    assert paths, (
-        f"No .py files discovered under {_SRC_ROOT}. "
-        f"Did the project root layout change? "
-        f"Expected {_SRC_ROOT} to contain at least one .py file."
-    )
+    assert paths, f"No .py files under {_SRC_ROOT}"
     all_violations: list[_Violation] = []
     for path in paths:
         all_violations.extend(_find_unsafe_comparisons(path))
 
     assert not all_violations, (
-        "Bare equality comparison on key material detected in src/comadre/.\n"
-        "This regression breaks NFR11 (timing-safe key comparison contract).\n"
+        "Bare equality compare on key material in src/comadre/.\n"
         "Use ``hmac.compare_digest(a, b)`` instead of ``a == b`` when either\n"
-        "operand holds hashed/tokenised key material. If the comparison is\n"
-        "intentional and does NOT handle key material (e.g., an equality\n"
-        "check on a non-sensitive field that incidentally contains the word\n"
-        "'hash' or 'token'), add a trailing comment on the same line:\n"
-        "    # scan-allow[timing-safe-compare]: "
-        "<why this is safe, reviewed by <initials>>\n\n"
+        "operand holds hashed/tokenised key material. To intentionally bypass:\n"
+        "    # scan-allow[timing-safe-compare]: <why this is safe>\n\n"
         "Violations:\n  " + "\n  ".join(v.render() for v in all_violations)
     )
 
 
 @pytest.mark.non_regression
-def test_scan_flags_bad_example() -> None:
-    """Self-test: the scan's own correctness is exercised via a fixture."""
-    violations = _find_unsafe_comparisons(_FIXTURES_ROOT / "bad_example.py")
-    assert len(violations) == 1, (
-        f"Expected exactly one violation in bad_example.py, "
-        f"got {len(violations)}: {[v.render() for v in violations]}"
-    )
-    violation = violations[0]
-    assert violation.identifier == "token_hash", (
-        f"Expected identifier 'token_hash', got '{violation.identifier}'"
-    )
-    # We don't pin the exact line number — editor autoformatting may shift
-    # the fixture's line count. We DO pin that the source line carries
-    # ``==`` and ``token_hash`` as evidence the right line was flagged.
-    assert "==" in violation.source
-    assert "token_hash" in violation.source
+def test_scan_self_tests_pass_all_fixture_cases() -> None:
+    """One self-test covers all 5 scanner contracts via the fixtures dir:
+    flagging, allowlist, compare_digest skip, string-literal-bypass guard,
+    chained-mixed-ops, multi-line allowlist span. Per-contract isolation
+    was 5 separate functions — collapsed since the fixtures themselves
+    document each contract one-to-one."""
 
+    def _ids(path_name: str) -> list[str]:
+        return [
+            v.identifier for v in _find_unsafe_comparisons(_FIXTURES_ROOT / path_name)
+        ]
 
-@pytest.mark.non_regression
-def test_scan_respects_allowlist_comment() -> None:
-    """Self-test: ``# scan-allow: <reason>`` suppresses the scan on that line."""
-    violations = _find_unsafe_comparisons(_FIXTURES_ROOT / "allowlisted_example.py")
-    assert violations == [], (
-        f"Expected zero violations in allowlisted_example.py (inline "
-        f"# scan-allow: comment suppresses); got "
-        f"{[v.render() for v in violations]}"
-    )
+    # bad_example.py: flags one ``token_hash == stored`` violation.
+    assert _ids("bad_example.py") == ["token_hash"]
 
+    # allowlisted_example.py: ``# scan-allow:`` suppresses → zero violations.
+    assert _ids("allowlisted_example.py") == []
 
-@pytest.mark.non_regression
-def test_scan_ignores_compare_digest_calls() -> None:
-    """Self-test: ``hmac.compare_digest(a, b)`` is a Call node, not a Compare
-    node, and so is structurally outside the visitor's scope.
-    """
-    violations = _find_unsafe_comparisons(_FIXTURES_ROOT / "compare_digest_only.py")
-    assert violations == [], (
-        f"Expected zero violations in compare_digest_only.py (Call node, "
-        f"not Compare node); got {[v.render() for v in violations]}"
-    )
+    # compare_digest_only.py: Call node, not Compare → zero violations.
+    assert _ids("compare_digest_only.py") == []
 
+    # string_literal_allowlist_bypass.py: tokenize distinguishes STRING
+    # tokens from COMMENT — bypass attempt MUST still flag.
+    assert _ids("string_literal_allowlist_bypass.py") == ["token_hash"]
 
-@pytest.mark.non_regression
-def test_scan_rejects_string_literal_allowlist_bypass() -> None:
-    """Self-test (Review Finding #1): ``# scan-allow:`` inside a string literal
-    does NOT suppress a real violation. The tokenize-based allowlist detection
-    distinguishes STRING tokens from COMMENT tokens, so a bypass of the form
-    ``(_msg := "# scan-allow:") and token_hash == stored`` is correctly flagged.
-    """
-    violations = _find_unsafe_comparisons(
-        _FIXTURES_ROOT / "string_literal_allowlist_bypass.py"
-    )
-    assert len(violations) == 1, (
-        f"Expected 1 violation in string_literal_allowlist_bypass.py — the "
-        f"string-literal occurrence of '# scan-allow:' must not suppress the "
-        f"adjacent ``==``; got {len(violations)}: "
-        f"{[v.render() for v in violations]}"
-    )
-    assert violations[0].identifier == "token_hash"
+    # chained_mixed_ops_example.py: ``any``-not-``all`` operator gating.
+    assert _ids("chained_mixed_ops_example.py") == ["token_hash"]
 
-
-@pytest.mark.non_regression
-def test_scan_flags_chained_mixed_ops() -> None:
-    """Self-test (Review Finding #3): a chain mixing ``==`` with an ordering
-    operator (``token_hash == x < y``) must flag, not silently pass. The
-    operator gating is ``any``, not ``all``: any Eq/NotEq in the chain causes
-    the adjacent operands to be checked.
-    """
-    violations = _find_unsafe_comparisons(
-        _FIXTURES_ROOT / "chained_mixed_ops_example.py"
-    )
-    assert len(violations) == 1, (
-        f"Expected 1 violation in chained_mixed_ops_example.py — bare ``==`` "
-        f"on 'token_hash' inside a chained comparison must flag; got "
-        f"{len(violations)}: {[v.render() for v in violations]}"
-    )
-    assert violations[0].identifier == "token_hash"
-
-
-@pytest.mark.non_regression
-def test_scan_allowlist_spans_multi_line_compare() -> None:
-    """Self-test (Review Finding #2): a ``# scan-allow:`` on any physical line
-    spanned by a multi-line ``Compare`` (``node.lineno`` through
-    ``node.end_lineno``) suppresses the node — the comment does not have to
-    land on ``node.lineno`` specifically.
-    """
-    violations = _find_unsafe_comparisons(
-        _FIXTURES_ROOT / "multiline_allowlist_example.py"
-    )
-    assert violations == [], (
-        f"Expected zero violations in multiline_allowlist_example.py — the "
-        f"``# scan-allow:`` on the closing line of a multi-line Compare must "
-        f"suppress; got {[v.render() for v in violations]}"
-    )
+    # multiline_allowlist_example.py: allow on any spanned line suppresses.
+    assert _ids("multiline_allowlist_example.py") == []

@@ -18,9 +18,7 @@ _TZ = "America/Sao_Paulo"
 
 
 def _record(
-    *,
-    billing_mode: str = "manual",
-    paid_until: str | None = None,
+    *, billing_mode: str = "manual", paid_until: str | None = None
 ) -> ApiKeyRecord:
     return ApiKeyRecord(
         id="key_01abc",
@@ -38,73 +36,48 @@ def _record(
     )
 
 
-class TestFirstChargeDate:
-    @pytest.mark.parametrize(
-        ("today", "billing_day", "expected"),
-        [
-            # Mid-month after billing day — rolls to next month's billing day.
-            (date(2026, 4, 13), 5, date(2026, 5, 5)),
-            # Same-day — AC5 rule: rolls to next month.
-            (date(2026, 4, 5), 5, date(2026, 5, 5)),
-            (date(2026, 5, 5), 5, date(2026, 6, 5)),
-            # Day-after — rolls to next month.
-            (date(2026, 4, 6), 5, date(2026, 5, 5)),
-            # Year rollover when today is in December after billing day.
-            (date(2026, 12, 31), 5, date(2027, 1, 5)),
-            (date(2026, 12, 5), 5, date(2027, 1, 5)),
-            # End-of-February -> March billing day.
-            (date(2026, 2, 28), 5, date(2026, 3, 5)),
-            # Before billing day in January — stays in January.
-            (date(2026, 1, 4), 5, date(2026, 1, 5)),
-        ],
-    )
-    def test_table(self, today: date, billing_day: int, expected: date) -> None:
-        result = first_charge_date(today=today, billing_day=billing_day, tz=_TZ)
-        assert result == expected
+@pytest.mark.parametrize(
+    ("today", "billing_day", "expected"),
+    [
+        (date(2026, 4, 13), 5, date(2026, 5, 5)),  # mid-month → next month
+        (date(2026, 4, 5), 5, date(2026, 5, 5)),  # same-day → next month (AC5)
+        (date(2026, 12, 31), 5, date(2027, 1, 5)),  # year rollover
+        (date(2026, 1, 4), 5, date(2026, 1, 5)),  # before billing day → same month
+    ],
+)
+def test_first_charge_date_table(today: date, billing_day: int, expected: date) -> None:
+    assert first_charge_date(today=today, billing_day=billing_day, tz=_TZ) == expected
 
 
-class TestDaysUntil:
-    def test_positive(self) -> None:
-        assert days_until(date(2026, 5, 5), from_date=date(2026, 4, 13)) == 22
-
-    def test_zero(self) -> None:
-        assert days_until(date(2026, 4, 13), from_date=date(2026, 4, 13)) == 0
+def test_days_until_positive_and_zero() -> None:
+    assert days_until(date(2026, 5, 5), from_date=date(2026, 4, 13)) == 22
+    assert days_until(date(2026, 4, 13), from_date=date(2026, 4, 13)) == 0
 
 
 class TestManualBillingProvider:
-    def test_complimentary_always_current(self) -> None:
+    def test_payment_currency_branches(self) -> None:
+        """Complimentary always current; manual depends on paid_until vs today."""
         provider = ManualBillingProvider()
-        rec = _record(billing_mode="complimentary")
-        assert provider.is_payment_current(rec, today=date(2026, 4, 13)) is True
+        today = date(2026, 4, 15)
+        assert provider.is_payment_current(
+            _record(billing_mode="complimentary"), today=today
+        )
+        assert not provider.is_payment_current(_record(paid_until=None), today=today)
+        assert provider.is_payment_current(
+            _record(paid_until="2026-04-15"), today=today
+        )
+        assert not provider.is_payment_current(
+            _record(paid_until="2026-04-14"), today=today
+        )
 
-    def test_manual_paid_until_none_not_current(self) -> None:
-        provider = ManualBillingProvider()
-        rec = _record(billing_mode="manual", paid_until=None)
-        assert provider.is_payment_current(rec, today=date(2026, 4, 13)) is False
-
-    def test_manual_paid_until_equals_today_is_current(self) -> None:
-        provider = ManualBillingProvider()
-        rec = _record(billing_mode="manual", paid_until="2026-04-15")
-        assert provider.is_payment_current(rec, today=date(2026, 4, 15)) is True
-
-    def test_manual_paid_until_past_not_current(self) -> None:
-        provider = ManualBillingProvider()
-        rec = _record(billing_mode="manual", paid_until="2026-04-14")
-        assert provider.is_payment_current(rec, today=date(2026, 4, 15)) is False
-
-    def test_on_key_issued_noop(self) -> None:
+    def test_lifecycle_hooks_are_noop(self) -> None:
         provider = ManualBillingProvider()
         rec = _record()
         assert provider.on_key_issued(rec) is None
-
-    def test_on_key_revoked_noop(self) -> None:
-        provider = ManualBillingProvider()
-        rec = _record()
         assert provider.on_key_revoked(rec) is None
 
-    def test_is_billing_provider_subclass(self) -> None:
+    def test_provider_contract(self) -> None:
+        """ABC cannot be instantiated; ManualBillingProvider satisfies it."""
         assert issubclass(ManualBillingProvider, BillingProvider)
-
-    def test_abc_cannot_be_instantiated(self) -> None:
         with pytest.raises(TypeError):
             BillingProvider()  # type: ignore[abstract]

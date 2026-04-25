@@ -1,12 +1,10 @@
 """Tests for the TTS engine services.
 
 Lean by design (test-suite review 2026-04-25): the FFmpeg pipeline,
-post-processing chains, noise mixing, and chunk strategy are tested
-upstream by integration smoke tests against real audio output. What
-survives here is what ONLY a unit test can guard: char-limit
-enforcement (InvalidRequestError before any model call), model-not-loaded
-guard (clear error vs cryptic NoneType), and a happy-path smoke that
-exercises the create() → ffmpeg pipeline wiring once.
+post-processing, noise mixing, and chunk strategy are tested upstream
+by integration smoke tests against real audio. What ONLY a unit test
+can guard: char-limit + format-allowlist enforcement (400 before any
+model call), and model-not-loaded guard (clear error vs cryptic None).
 """
 
 from __future__ import annotations
@@ -43,33 +41,28 @@ def test_kokoro_engine_generate_speech_smoke(engine: KokoroEngine) -> None:
     assert call_kwargs["lang"] == "pt-br"
 
 
-def test_kokoro_engine_rejects_oversize_text_with_400(
+def test_kokoro_engine_rejects_oversize_empty_and_unsupported_format_with_400(
     engine: KokoroEngine,
 ) -> None:
-    """Text over CHAR_LIMIT → InvalidRequestError(400) BEFORE create()."""
+    """Pre-call validation: oversize text, empty/whitespace, and
+    unsupported formats all raise ``InvalidRequestError`` BEFORE create();
+    the model is never asked to render input that would 4xx anyway."""
     too_long = "a" * (KokoroEngine.CHAR_LIMIT + 1)
     with pytest.raises(InvalidRequestError) as exc_info:
         engine.generate_speech(too_long, "pm_santa", "wav")
     assert str(KokoroEngine.CHAR_LIMIT) in exc_info.value.message
     assert exc_info.value.status_code == 400
-    # No model call happened.
-    engine._kokoro.create.assert_not_called()  # type: ignore[union-attr]
 
-
-def test_kokoro_engine_rejects_empty_or_whitespace_text(
-    engine: KokoroEngine,
-) -> None:
     for bad in ("", "   "):
         with pytest.raises(InvalidRequestError):
             engine.generate_speech(bad, "pm_santa", "wav")
 
-
-def test_kokoro_engine_unsupported_response_format_400(
-    engine: KokoroEngine,
-) -> None:
-    """Only wav and ogg are supported; mp3 → 400."""
+    # mp3 → 400 (only wav and ogg are supported).
     with pytest.raises(InvalidRequestError):
         engine.generate_speech("hello", "pm_santa", "mp3")
+
+    # No model call happened across any of the rejected inputs.
+    engine._kokoro.create.assert_not_called()  # type: ignore[union-attr]
 
 
 def test_kokoro_engine_model_not_loaded_raises_generation_error() -> None:

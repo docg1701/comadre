@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import date
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from rich.console import Console
 
 from comadre.config import Settings, get_registry_settings, get_settings
 from comadre.keys.cache import AuthCache
+from comadre.keys.cli import _clock as _cli_clock
 from comadre.keys.cli import output as _keys_cli_output
 from comadre.keys.db import _apply_migrations, get_connection
 from comadre.main import create_app
@@ -26,30 +28,20 @@ from comadre.rate_limit import RateLimiter
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers."""
     config.addinivalue_line(
         "markers", "slow: marks tests requiring real model inference"
     )
     config.addinivalue_line(
         "markers",
-        "non_regression: CI non-regression suite (PRD Non-Regression Contract"
-        " coverage; some tests spawn docker, others use ASGI TestClient)",
+        "non_regression: CI non-regression suite (PRD Non-Regression Contract;"
+        " some tests spawn docker, others use ASGI TestClient)",
     )
 
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache() -> Iterator[None]:
-    """Clear settings LRU caches before AND after each test.
-
-    F41 — was previously duplicated as a local autouse fixture in 19
-    ``tests/test_keys_cli_*.py`` files (yielded so the cache was cleared
-    on both sides of the test). Promoted here so every CLI test inherits
-    the post-test cleanup without local duplication.
-
-    F33 — also flushes ``get_registry_settings``; the CLI now loads via
-    that narrower cache and tests would otherwise leak fixtures across
-    process state.
-    """
+    """F33/F41: clear LRU caches before AND after each test so a fixture
+    cannot leak across tests via process state."""
     get_settings.cache_clear()
     get_registry_settings.cache_clear()
     yield
@@ -59,17 +51,9 @@ def _clear_settings_cache() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_cli_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
-    """F41 — autouse-stubbed Rich consoles for every test.
-
-    Routes ``comadre.keys.cli.output``'s singleton stdout/stderr Consoles
-    to in-memory buffers so any test that exercises ``render_*`` helpers
-    (or merely imports a CLI command path) does not pollute the real
-    terminal. Cleared on both sides via ``_reset_for_tests`` so
-    cross-test leakage is impossible.
-
-    Tests that don't touch the CLI output module pay only the buffer
-    construction cost; the singletons are re-used across the test body.
-    """
+    """F41: every test gets fresh in-memory Consoles in place of the CLI
+    output module's stdout/stderr singletons — no terminal pollution, no
+    cross-test bleed."""
     stdout_buf = StringIO()
     stderr_buf = StringIO()
     _keys_cli_output._reset_for_tests()
@@ -87,23 +71,17 @@ def _reset_cli_consoles_to_buffers() -> Iterator[tuple[StringIO, StringIO]]:
 
 @pytest.fixture()
 def fernet_key() -> str:
-    """Return a freshly generated Fernet key for tests."""
     return Fernet.generate_key().decode()
 
 
 @pytest.fixture()
 def mock_settings(fernet_key: str) -> Settings:
-    """Return a Settings instance with test defaults.
-
-    Tests that need a specific encryption key override
-    ``key_registry_encryption_key``.
-    """
     return Settings(key_registry_encryption_key=SecretStr(fernet_key))
 
 
 @pytest.fixture()
 def mock_router() -> MagicMock:
-    """Return a mock EngineRouter with typical methods stubbed."""
+    """Mock EngineRouter with the canonical voice list + engine_status shape."""
     router = MagicMock()
     router.generate_speech.return_value = b"fake-audio-bytes"
     router.available_voices.return_value = [
@@ -128,18 +106,14 @@ def mock_router() -> MagicMock:
 
 @pytest.fixture()
 def registry_db_path(tmp_path: Path) -> Path:
-    """Return the tmp-path location the test app writes its registry to."""
     return tmp_path / "registry.db"
 
 
 @pytest.fixture()
 def registry_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    """Yield a fresh registry SQLite connection with migrations applied.
-
-    Saves the ``get_connection + _apply_migrations + try/finally close`` boilerplate
-    in db/auth tests. Tests that need multiple DBs (e.g. rotate_encryption_keys
-    happy + rollback) open additional connections inline.
-    """
+    """Fresh registry connection with migrations applied; saves
+    ``get_connection + _apply_migrations + try/finally close`` boilerplate
+    across db/auth tests."""
     conn = get_connection(tmp_path / "registry.db")
     try:
         _apply_migrations(conn)
@@ -155,12 +129,8 @@ def app(
     registry_db_path: Path,
     fernet_key: str,
 ) -> Any:
-    """Registry-mode FastAPI app with mocked engine state.
-
-    Opens the registry DB, applies migrations, attaches an ``AuthCache``.
-    Integration tests seed customer/api_key rows via ``app.state.registry_db``
-    directly.
-    """
+    """Registry-mode FastAPI app with mocked engine state. Integration
+    tests seed customer/api_key rows via ``app.state.registry_db`` directly."""
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(registry_db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
     monkeypatch.setenv(
@@ -190,31 +160,43 @@ def app(
 
 @pytest.fixture()
 async def client(app: Any) -> AsyncIterator[AsyncClient]:
-    """httpx AsyncClient wired to the test app."""
     async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
+        transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         yield c
 
 
 @pytest.fixture()
 def registry_db(app: Any) -> sqlite3.Connection:
-    """Shortcut to the test app's SQLite connection."""
     conn: sqlite3.Connection = app.state.registry_db
     return conn
 
 
 @pytest.fixture()
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """F41: per-CLI-test env (tmp registry path + Fernet key); promoted
+    from local fixtures duplicated across 19 CLI test files."""
+    key = Fernet.generate_key().decode()
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
+    return {"db_path": str(db_path), "key": key}
+
+
+@pytest.fixture()
+def freeze_today(monkeypatch: pytest.MonkeyPatch) -> Callable[[date], None]:
+    """Pin ``_clock.resolve_today_in_tz`` to a fixed date for CLI tests."""
+
+    def _factory(frozen: date) -> None:
+        monkeypatch.setattr(_cli_clock, "resolve_today_in_tz", lambda _tz: frozen)
+
+    return _factory
+
+
+@pytest.fixture()
 def auth_headers(app: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    """Seed a generous active key and return a Bearer-auth header dict.
-
-    The seeded key's ``rate_limit_rpm`` is intentionally high so any test
-    using ``auth_headers`` can fire dozens of requests without tripping
-    the per-key limit.
-    """
-    from datetime import date
-
+    """Bearer-auth header dict with a generous-rpm seeded key so tests can
+    fire dozens of requests without tripping the per-key limit."""
     from comadre.keys import auth as auth_module
     from tests._keys_fixtures import seed_customer_and_key
 

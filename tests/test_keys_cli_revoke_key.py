@@ -8,87 +8,18 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
-from pathlib import Path
-
-import pytest
-from cryptography.fernet import Fernet
-from typer.testing import CliRunner
 
 from comadre.keys.cli.app import app
-from comadre.keys.db import (
-    _apply_migrations,
-    generate_customer_id,
-    generate_key_id,
-    get_connection,
-    insert_api_key,
-    insert_customer,
-)
-from comadre.keys.models import ApiKeyRecord, CustomerRecord
-from tests._keys_cli_helpers import buffers as _buffers
-from tests._keys_cli_helpers import clear_buffers as _clear_buffers
-
-runner = CliRunner()
-
-
-@pytest.fixture()
-def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    key = Fernet.generate_key().decode()
-    db_path = tmp_path / "registry.db"
-    monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
-    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", key)
-    return {"db_path": str(db_path), "key": key}
-
-
-def _seed(env: dict[str, str], *, status: str = "active") -> str:
-    conn = get_connection(env["db_path"])
-    try:
-        _apply_migrations(conn)
-        cid = generate_customer_id()
-        insert_customer(
-            conn,
-            CustomerRecord(
-                id=cid,
-                name="Helena",
-                email="h@x.com",
-                tax_id_kind="cpf",
-                tax_id_encrypted=b"ct",
-                notes="",
-                registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
-                deleted_at=None,
-            ),
-            actor="cli:tester",
-        )
-        insert_api_key(
-            conn,
-            ApiKeyRecord(
-                id=generate_key_id(),
-                customer_id=cid,
-                key_hash="a" * 64,
-                key_prefix="Pq_abc12",
-                rate_limit_rpm=60,
-                status=status,  # type: ignore[arg-type]
-                billing_mode="manual",
-                price_monthly=149.0,
-                paid_until=None,
-                created_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
-                last_used_at=None,
-                notes="",
-            ),
-            actor="cli:tester",
-        )
-    finally:
-        conn.close()
-    return "Pq_abc12"
+from tests._keys_cli_helpers import buffers, clear_buffers, runner, seed_by_prefix
 
 
 def test_revoke_key_yes_flag_revokes_with_audit(env: dict[str, str]) -> None:
     """``--yes`` revokes the key, stamps audit with reason verbatim."""
-    prefix = _seed(env)
+    _, _, prefix = seed_by_prefix(env["db_path"])
     result = runner.invoke(
         app, ["revoke-key", prefix, "--reason", "compromised", "--yes"]
     )
-    _, stderr = _buffers()
+    _, stderr = buffers()
     assert result.exit_code == 0, stderr
 
     conn = sqlite3.connect(env["db_path"])
@@ -98,18 +29,17 @@ def test_revoke_key_yes_flag_revokes_with_audit(env: dict[str, str]) -> None:
         audit = conn.execute(
             "SELECT details_json FROM audit_log WHERE action = 'revoke_key'"
         ).fetchone()
-        details = json.loads(audit[0])
-        assert details == {"reason": "compromised"}
+        assert json.loads(audit[0]) == {"reason": "compromised"}
     finally:
         conn.close()
 
 
 def test_revoke_key_already_revoked_or_missing_exits_3(env: dict[str, str]) -> None:
     """Revoking a revoked key + revoking an unknown prefix both exit 3."""
-    prefix = _seed(env, status="revoked")
+    _, _, prefix = seed_by_prefix(env["db_path"], status="revoked")
     result = runner.invoke(app, ["revoke-key", prefix, "--reason", "x", "--yes"])
     assert result.exit_code == 3
-    _clear_buffers()
+    clear_buffers()
 
     result = runner.invoke(app, ["revoke-key", "NOPENOPE", "--reason", "x", "--yes"])
     assert result.exit_code == 3
@@ -117,8 +47,8 @@ def test_revoke_key_already_revoked_or_missing_exits_3(env: dict[str, str]) -> N
 
 def test_revoke_key_rejects_invalid_reason(env: dict[str, str]) -> None:
     """--reason must be non-empty, no control bytes."""
-    prefix = _seed(env)
+    _, _, prefix = seed_by_prefix(env["db_path"])
     for bad in ("", "   ", "with\x00nul"):
         result = runner.invoke(app, ["revoke-key", prefix, "--reason", bad, "--yes"])
         assert result.exit_code == 2
-        _clear_buffers()
+        clear_buffers()
