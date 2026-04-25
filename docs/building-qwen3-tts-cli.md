@@ -12,6 +12,8 @@ The compiled binary lives at `deploy/bin/qwen3-tts-cli` and is copied into the D
 - Upstream `predict-woo/qwen3-tts.cpp` has a new release you want to pick up
 - The seed patch needs updating after upstream changes
 
+> **Note on Qwen3 model files vs. the CLI binary.** This document covers building the **C++ inference binary** (`qwen3-tts-cli`). The **GGUF model files** it consumes (`qwen3-tts-0.6b-q8_0.gguf` + `qwen3-tts-tokenizer-f16.gguf`) are now published pre-built at `PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF` and auto-downloaded by the service on first startup when `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` are set. You only need `docs/quantizing-qwen3-models.md` for custom-quant or air-gapped deploys.
+
 ## Source Information
 
 | Item | Value |

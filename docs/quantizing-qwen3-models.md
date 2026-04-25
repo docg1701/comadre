@@ -1,5 +1,8 @@
 # Quantizing and Deploying Qwen3 TTS Models
 
+> **Status: legacy / optional procedure (kept for air-gapped or custom-quant deploys).**
+> A pre-built Q8_0 GGUF is now published at `PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF` on HuggingFace, and the service auto-downloads it on first startup whenever `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` are set in the environment. **Fresh deployments do not need this document** — the auto-download path covers them. Re-run this procedure only when (a) you need a custom quantization (e.g. Q5_K_M for memory-constrained hosts), (b) the deployment target is air-gapped and you must side-load via SCP through `deploy/ansible/playbooks/deploy-models.yml`, or (c) you are bringing up a new Qwen3 base model that PabloHoties has not yet published.
+
 ## Overview
 
 The Qwen3 TTS engine requires two GGUF model files:
@@ -11,7 +14,7 @@ The Qwen3 TTS engine requires two GGUF model files:
 
 We use Q8_0 for the TTS model (9% faster, 28% less RAM, quality equal to F16). The tokenizer/vocoder stays at F16 (sensitive to quantization).
 
-Pre-quantized Q8_0 files are not available on HuggingFace. You must convert from the original HuggingFace safetensors using the upstream conversion script. This is a one-time operation done on your local machine, never on the VPS.
+For fresh deploys, the pre-built Q8_0 files are pulled automatically — see the banner above. The procedure below is the manual conversion path from the original HuggingFace safetensors using the upstream conversion script. It is a one-time operation done on your local machine, never on the VPS.
 
 ## What Doesn't Work
 

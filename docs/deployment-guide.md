@@ -102,7 +102,7 @@ ansible-playbook playbooks/health.yml -i inventory/production.yml
 
 # 4. Register the first customer and issue their API key
 ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
-  comadre-keys create-customer --name 'Acme Demo' --email ops@acme.example --tax-id 11144477735"
+  comadre-keys create-customer --name 'Acme Demo' --email ops@acme.example --cpf 11144477735"
 ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
   comadre-keys issue-key --customer cust_<ulid-from-previous-step> --rpm 60 --price 149"
 # The plaintext (cmdr_live_...) is printed once; copy it to your client config now.
@@ -438,7 +438,7 @@ ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
   comadre-keys create-customer \
     --name 'Acme Demo' \
     --email ops@acme.example \
-    --tax-id 11144477735"
+    --cpf 11144477735"
 # → cust_01jABC...
 
 ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \

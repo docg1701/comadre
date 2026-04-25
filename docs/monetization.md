@@ -68,10 +68,14 @@ Content-Type: application/json
 | Intent | Command | Effect |
 | --- | --- | --- |
 | Raise or lower a customer's throughput | `comadre-keys update-key <prefix> --rpm <new>` | New cap is enforced on the next request — no cache-TTL wait. |
-| Change monthly price | `comadre-keys update-key <prefix> --price <brl>` | Manual-mode only. Rejected for complimentary keys. |
+| Change monthly price (out-of-cycle) | `comadre-keys update-key <prefix> --price <brl>` | Manual-mode only. Rejected for complimentary keys. Audit row carries `{price_monthly_changed, old, new}` so `revenue --as-of` can rewind it. |
+| Confirm payment to an exact date | `comadre-keys mark-paid <prefix> --until YYYY-MM-DD` | Sets `paid_until` to the exact day; auto-reactivates a suspended key. Mutually exclusive with `--months`. |
+| Confirm payment for N months | `comadre-keys mark-paid <prefix> --months <1..36>` | Anchors on the existing `paid_until` if it is today-or-later (extends the window), else anchors on today (starts a new window). Month-end clamp applied (Jan 31 + 1 month → Feb 28/29). Mutually exclusive with `--until`. |
+| Confirm payment **and** change price atomically | `comadre-keys mark-paid <prefix> --until YYYY-MM-DD --price-monthly <brl>` (or `--months N --price-monthly <brl>`) | Single transaction: `paid_until` and `price_monthly` move together. Audit row records `{price_monthly_changed, old, new}` when the price actually changes. |
 | Replace a compromised plaintext | `comadre-keys rotate-key <prefix>` | New plaintext, same `key_id`, same bucket, same billing state. Old plaintext stops working immediately. |
 | Retire a key permanently | `comadre-keys revoke-key <prefix> --reason "..."` | Terminal. All subsequent requests with this key return 401. |
 | Audit a customer or key | `comadre-keys show <cust_id-or-prefix>` | Detail panel plus the tail of the audit log for that target. |
+| Reconstruct historical revenue | `comadre-keys revenue --month YYYY-MM --as-of YYYY-MM-DD` | Replays the audit log up to `--as-of` (in `BILLING_TIMEZONE`) to reproduce status / `paid_until` / `price_monthly` as they stood that day. Validates `earliest_audit_row.date ≤ as_of ≤ today`. |
 
 **Auth cache and synchronous invalidation.** The FastAPI process caches authenticated `AuthPayload` objects (60-second TTL ceiling) keyed by the token hash. Every `comadre-keys` mutation (`update-key`, `revoke-key`, `rotate-key`) touches a sentinel file at `{KEY_REGISTRY_DB_PATH}.invalidate`; the API stats this sentinel on every cache read and flushes immediately when mtime advances. A revoked key stops authenticating on the very next request. The TTL remains a safety net for scenarios where the sentinel cannot be observed (e.g. registry file moved, volume remount).
 
@@ -141,7 +145,7 @@ comadre-keys export-customer cust_01HG7... --format yaml > /tmp/customer-export.
 
 **Explicit exclusions.** The export does **not** include:
 
-- The operator-internal **audit log** of actions taken on the customer (default behaviour). Audit rows name the actor and the target; they are operator-forensic records, not subject-access territory under the LGPD minimum-necessary reading. Some legal interpretations of Art. 18 II/V read this scope more broadly — when your counsel commissions that broader interpretation, run `comadre-keys export-customer <cust_id> --include-audit` (Story 5.1 Gap 6). The opt-in appends a chronological `audit_events` array to the same envelope; each entry carries `action`, `actor`, `occurred_at`, and an optional `details` object filtered through the same forbidden-keys blocklist that `log_event` enforces at write time (no CPF/CNPJ/name/email/key plaintext can surface).
+- The operator-internal **audit log** of actions taken on the customer (default behaviour). Audit rows name the actor and the target; they are operator-forensic records, not subject-access territory under the LGPD minimum-necessary reading. Some legal interpretations of Art. 18 II/V read this scope more broadly — when your counsel commissions that broader interpretation, run `comadre-keys export-customer <cust_id> --include-audit` (Story 5.1 Gap 6). The opt-in appends a chronological-ascending `audit_events` array (oldest first) to the same envelope; each entry carries `action`, `actor`, `occurred_at`, and an optional `details` object filtered through the same forbidden-keys blocklist that `log_event` enforces at write time (no CPF/CNPJ/name/email/key plaintext can surface). The envelope also gains two completeness signals: `audit_events_total` (count of all matching audit rows) and `audit_events_truncated` (boolean — `true` when the array was capped at the 1000-row limit; in that case paginate the slice you need via `comadre-keys show <cust_id> --audit-tail N`). Audit rows whose `details_json` is corrupt or non-object emit `details: {"_corrupt": true}` instead of being silently dropped, so a forensic reader can detect out-of-band INSERTs.
 - The **SHA-256 hash** of any API key plaintext. Hashes never leave storage by design; this is a security boundary, not an LGPD posture.
 - Operator-internal billing data — `rate_limit_rpm`, `paid_until`, `price_monthly`. These are not subject data under LGPD. You may include them voluntarily by attaching the output of `comadre-keys show cust_... --format json`; that is a customer-relationship choice, not an LGPD-access obligation.
 
@@ -194,18 +198,43 @@ LGPD Art. 18 III is the right to correct incomplete, inaccurate, or out-of-date 
   comadre-keys update-customer cust_01HG7... --email new@acme.example
   ```
 
-- **Notes — append a correction-trail entry.** The CLI exposes `--add-note` (append-with-timestamp), not a `--notes` replace flag. Use it to record that a correction was made; the audit trail accumulates rather than overwrites:
+- **Name correction (legal-name typo, social-name update).** Use `--name` on `update-customer`:
 
   ```bash
-  comadre-keys update-customer cust_01HG7... \
-    --add-note "Razão social corrigida em 2026-04-24: Acme Holdings Ltda."
+  comadre-keys update-customer cust_01HG7... --name "Acme Holdings Ltda."
   ```
+
+  Preserves `customer_id` and every `api_key.customer_id` FK. Same-value writes (e.g. `--name "X"` against a row already named "X") produce no UPDATE and no audit row.
+
+- **Notes — append vs replace (mutually exclusive).** Two operator paths land in the same `update_customer` audit action; the audit `details_json` carries a `notes_op` discriminator (`"append"` or `"replace"`) so a forensic reader can distinguish a correction-trail entry from a notes-column wipe.
+
+  - `--add-note` appends a single dated line; the audit trail accumulates rather than overwrites:
+
+    ```bash
+    comadre-keys update-customer cust_01HG7... \
+      --add-note "Razão social corrigida em 2026-04-24: Acme Holdings Ltda."
+    ```
+
+  - `--notes` replaces the entire notes column (multi-line allowed). Whitespace-only `--notes ""` is rejected (exit 2) so the operator does not silently wipe the column:
+
+    ```bash
+    comadre-keys update-customer cust_01HG7... \
+      --notes "rebuilt history\n[2026-04-25] consolidated"
+    ```
 
   See [`_bmad-output/planning-artifacts/epics.md:435-458`](../_bmad-output/planning-artifacts/epics.md) (Story 1.5) for the verb's contract; the [deploy-guide §Key Registry Management](deployment-guide.md#key-registry-management) has the operational reference.
 
-- **Name corrections (legal name typos, social-name updates).** Out of 4.6 scope. The 2.0.0 CLI exposes no `--name` replace flag on `update-customer`; the only paths are (a) record the correction in `--add-note` (audit-trail-preserving but the displayed `name` stays wrong) or (b) `delete-customer --hard` + `create-customer` under the corrected name (loses `customer_id` and forces key reissue). Track this as deferred work in §Deferred work below — a future Story 4.x may add a `--name` flag that preserves `customer_id`.
+- **Tax-ID corrections (CPF or CNPJ).** Use `comadre-keys correct-tax-id` (Story 5.1 Gap 7). The verb does an in-transaction UPDATE of `tax_id_encrypted` + `tax_id_kind` and writes one audit row carrying `{old_kind, new_kind, reason}` — **never** the value itself. `customer_id` and every `api_key.customer_id` FK are preserved (no key reissue, no orphaned billing history).
 
-- **Tax-ID corrections (CPF or CNPJ).** Out of 4.6 scope. CPF and CNPJ are immutable identifiers in the Brazilian tax registry; "correcting" one almost always means "the wrong subject was registered". Today the procedure requires `comadre-keys delete-customer cust_... --hard` followed by `comadre-keys create-customer ...` under the corrected tax-ID, which generates a fresh `customer_id`. This is documented as a limitation, not a workaround. A future Story 4.x may add a `correct-tax-id` verb that preserves `customer_id` and `key_id` continuity; tracked as deferred work in §Deferred work below.
+  ```bash
+  comadre-keys correct-tax-id cust_01HG7... \
+    --new-cpf "111.444.777-35" \
+    --reason "operator-typo correction (Story 5.1 Gap 7 audit)"
+  ```
+
+  `--new-cpf` and `--new-cnpj` are mutually exclusive; exactly one is required. `--reason` is required, single-line, ≤ 1024 chars; NUL/CR/LF/empty/oversize all exit 2 (mirrors `revoke-key --reason`). The interactive Destroy-tier confirmation prompt can be bypassed with `--yes` for scripting. The new tax-ID is encrypted via `crypto.py::encrypt_tax_id` (the codebase's single Fernet boundary; `correct-tax-id` does not import Fernet directly).
+
+  **Do not use `delete-customer --hard` + `create-customer` for a tax-ID typo** — that path produces a tombstone plus a brand-new `customer_id`; all keys, billing history, and audit chain re-anchor or orphan. The dedicated verb exists precisely to avoid that loss.
 
 ### Breach-notification runbook (Art. 48)
 
@@ -516,10 +545,10 @@ www.gov.br/anpd.
 
 ### Deferred work tracked against this handbook
 
-- **`--include-audit` opt-in on `comadre-keys export-customer`.** Some legal interpretations of Art. 18 II read the access right broadly enough to include operator-activity logs. Today the operator assembles that broader response manually from `comadre-keys show <cust_id> --audit-tail`. A future Story 4.x may add an opt-in flag.
-- **`comadre-keys correct-tax-id` verb.** Tax-ID corrections today require `delete-customer --hard` + `create-customer`. A dedicated verb would preserve `customer_id` continuity.
 - **Project-commissioned legal-counsel review of the notification templates.** The templates are structural. An operator who commissions their own counsel review is encouraged to PR back any improvements as a structural refinement.
 - **Localised Portuguese-primary handbook for Portuguese-native operators.** Today the prose is English (operator-audience); only the templates are Portuguese. A fully-Portuguese variant is a 2.1+ candidate.
+
+> Items previously listed here that were shipped in Story 5.1 — `--include-audit` opt-in on `export-customer` and the dedicated `correct-tax-id` verb — are documented in §Handling a data-subject access request and §Handling a correction request respectively.
 
 ### References
 
