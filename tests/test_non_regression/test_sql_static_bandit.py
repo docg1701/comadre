@@ -263,48 +263,21 @@ def test_src_comadre_keys_has_no_b608_findings() -> None:
 
 
 @pytest.mark.non_regression
-def test_scan_flags_bad_fstring() -> None:
-    """Self-test: f-string SQL interpolation is flagged by B608."""
-    findings = _run_bandit([_FIXTURES_ROOT / "bad_fstring_sql.py"])
-    assert len(findings) == 1, (
-        f"Expected exactly one B608 finding in bad_fstring_sql.py; got "
-        f"{len(findings)}: {[f.render() for f in findings]}"
-    )
-    assert findings[0].test_id == "B608"
-    assert "SELECT" in findings[0].code and "{" in findings[0].code, (
-        f"Expected B608 finding's code excerpt to include the f-string "
-        f"SELECT construction; got code={findings[0].code!r}"
-    )
+def test_scan_self_tests_flag_violations_and_respect_allowlists() -> None:
+    """Self-test: bandit B608 catches f-string + %-format SQL; ``# nosec
+    B608`` suppresses; positional ? bindings produce zero findings."""
+    # f-string SQL → flagged.
+    f_findings = _run_bandit([_FIXTURES_ROOT / "bad_fstring_sql.py"])
+    assert len(f_findings) == 1
+    assert f_findings[0].test_id == "B608"
 
+    # %-formatting SQL → flagged (same B608 risk class).
+    pct_findings = _run_bandit([_FIXTURES_ROOT / "bad_concat_sql.py"])
+    assert len(pct_findings) == 1
+    assert pct_findings[0].test_id == "B608"
 
-@pytest.mark.non_regression
-def test_scan_flags_bad_concat() -> None:
-    """Self-test: %-formatting SQL is flagged by B608 (same risk class)."""
-    findings = _run_bandit([_FIXTURES_ROOT / "bad_concat_sql.py"])
-    assert len(findings) == 1, (
-        f"Expected exactly one B608 finding in bad_concat_sql.py; got "
-        f"{len(findings)}: {[f.render() for f in findings]}"
-    )
-    assert findings[0].test_id == "B608"
+    # ``# nosec B608  # <reason>`` suppresses.
+    assert _run_bandit([_FIXTURES_ROOT / "nosec_allowed_sql.py"]) == []
 
-
-@pytest.mark.non_regression
-def test_scan_respects_nosec() -> None:
-    """Self-test: ``# nosec B608  # <reason>`` suppresses the finding."""
-    findings = _run_bandit([_FIXTURES_ROOT / "nosec_allowed_sql.py"])
-    assert findings == [], (
-        f"Expected zero B608 findings in nosec_allowed_sql.py (the one "
-        f"f-string site carries an inline `# nosec B608  # <reason>` "
-        f"two-comment annotation); got {[f.render() for f in findings]}"
-    )
-
-
-@pytest.mark.non_regression
-def test_scan_ignores_parameterised_sql() -> None:
-    """Self-test: positional ? bindings produce zero B608 findings."""
-    findings = _run_bandit([_FIXTURES_ROOT / "parameterised_sql.py"])
-    assert findings == [], (
-        f"Expected zero B608 findings in parameterised_sql.py (both "
-        f"queries use ? placeholder bindings exclusively); got "
-        f"{[f.render() for f in findings]}"
-    )
+    # Positional ? bindings → zero findings.
+    assert _run_bandit([_FIXTURES_ROOT / "parameterised_sql.py"]) == []

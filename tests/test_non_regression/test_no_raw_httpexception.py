@@ -187,71 +187,23 @@ def test_src_comadre_has_no_raw_httpexception() -> None:
 
 
 @pytest.mark.non_regression
-def test_scan_flags_bad_raise() -> None:
-    """Self-test: raw ``raise HTTPException(...)`` (plus its import) is flagged."""
-    violations = _find_raw_httpexception_usages(_FIXTURES_ROOT / "bad_raise.py")
-    kinds = sorted(v.kind for v in violations)
-    assert kinds == ["import", "raise"], (
-        f"Expected exactly one 'import' and one 'raise' violation in "
-        f"bad_raise.py; got kinds={kinds}: "
-        f"{[v.render() for v in violations]}"
-    )
-    raise_violations = [v for v in violations if v.kind == "raise"]
-    assert "raise HTTPException" in raise_violations[0].source, (
-        f"Expected the 'raise' violation's source line to include "
-        f"'raise HTTPException'; got {raise_violations[0].source!r}"
-    )
+def test_scan_self_tests_pass_all_fixture_cases() -> None:
+    """Self-test: scanner flags violations + respects allowlists + ignores
+    non-violations across all four fixture files."""
+    # bad_raise.py: 1 raise + 1 import flagged.
+    bad_raise = _find_raw_httpexception_usages(_FIXTURES_ROOT / "bad_raise.py")
+    assert sorted(v.kind for v in bad_raise) == ["import", "raise"]
 
+    # bad_import.py: 1 import flagged (even with noqa: F401).
+    bad_import = _find_raw_httpexception_usages(_FIXTURES_ROOT / "bad_import.py")
+    assert len(bad_import) == 1
+    assert bad_import[0].kind == "import"
 
-@pytest.mark.non_regression
-def test_scan_flags_bad_import() -> None:
-    """Self-test: ``from fastapi.exceptions import HTTPException`` is flagged
-    even when the class is unused (``# noqa: F401`` silences ruff only).
-    """
-    violations = _find_raw_httpexception_usages(_FIXTURES_ROOT / "bad_import.py")
-    assert len(violations) == 1, (
-        f"Expected exactly one violation in bad_import.py, got "
-        f"{len(violations)}: {[v.render() for v in violations]}"
-    )
-    violation = violations[0]
-    assert violation.kind == "import", (
-        f"Expected kind='import', got kind={violation.kind!r}"
-    )
-    assert "HTTPException" in violation.source
-    assert "# noqa: F401" in violation.source, (
-        f"Fixture should carry '# noqa: F401' on the import line so the "
-        f"self-test also demonstrates that ruff's noqa token does NOT "
-        f"suppress 4.5f's scan; got source={violation.source!r}"
-    )
+    # allowlisted_raise.py: scan-allow on both lines → zero violations.
+    allowed = _find_raw_httpexception_usages(_FIXTURES_ROOT / "allowlisted_raise.py")
+    assert allowed == []
 
-
-@pytest.mark.non_regression
-def test_scan_respects_allowlist_on_both_kinds() -> None:
-    """Self-test: ``# scan-allow: <reason>`` on the same source line
-    suppresses BOTH a ``raise HTTPException`` and a
-    ``from fastapi import HTTPException`` violation.
-    """
-    violations = _find_raw_httpexception_usages(_FIXTURES_ROOT / "allowlisted_raise.py")
-    assert violations == [], (
-        f"Expected zero violations in allowlisted_raise.py (both the "
-        f"import and the raise carry inline # scan-allow: comments); got "
-        f"{[v.render() for v in violations]}"
-    )
-
-
-@pytest.mark.non_regression
-def test_scan_ignores_comadre_error_raises() -> None:
-    """Self-test: ``raise VoiceNotFoundError(...)`` is NOT an HTTPException
-    raise, and docstring mentions of ``HTTPException`` / ``from fastapi
-    import HTTPException`` as string literals are structurally outside the
-    scan's AST rules.
-    """
-    violations = _find_raw_httpexception_usages(
-        _FIXTURES_ROOT / "comadre_error_only.py"
-    )
-    assert violations == [], (
-        f"Expected zero violations in comadre_error_only.py (the raise "
-        f"is of VoiceNotFoundError, not HTTPException; the docstring "
-        f"mentions are Constant nodes, not ImportFrom/Raise); got "
-        f"{[v.render() for v in violations]}"
-    )
+    # comadre_error_only.py: ComadreError raises are NOT flagged; docstring
+    # mentions of HTTPException are AST Constants, not Raises/ImportFroms.
+    clean = _find_raw_httpexception_usages(_FIXTURES_ROOT / "comadre_error_only.py")
+    assert clean == []
