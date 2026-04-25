@@ -23,7 +23,7 @@ import click
 import typer
 from pydantic import ValidationError
 
-from comadre.config import Settings, get_settings
+from comadre.config import RegistrySettings, get_registry_settings
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import ManualBillingProvider, days_until, first_charge_date
 from comadre.keys.cli import _clock
@@ -682,7 +682,7 @@ def _key_update_clauses(result: UpdateKeyResult) -> list[str]:
     return clauses
 
 
-def load_settings_and_tz() -> tuple[Settings, ZoneInfo] | None:
+def load_settings_and_tz() -> tuple[RegistrySettings, ZoneInfo] | None:
     """Return ``(settings, billing_tz)`` or ``None`` after rendering an error.
 
     Shared configuration-surface for the Story 1.6 and Story 3.1 command
@@ -690,16 +690,19 @@ def load_settings_and_tz() -> tuple[Settings, ZoneInfo] | None:
     without touching the existing ``issue-key`` / ``list-keys`` / ``show``
     paths.
 
-    F36 — return type tightened from ``tuple[object, ZoneInfo] | None`` to
-    ``tuple[Settings, ZoneInfo] | None`` so call sites stop needing
-    ``cast(Settings, settings_obj)`` / ````
-    dance to read ``settings.key_registry_db_path``.
+    F33 — switched from ``Settings`` to ``RegistrySettings`` so the CLI
+    no longer drags TTS-runtime fields (Kokoro/Qwen3 paths, voices/noise
+    dirs, model URLs) through pydantic validation. Hosts that have not
+    yet deployed the FastAPI app can still operate the registry.
+
+    F36 — return type tightened from ``tuple[object, ZoneInfo] | None``
+    so call sites stop needing ``cast(Settings, settings_obj)``.
 
     Returns ``None`` when the caller should ``raise typer.Exit(code=6)``;
     the error panel has already been rendered.
     """
     try:
-        settings = get_settings()
+        settings = get_registry_settings()
     except ValidationError as exc:
         if is_missing_encryption_key(exc):
             render_error(

@@ -104,6 +104,7 @@ _Critical rules and patterns that AI agents must follow when implementing code i
 - **Horizontal scaling only** — single FIFO queue per container. Add replicas behind Caddy, never workers/threads inside one instance.
 - **Never work in `/tmp`** — all builds/artifacts stay inside the repository (see `.gitignore` for exclusions).
 - **`_bmad-output/` is tracked in git** — never add it to `.gitignore`.
+- **Every retrospective triages `deferred-work.md` to zero** — the BMad retro workflow must end with `_bmad-output/implementation-artifacts/deferred-work.md` either empty or containing only items with documented dismissal reasoning. Code reviews are excellent at *generating* deferred-work; nothing else *consumes* it. Process rule adopted 2026-04-25 after the Epic 4 retrospective surfaced 71 unconsumed items spanning 4 epics; the rule prevents that accumulation from recurring. (Source: `epic-4-retro-2026-04-24.md` §SD2 + §9 A8.)
 
 ### Critical Don't-Miss Rules
 
@@ -121,7 +122,7 @@ _Critical rules and patterns that AI agents must follow when implementing code i
 - Kokoro handles siglas natively via espeak-ng pt_extra dictionary (67 entries). Qwen3 uses `expand_siglas()` to space them (`CNPJ` → `C N P J`), except `WORD_SIGLAS` (SUS, PIX, LOAS, etc.) which are pronounced as words.
 
 **Caddy gotchas:**
-- `Server: Caddy` leak on 404/308 is unfixable Caddy limitation. Don't attempt to suppress it.
+- `Server: Caddy` / `Via` leak on 404/405 from `file_server`'s internal error path is fixable via a site-block `handle_errors` directive that re-applies the security headers + `header -Server` + `header -Via` + a `respond {err.status_code}` JSON body. Both `Caddyfile` and `Caddyfile-no-landing` carry this since 2026-04-25 (F67/F68). Only the global HTTP→HTTPS 308 is structurally bare (issued from the `servers` block before any site-block runs) and accepted as residual.
 - The `dynamic a` resolver is load-bearing — plain `reverse_proxy tts-service:8000` would cache the first-resolved IP and defeat replica scaling.
 
 **Anti-patterns — never do these:**
@@ -156,4 +157,4 @@ _Critical rules and patterns that AI agents must follow when implementing code i
 - Review after major refactors
 - Remove rules that become obvious over time
 
-Last Updated: 2026-04-14
+Last Updated: 2026-04-25 — Caddy 404/405 header leak now fixable; deferred-work zero-triage rule added.

@@ -28,15 +28,149 @@ def _project_env_file() -> Path:
     return Path(".env")
 
 
-class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+_MODEL_CONFIG = SettingsConfigDict(
+    case_sensitive=False,
+    env_file=_project_env_file(),
+    env_file_encoding="utf-8",
+    extra="ignore",
+)
 
-    model_config = SettingsConfigDict(
-        case_sensitive=False,
-        env_file=_project_env_file(),
-        env_file_encoding="utf-8",
-        extra="ignore",
+
+class RegistrySettings(BaseSettings):
+    """Registry, billing, and operator-contact configuration.
+
+    F33 — split out from ``Settings`` so the ``comadre-keys`` CLI loads
+    only the surface it actually consumes. The CLI never touches Kokoro /
+    Qwen3 / voices / noise paths; routing it through this narrower model
+    means a host that has not yet configured the TTS side (e.g. an
+    operator running ``comadre-keys issue-key`` from a fresh checkout
+    before deploying the FastAPI app) does not trip URL validators or
+    inherit defaults that pretend to mean something.
+
+    ``Settings`` extends this class to add the TTS-runtime surface — the
+    FastAPI app reads everything from a single ``Settings`` instance, so
+    no consumer is forced to load both. ``extra="ignore"`` on the model
+    config means ``RegistrySettings()`` silently skips any TTS-side env
+    vars the operator happens to have set; the values are still picked
+    up by the FastAPI app via ``get_settings()``.
+    """
+
+    model_config = _MODEL_CONFIG
+
+    key_registry_db_path: str = Field(
+        default="./data/keys/registry.db",
+        min_length=1,
+        description=("SQLite key registry path. Created with mode 0600 on first use."),
     )
+    key_registry_encryption_key: SecretStr = Field(
+        ...,
+        description=(
+            "Fernet key for encrypting tax IDs at rest. Required — generate "
+            'with `python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"`.'
+        ),
+    )
+    backup_passphrase: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "Passphrase for AES-256 encryption of nightly backup tarballs. "
+            "Consumed only by the backup/restore ansible playbooks; NOT read "
+            "by the FastAPI app or any comadre-keys CLI verb. Must be at "
+            "least 16 characters when set; empty is accepted at service boot "
+            "so a deployment that has not yet run bootstrap.yml with "
+            "COMADRE_BACKUP_PASSPHRASE exported can still start the auth path."
+        ),
+    )
+    operator_contact_hint: str = Field(
+        default="Contact your Comadre operator for billing.",
+        description="Operator contact string shown in CLI error hints.",
+    )
+    billing_day: int = Field(
+        default=5,
+        ge=1,
+        le=28,
+        description="Day-of-month for billing sweeps (1-28 to avoid month-end).",
+    )
+    billing_timezone: str = Field(
+        default="UTC",
+        min_length=1,
+        description=(
+            "IANA timezone used for billing-day calculations and the daily "
+            "suspension sweep's day-boundary. Default UTC for operator-neutral "
+            "predictability across international deployments; override per "
+            "deployment (e.g. America/Sao_Paulo) and communicate the chosen "
+            "zone to customers contractually since it governs when paid_until "
+            "expires and API keys flip to 401."
+        ),
+    )
+
+    @field_validator("key_registry_encryption_key")
+    @classmethod
+    def _validate_fernet_key_shape(cls, v: SecretStr) -> SecretStr:
+        """Reject malformed Fernet keys without echoing the raw value.
+
+        Runs on the already-coerced `SecretStr`, so pydantic's error rendering
+        masks the input as `**********` — AC5/NFR16 anti-enumeration guarantee
+        for the key value itself. The field itself is required (no default),
+        so pydantic handles the missing-value case before this runs.
+        """
+        try:
+            Fernet(v.get_secret_value().encode())
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "KEY_REGISTRY_ENCRYPTION_KEY must be a valid Fernet key"
+            ) from exc
+        return v
+
+    @field_validator("billing_timezone")
+    @classmethod
+    def _validate_iana_timezone(cls, v: str) -> str:
+        """Reject non-IANA timezone strings at config load time.
+
+        Without this, a typo like ``America/Sao-Paulo`` or ``BRT`` silently
+        desyncs the runtime BILLING_TIMEZONE from the cron's CRON_TZ — see
+        the CLAUDE.md gotcha. Failing fast at boot makes the misconfiguration
+        immediately operator-visible.
+        """
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"BILLING_TIMEZONE {v!r} is not a valid IANA timezone "
+                "(e.g. UTC, America/Sao_Paulo, Europe/Lisbon)"
+            ) from exc
+        return v
+
+    @field_validator("backup_passphrase")
+    @classmethod
+    def _validate_backup_passphrase_length(cls, v: SecretStr) -> SecretStr:
+        """Accept empty (deferred-bootstrap OK) or length >= 16 chars.
+
+        Empty-at-boot is by design (Story 4.3): the passphrase is consumed
+        only by the backup/restore playbooks, not the FastAPI app or any
+        CLI verb. Forcing it to be required at boot would make the upgrade
+        path chicken-and-egg (service won't start → can't run bootstrap →
+        service won't start). The playbooks themselves enforce the length
+        check via ``ansible.builtin.assert``.
+        """
+        secret = v.get_secret_value()
+        if secret and len(secret) < 16:
+            raise ValueError(
+                "BACKUP_PASSPHRASE must be at least 16 characters when set; "
+                "leave empty to defer configuration until bootstrap.yml runs "
+                "with COMADRE_BACKUP_PASSPHRASE exported."
+            )
+        return v
+
+
+class Settings(RegistrySettings):
+    """Full application settings — registry surface plus TTS runtime.
+
+    Consumed by the FastAPI app and any code path that needs both the
+    registry/billing fields and the engine/voices/noise/port fields.
+    The ``comadre-keys`` CLI uses ``RegistrySettings`` directly via
+    ``get_registry_settings()``.
+    """
 
     default_voice: str = "kokoro/pm_santa"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -111,53 +245,6 @@ class Settings(BaseSettings):
         description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
     )
 
-    key_registry_db_path: str = Field(
-        default="./data/keys/registry.db",
-        min_length=1,
-        description=("SQLite key registry path. Created with mode 0600 on first use."),
-    )
-    key_registry_encryption_key: SecretStr = Field(
-        ...,
-        description=(
-            "Fernet key for encrypting tax IDs at rest. Required — generate "
-            'with `python -c "from cryptography.fernet import Fernet; '
-            'print(Fernet.generate_key().decode())"`.'
-        ),
-    )
-    backup_passphrase: SecretStr = Field(
-        default=SecretStr(""),
-        description=(
-            "Passphrase for AES-256 encryption of nightly backup tarballs. "
-            "Consumed only by the backup/restore ansible playbooks; NOT read "
-            "by the FastAPI app or any comadre-keys CLI verb. Must be at "
-            "least 16 characters when set; empty is accepted at service boot "
-            "so a deployment that has not yet run bootstrap.yml with "
-            "COMADRE_BACKUP_PASSPHRASE exported can still start the auth path."
-        ),
-    )
-    operator_contact_hint: str = Field(
-        default="Contact your Comadre operator for billing.",
-        description="Operator contact string shown in CLI error hints.",
-    )
-    billing_day: int = Field(
-        default=5,
-        ge=1,
-        le=28,
-        description="Day-of-month for billing sweeps (1-28 to avoid month-end).",
-    )
-    billing_timezone: str = Field(
-        default="UTC",
-        min_length=1,
-        description=(
-            "IANA timezone used for billing-day calculations and the daily "
-            "suspension sweep's day-boundary. Default UTC for operator-neutral "
-            "predictability across international deployments; override per "
-            "deployment (e.g. America/Sao_Paulo) and communicate the chosen "
-            "zone to customers contractually since it governs when paid_until "
-            "expires and API keys flip to 401."
-        ),
-    )
-
     @field_validator(
         "kokoro_model_url",
         "kokoro_voices_url",
@@ -175,66 +262,20 @@ class Settings(BaseSettings):
         HttpUrl(v)
         return v
 
-    @field_validator("key_registry_encryption_key")
-    @classmethod
-    def _validate_fernet_key_shape(cls, v: SecretStr) -> SecretStr:
-        """Reject malformed Fernet keys without echoing the raw value.
-
-        Runs on the already-coerced `SecretStr`, so pydantic's error rendering
-        masks the input as `**********` — AC5/NFR16 anti-enumeration guarantee
-        for the key value itself. The field itself is required (no default),
-        so pydantic handles the missing-value case before this runs.
-        """
-        try:
-            Fernet(v.get_secret_value().encode())
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                "KEY_REGISTRY_ENCRYPTION_KEY must be a valid Fernet key"
-            ) from exc
-        return v
-
-    @field_validator("billing_timezone")
-    @classmethod
-    def _validate_iana_timezone(cls, v: str) -> str:
-        """Reject non-IANA timezone strings at config load time.
-
-        Without this, a typo like ``America/Sao-Paulo`` or ``BRT`` silently
-        desyncs the runtime BILLING_TIMEZONE from the cron's CRON_TZ — see
-        the CLAUDE.md gotcha. Failing fast at boot makes the misconfiguration
-        immediately operator-visible.
-        """
-        try:
-            ZoneInfo(v)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError(
-                f"BILLING_TIMEZONE {v!r} is not a valid IANA timezone "
-                "(e.g. UTC, America/Sao_Paulo, Europe/Lisbon)"
-            ) from exc
-        return v
-
-    @field_validator("backup_passphrase")
-    @classmethod
-    def _validate_backup_passphrase_length(cls, v: SecretStr) -> SecretStr:
-        """Accept empty (deferred-bootstrap OK) or length >= 16 chars.
-
-        Empty-at-boot is by design (Story 4.3): the passphrase is consumed
-        only by the backup/restore playbooks, not the FastAPI app or any
-        CLI verb. Forcing it to be required at boot would make the upgrade
-        path chicken-and-egg (service won't start → can't run bootstrap →
-        service won't start). The playbooks themselves enforce the length
-        check via ``ansible.builtin.assert``.
-        """
-        secret = v.get_secret_value()
-        if secret and len(secret) < 16:
-            raise ValueError(
-                "BACKUP_PASSPHRASE must be at least 16 characters when set; "
-                "leave empty to defer configuration until bootstrap.yml runs "
-                "with COMADRE_BACKUP_PASSPHRASE exported."
-            )
-        return v
-
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return cached application settings instance."""
+    """Return cached full application settings (TTS + registry surface)."""
     return Settings()
+
+
+@lru_cache(maxsize=1)
+def get_registry_settings() -> RegistrySettings:
+    """Return cached registry-only settings for ``comadre-keys`` CLI.
+
+    F33 — narrower load surface than ``get_settings()``. Reads the same
+    ``.env`` (or process env), but excludes TTS-runtime fields entirely,
+    so a host without Kokoro/Qwen3 paths configured can still issue keys,
+    run billing reports, and operate the registry.
+    """
+    return RegistrySettings()

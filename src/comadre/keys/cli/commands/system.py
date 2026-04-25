@@ -46,7 +46,7 @@ import typer
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr, ValidationError
 
-from comadre.config import get_settings
+from comadre.config import get_registry_settings
 from comadre.counters import (
     WINDOW_SECONDS,
     aggregate_cache_status,
@@ -134,7 +134,7 @@ def cache_status_cmd(
     # surface consistent across every ``comadre-keys`` verb — operators
     # don't have to remember which commands require which env vars.
     try:
-        settings = get_settings()
+        settings = get_registry_settings()
     except ValidationError as exc:
         if is_missing_encryption_key(exc):
             render_error(

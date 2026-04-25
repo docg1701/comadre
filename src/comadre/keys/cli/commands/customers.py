@@ -26,7 +26,7 @@ import typer
 from cryptography.fernet import InvalidToken
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
-from comadre.config import get_settings
+from comadre.config import get_registry_settings
 from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import get_cli_actor
@@ -169,7 +169,7 @@ def create_customer(
 
     # 2. Load settings (trap missing/malformed encryption key or unreadable .env).
     try:
-        settings = get_settings()
+        settings = get_registry_settings()
     except ValidationError as exc:
         if is_missing_encryption_key(exc):
             render_error(
@@ -308,7 +308,7 @@ def list_customers_cmd(
 
     # 2. Load settings — same exit-6 mapping as create-customer / issue-key.
     try:
-        settings = get_settings()
+        settings = get_registry_settings()
     except ValidationError as exc:
         if is_missing_encryption_key(exc):
             render_error(
@@ -935,7 +935,7 @@ def export_customer_cmd(
 
     # 3. Settings ladder (exit 6).
     try:
-        settings = get_settings()
+        settings = get_registry_settings()
     except ValidationError as exc:
         if is_missing_encryption_key(exc):
             render_error(
@@ -1107,7 +1107,7 @@ def delete_customer_cmd(
 
     # 3. Settings ladder (exit 6).
     try:
-        settings = get_settings()
+        settings = get_registry_settings()
     except ValidationError as exc:
         if is_missing_encryption_key(exc):
             render_error(

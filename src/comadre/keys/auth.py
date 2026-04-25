@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Header, Request
 
-from comadre.config import Settings
+from comadre.config import RegistrySettings
 from comadre.exceptions import (
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
@@ -60,7 +60,7 @@ _VALID_TOKEN_RE = re.compile(rf"\A{re.escape(API_KEY_PREFIX)}[A-Za-z0-9_-]{{43}}
 _billing = ManualBillingProvider()
 
 
-def _today_in_billing_tz(settings: Settings) -> date:
+def _today_in_billing_tz(settings: RegistrySettings) -> date:
     """Return today's date resolved in ``settings.billing_timezone``.
 
     Extracted as a single-caller seam so tests can monkey-patch
@@ -122,7 +122,7 @@ async def verify_api_key_registry(request: Request, token: str) -> None:
     only retrieves zero rows from a btree-indexed seek that is the
     fastest a SQLite SELECT can be.
     """
-    settings: Settings = request.app.state.settings
+    settings: RegistrySettings = request.app.state.settings
     cache: AuthCache = request.app.state.auth_cache
     conn = request.app.state.registry_db
 

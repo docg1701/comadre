@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 from rich.console import Console
 
-from comadre.config import Settings, get_settings
+from comadre.config import Settings, get_registry_settings, get_settings
 from comadre.keys.cache import AuthCache
 from comadre.keys.cli import output as _keys_cli_output
 from comadre.keys.db import _apply_migrations, get_connection
@@ -39,16 +39,22 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache() -> Iterator[None]:
-    """Clear get_settings LRU cache before AND after each test.
+    """Clear settings LRU caches before AND after each test.
 
-    F41 hardening — was previously duplicated as a local autouse fixture
-    in 19 ``tests/test_keys_cli_*.py`` files (yielded so the cache was
-    cleared on both sides of the test). Promoted here so every CLI test
-    inherits the post-test cleanup without local duplication.
+    F41 — was previously duplicated as a local autouse fixture in 19
+    ``tests/test_keys_cli_*.py`` files (yielded so the cache was cleared
+    on both sides of the test). Promoted here so every CLI test inherits
+    the post-test cleanup without local duplication.
+
+    F33 — also flushes ``get_registry_settings``; the CLI now loads via
+    that narrower cache and tests would otherwise leak fixtures across
+    process state.
     """
     get_settings.cache_clear()
+    get_registry_settings.cache_clear()
     yield
     get_settings.cache_clear()
+    get_registry_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
