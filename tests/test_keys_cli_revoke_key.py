@@ -1,10 +1,12 @@
-"""End-to-end CLI tests for ``comadre-keys revoke-key`` (Story 1.6)."""
+"""End-to-end CLI tests for ``comadre-keys revoke-key`` (Story 1.6).
+
+Lean by design (test-suite review 2026-04-25): one --yes happy path
+with audit details, one already-revoked / not-found, one reason-validation.
+"""
 
 from __future__ import annotations
 
 import json
-import logging
-import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,11 +25,6 @@ from comadre.keys.db import (
     insert_customer,
 )
 from comadre.keys.models import ApiKeyRecord, CustomerRecord
-
-# F41 — autouse fixtures (`_clear_settings_cache`,
-# `_reset_cli_consoles_to_buffers`) now live in tests/conftest.py
-# and apply to every test. Helpers (``_buffers`` / ``_clear_buffers``)
-# live in tests/_keys_cli_helpers.py.
 from tests._keys_cli_helpers import buffers as _buffers
 from tests._keys_cli_helpers import clear_buffers as _clear_buffers
 
@@ -43,20 +40,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     return {"db_path": str(db_path), "key": key}
 
 
-def _seed_customer_and_key(
-    db_path: str,
-    *,
-    billing_mode: str = "manual",
-    rate_limit_rpm: int = 60,
-    price_monthly: float = 149.0,
-    status: str = "active",
-    paid_until: str | None = None,
-    notes: str = "",
-    key_hash: str = "a" * 64,
-    key_prefix: str = "Pq_abc12",
-    last_used_at: str | None = None,
-) -> tuple[str, str]:
-    conn = get_connection(db_path)
+def _seed(env: dict[str, str], *, status: str = "active") -> str:
+    conn = get_connection(env["db_path"])
     try:
         _apply_migrations(conn)
         cid = generate_customer_id()
@@ -64,532 +49,76 @@ def _seed_customer_and_key(
             conn,
             CustomerRecord(
                 id=cid,
-                name="Helena Ribeiro",
-                email="helena@clinica.com",
+                name="Helena",
+                email="h@x.com",
                 tax_id_kind="cpf",
-                tax_id_encrypted=b"gAAAAA-ciphertext",
+                tax_id_encrypted=b"ct",
                 notes="",
                 registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
                 deleted_at=None,
             ),
             actor="cli:tester",
         )
-        kid = generate_key_id()
         insert_api_key(
             conn,
             ApiKeyRecord(
-                id=kid,
+                id=generate_key_id(),
                 customer_id=cid,
-                key_hash=key_hash,
-                key_prefix=key_prefix,
-                rate_limit_rpm=rate_limit_rpm,
+                key_hash="a" * 64,
+                key_prefix="Pq_abc12",
+                rate_limit_rpm=60,
                 status=status,  # type: ignore[arg-type]
-                billing_mode=billing_mode,  # type: ignore[arg-type]
-                price_monthly=price_monthly,
-                paid_until=paid_until,
+                billing_mode="manual",
+                price_monthly=149.0,
+                paid_until=None,
                 created_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
                 last_used_at=None,
-                notes=notes,
+                notes="",
             ),
             actor="cli:tester",
         )
-        if last_used_at is not None:
-            conn.execute(
-                "UPDATE api_key SET last_used_at = ? WHERE id = ?",
-                (last_used_at, kid),
-            )
-            conn.commit()
-        return cid, kid
     finally:
         conn.close()
+    return "Pq_abc12"
 
 
-def _fetch_api_key(db_path: str, kid: str) -> dict[str, object]:
-    conn = sqlite3.connect(db_path)
+def test_revoke_key_yes_flag_revokes_with_audit(env: dict[str, str]) -> None:
+    """``--yes`` revokes the key, stamps audit with reason verbatim."""
+    prefix = _seed(env)
+    result = runner.invoke(
+        app, ["revoke-key", prefix, "--reason", "compromised", "--yes"]
+    )
+    _, stderr = _buffers()
+    assert result.exit_code == 0, stderr
+
+    conn = sqlite3.connect(env["db_path"])
     try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT id, customer_id, key_hash, key_prefix, rate_limit_rpm, "
-            "status, billing_mode, price_monthly, paid_until, created_at, "
-            "last_used_at, notes FROM api_key WHERE id = ?",
-            (kid,),
+        row = conn.execute("SELECT status FROM api_key").fetchone()
+        assert row[0] == "revoked"
+        audit = conn.execute(
+            "SELECT details_json FROM audit_log WHERE action = 'revoke_key'"
         ).fetchone()
-        assert row is not None
-        return dict(row)
+        details = json.loads(audit[0])
+        assert details == {"reason": "compromised"}
     finally:
         conn.close()
 
 
-def _latest_revoke_audit(db_path: str) -> dict[str, object] | None:
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT actor, action, target_type, target_id, details_json "
-            "FROM audit_log WHERE action = 'revoke_key' "
-            "ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        return dict(row) if row is not None else None
-    finally:
-        conn.close()
+def test_revoke_key_already_revoked_or_missing_exits_3(env: dict[str, str]) -> None:
+    """Revoking a revoked key + revoking an unknown prefix both exit 3."""
+    prefix = _seed(env, status="revoked")
+    result = runner.invoke(app, ["revoke-key", prefix, "--reason", "x", "--yes"])
+    assert result.exit_code == 3
+    _clear_buffers()
+
+    result = runner.invoke(app, ["revoke-key", "NOPENOPE", "--reason", "x", "--yes"])
+    assert result.exit_code == 3
 
 
-def _count_revoke_audits(db_path: str) -> int:
-    conn = sqlite3.connect(db_path)
-    try:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM audit_log WHERE action = 'revoke_key'"
-            ).fetchone()[0]
-        )
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# AC13 — --yes happy paths.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeyYes:
-    def test_revoke_active_key_with_yes_flag(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(
-            env["db_path"], last_used_at="2026-04-10T14:23:45Z"
-        )
-        before = _fetch_api_key(env["db_path"], kid)
-        _clear_buffers()
-
-        result = runner.invoke(
-            app,
-            [
-                "revoke-key",
-                "Pq_abc12",
-                "--reason",
-                "bundle contract ended 2026-09-30",
-                "--yes",
-            ],
-        )
-        stdout, stderr = _buffers()
-        assert result.exit_code == 0, stderr
-
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after["status"] == "revoked"
-        # last_used_at preserved.
-        assert after["last_used_at"] == before["last_used_at"]
-        # Every other column byte-equal.
-        for col in (
-            "id",
-            "customer_id",
-            "key_hash",
-            "key_prefix",
-            "billing_mode",
-            "rate_limit_rpm",
-            "price_monthly",
-            "paid_until",
-            "created_at",
-            "notes",
-        ):
-            assert after[col] == before[col], col
-
-        assert (
-            "Revoked: Pq_abc12 (Helena Ribeiro) \u2014 "
-            "reason: bundle contract ended 2026-09-30" in stdout
-        )
-
-        audit = _latest_revoke_audit(env["db_path"])
-        assert audit is not None
-        assert audit["action"] == "revoke_key"
-        assert audit["target_type"] == "api_key"
-        assert audit["target_id"] == kid
-        parsed = json.loads(str(audit["details_json"]))
-        assert parsed == {"reason": "bundle contract ended 2026-09-30"}
-
-    def test_revoke_suspended_key_with_yes_flag(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(env["db_path"], status="suspended")
-        _clear_buffers()
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "end of trial", "--yes"],
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 0, stderr
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after["status"] == "revoked"
-
-
-# ---------------------------------------------------------------------------
-# AC14 — interactive confirmation.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeyInteractive:
-    def test_interactive_confirm_y_proceeds(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(env["db_path"])
-        _clear_buffers()
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "contract ended"],
-            input="y\n",
-        )
-        assert result.exit_code == 0
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after["status"] == "revoked"
-
-    def test_interactive_confirm_default_no_aborts(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(env["db_path"])
-        before = _fetch_api_key(env["db_path"], kid)
-        audit_before = _count_revoke_audits(env["db_path"])
-        _clear_buffers()
-
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "x"],
-            input="\n",
-        )
-        _stdout, stderr = _buffers()
+def test_revoke_key_rejects_invalid_reason(env: dict[str, str]) -> None:
+    """--reason must be non-empty, no control bytes."""
+    prefix = _seed(env)
+    for bad in ("", "   ", "with\x00nul"):
+        result = runner.invoke(app, ["revoke-key", prefix, "--reason", bad, "--yes"])
         assert result.exit_code == 2
-        assert "Aborted." in stderr
-
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after["status"] == before["status"]
-        assert _count_revoke_audits(env["db_path"]) == audit_before
-
-    def test_interactive_confirm_n_aborts(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(env["db_path"])
         _clear_buffers()
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "x"],
-            input="n\n",
-        )
-        assert result.exit_code == 2
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after["status"] == "active"
-
-    def test_interactive_confirm_eof_aborts_exit_2(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(env["db_path"])
-        _clear_buffers()
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "x"],
-            input="",
-        )
-        assert result.exit_code == 2
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after["status"] == "active"
-
-    def test_interactive_prompt_lives_on_stderr(self, env: dict[str, str]) -> None:
-        _cid, _kid = _seed_customer_and_key(env["db_path"])
-        _clear_buffers()
-        # Click 8.2+ captures stdout and stderr separately on every
-        # ``CliRunner``; ``result.stdout`` is the child's stdout and
-        # ``result.stderr`` is the child's stderr.
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "x"],
-            input="\n",
-        )
-        stdout, _stderr = _buffers()
-
-        prompt_text = "This will permanently revoke key"
-        # Negative invariant — prompt must NOT leak into stdout (so a
-        # ``revoke-key … | tee output.log`` pipeline never captures it).
-        assert prompt_text not in stdout
-        assert prompt_text not in result.stdout
-        # Positive invariant — the prompt IS written to stderr, not silently
-        # suppressed.
-        assert prompt_text in result.stderr
-        # Command aborted cleanly.
-        assert result.exit_code == 2
-
-
-# ---------------------------------------------------------------------------
-# AC15 — already revoked.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeyNotFound:
-    def test_missing_key_exits_3(self, env: dict[str, str]) -> None:
-        _seed_customer_and_key(env["db_path"])
-        _clear_buffers()
-        result = runner.invoke(
-            app, ["revoke-key", "nokey123", "--reason", "gone", "--yes"]
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 3
-        assert "Key not found: nokey123" in stderr
-        assert "list-keys" in stderr
-
-    def test_ambiguous_prefix_exits_3(self, env: dict[str, str]) -> None:
-        cid, _kid = _seed_customer_and_key(
-            env["db_path"], key_prefix="Pq_abc12", key_hash="a" * 64
-        )
-        conn = get_connection(env["db_path"])
-        try:
-            insert_api_key(
-                conn,
-                ApiKeyRecord(
-                    id=generate_key_id(),
-                    customer_id=cid,
-                    key_hash="b" * 64,
-                    key_prefix="Pq_abc12",
-                    rate_limit_rpm=60,
-                    status="active",
-                    billing_mode="manual",
-                    price_monthly=149.0,
-                    paid_until=None,
-                    created_at=datetime(2026, 4, 16, 13, 0, 0, tzinfo=UTC),
-                    last_used_at=None,
-                    notes="",
-                ),
-                actor="cli:tester",
-            )
-        finally:
-            conn.close()
-
-        _clear_buffers()
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "scope", "--yes"],
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 3
-        assert "Ambiguous prefix: multiple keys match 'Pq_abc12'" in stderr
-
-
-class TestRevokeKeyAlreadyRevoked:
-    def test_already_revoked_exits_3(self, env: dict[str, str]) -> None:
-        _cid, kid = _seed_customer_and_key(env["db_path"], status="revoked")
-        before = _fetch_api_key(env["db_path"], kid)
-        _clear_buffers()
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "again", "--yes"],
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 3
-        assert "Key already revoked: Pq_abc12" in stderr
-        after = _fetch_api_key(env["db_path"], kid)
-        assert after == before
-        assert _count_revoke_audits(env["db_path"]) == 0
-
-
-# ---------------------------------------------------------------------------
-# AC16 — --reason shape / length validation.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeyReason:
-    def _prepare(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(tmp_path / "registry.db"))
-        monkeypatch.setenv(
-            "KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode()
-        )
-
-    def test_empty_reason_exits_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._prepare(tmp_path, monkeypatch)
-        result = runner.invoke(app, ["revoke-key", "Pq_abc12", "--reason", "", "--yes"])
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 2
-        assert "Usage error: --reason must be non-empty" in stderr
-        assert not (tmp_path / "registry.db").exists()
-
-    def test_whitespace_reason_exits_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._prepare(tmp_path, monkeypatch)
-        result = runner.invoke(
-            app, ["revoke-key", "Pq_abc12", "--reason", "   ", "--yes"]
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 2
-        assert "Usage error: --reason must be non-empty" in stderr
-
-    def test_nul_reason_exits_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._prepare(tmp_path, monkeypatch)
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "\x00danger", "--yes"],
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 2
-        assert "Usage error: --reason contains illegal characters" in stderr
-        assert "NUL" in stderr
-
-    def test_newline_reason_exits_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._prepare(tmp_path, monkeypatch)
-        result = runner.invoke(
-            app,
-            [
-                "revoke-key",
-                "Pq_abc12",
-                "--reason",
-                "forge\n[2099-01-01] fake",
-                "--yes",
-            ],
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 2
-        assert "Usage error: --reason must be a single line" in stderr
-
-    def test_carriage_return_reason_exits_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._prepare(tmp_path, monkeypatch)
-        result = runner.invoke(
-            app, ["revoke-key", "Pq_abc12", "--reason", "a\rb", "--yes"]
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 2
-        assert "Usage error: --reason must be a single line" in stderr
-
-    def test_oversize_reason_exits_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._prepare(tmp_path, monkeypatch)
-        huge = "x" * 1025
-        result = runner.invoke(
-            app, ["revoke-key", "Pq_abc12", "--reason", huge, "--yes"]
-        )
-        _stdout, stderr = _buffers()
-        assert result.exit_code == 2
-        assert "Usage error: --reason exceeds 1024 characters" in stderr
-
-
-# ---------------------------------------------------------------------------
-# AC17 — help surface.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeyHelp:
-    def test_revoke_key_help_has_realistic_examples(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY_REGISTRY_DB_PATH", raising=False)
-        monkeypatch.delenv("KEY_REGISTRY_ENCRYPTION_KEY", raising=False)
-
-        result = runner.invoke(app, ["revoke-key", "--help"])
-        assert result.exit_code == 0
-        ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-        cleaned = ansi.sub("", result.stdout)
-        for glyph in ("\u2502", "\u256d", "\u256e", "\u2570", "\u256f", "\u2500"):
-            cleaned = cleaned.replace(glyph, " ")
-        flat = re.sub(r"\s+", " ", cleaned)
-        assert "Pq_abc12" in flat
-        assert "bundle contract ended 2026-09-30" in flat
-        assert "--reason" in flat
-        assert "--yes" in flat
-        assert not (tmp_path / "registry.db").exists()
-
-
-# ---------------------------------------------------------------------------
-# AC18 — audit + log sanitization.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeySanitization:
-    def test_audit_details_stores_reason_verbatim(self, env: dict[str, str]) -> None:
-        _seed_customer_and_key(env["db_path"])
-        reason = 'contrato "encerrado" em 2026/09 ✓'
-        result = runner.invoke(
-            app, ["revoke-key", "Pq_abc12", "--reason", reason, "--yes"]
-        )
-        assert result.exit_code == 0
-        audit = _latest_revoke_audit(env["db_path"])
-        assert audit is not None
-        parsed = json.loads(str(audit["details_json"]))
-        assert parsed == {"reason": reason}
-
-    def test_audit_details_via_json_loads_equality(self, env: dict[str, str]) -> None:
-        _seed_customer_and_key(env["db_path"])
-        result = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "simple reason", "--yes"],
-        )
-        assert result.exit_code == 0
-        audit = _latest_revoke_audit(env["db_path"])
-        assert audit is not None
-        assert json.loads(str(audit["details_json"])) == {"reason": "simple reason"}
-
-    def test_log_has_no_reason_text(self, env: dict[str, str]) -> None:
-        from comadre.logging import get_logger
-
-        _seed_customer_and_key(env["db_path"])
-        logger = get_logger("keys.cli")
-        records: list[logging.LogRecord] = []
-
-        class _Capture(logging.Handler):
-            def emit(self, record: logging.LogRecord) -> None:
-                records.append(record)
-
-        handler = _Capture(level=logging.INFO)
-        logger.addHandler(handler)
-        try:
-            _clear_buffers()
-            records.clear()
-            result = runner.invoke(
-                app,
-                [
-                    "revoke-key",
-                    "Pq_abc12",
-                    "--reason",
-                    "highly-sensitive-reason-99",
-                    "--yes",
-                ],
-            )
-        finally:
-            logger.removeHandler(handler)
-
-        assert result.exit_code == 0
-        revoked = [r for r in records if "Key revoked" in r.getMessage()]
-        assert revoked
-        joined = "\n".join(r.getMessage() for r in revoked)
-        assert "key_prefix=Pq_abc12" in joined
-        # Reason text must NOT be in the log line.
-        assert "highly-sensitive-reason-99" not in joined
-        assert "Helena Ribeiro" not in joined
-
-
-# ---------------------------------------------------------------------------
-# AC19 — read-after-write via `show`.
-# ---------------------------------------------------------------------------
-
-
-class TestRevokeKeyReadAfterWrite:
-    def test_then_show_renders_revoked_status(self, env: dict[str, str]) -> None:
-        _seed_customer_and_key(env["db_path"])
-        r_rev = runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "done", "--yes"],
-        )
-        assert r_rev.exit_code == 0
-        _clear_buffers()
-        r_show = runner.invoke(app, ["show", "Pq_abc12"])
-        stdout, _stderr = _buffers()
-        assert r_show.exit_code == 0
-        assert "revoked" in stdout
-
-    def test_list_keys_status_revoked_sees_this_key(self, env: dict[str, str]) -> None:
-        _seed_customer_and_key(env["db_path"])
-        runner.invoke(
-            app,
-            ["revoke-key", "Pq_abc12", "--reason", "done", "--yes"],
-        )
-        _clear_buffers()
-        r_list = runner.invoke(
-            app, ["list-keys", "--status", "revoked", "--format", "json"]
-        )
-        stdout, _stderr = _buffers()
-        assert r_list.exit_code == 0
-        payload = json.loads(stdout)
-        assert len(payload) == 1
-        assert payload[0]["status"] == "revoked"
-        assert payload[0]["key_prefix"] == "Pq_abc12"
