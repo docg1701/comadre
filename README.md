@@ -167,6 +167,7 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml -e "ansible_b
 - [docs/deployment-guide.md](docs/deployment-guide.md) -- Deployment lifecycle: bootstrap, update, cleanup, HTTPS, key registry bootstrap
 - [docs/configuration-reference.md](docs/configuration-reference.md) -- Environment variables reference
 - [docs/monetization.md](docs/monetization.md) -- Customer tiers, per-key pricing, rate-limit lifecycle
+- [docs/monetization.md#lgpd-operator-obligations](docs/monetization.md#lgpd-operator-obligations) -- LGPD operator handbook: controller identification, data-subject request procedures, breach-notification runbook, privacy-policy template paragraph
 - [docs/rate-limiting.md](docs/rate-limiting.md) -- Per-key algorithm, bucket identity, 429 semantics, operator controls
 - [docs/troubleshooting.md](docs/troubleshooting.md) -- Common issues with resolution steps
 - [docs/api-architecture.md](docs/api-architecture.md) -- Internal API design, queue architecture, post-processing pipelines
