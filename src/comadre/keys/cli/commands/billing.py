@@ -25,7 +25,7 @@ import re
 import sqlite3
 from collections.abc import Iterable
 from datetime import date, timedelta
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import typer
 from dateutil.relativedelta import (  # type: ignore[import-untyped]
@@ -134,8 +134,12 @@ def _parse_until(raw: str) -> date:
 
 
 def _quantize_price(raw: float) -> Decimal:
-    """Validate + round a --price-monthly input to two decimals (banker's
-    rounding). Exits 2 on out-of-range / NaN / inf input."""
+    """Validate + round a --price-monthly input to two decimals (BRL retail
+    half-up rounding). Exits 2 on out-of-range / NaN / inf input.
+
+    BRL retail / NF-e invoice convention is ROUND_HALF_UP (``100.005`` →
+    ``100.01``), not banker's rounding. Brazilian-product alignment.
+    """
     if math.isnan(raw) or math.isinf(raw):
         render_error(
             "Usage error: --price-monthly must be a finite number",
@@ -145,9 +149,7 @@ def _quantize_price(raw: float) -> Decimal:
     try:
         # Round-trip via str() so the operator's "99.90" doesn't surface as
         # 99.9000000004 from float repr.
-        quantized = Decimal(str(raw)).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
+        quantized = Decimal(str(raw)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except InvalidOperation:
         render_error(
             "Usage error: --price-monthly must be a finite number",
@@ -190,7 +192,9 @@ def mark_paid_cmd(
         help=(
             "Extend paid_until by N calendar months (1..36). When the key "
             "is currently paid, anchor = current paid_until; when expired "
-            "or unpaid, anchor = today. Mutually exclusive with --until. "
+            "or unpaid, anchor = today. Month-end anchors clamp to the "
+            "target month's last day (Jan 31 + 1 month → Feb 28/29) — use "
+            "--until for exact-day renewal. Mutually exclusive with --until. "
             "Example: --months 2."
         ),
     ),
@@ -952,7 +956,7 @@ def revenue_cmd(
             # Lower-bound check needs the audit MIN — do it now that the
             # connection is open. Empty audit_log + --as-of supplied is an
             # operator error (no history to replay).
-            earliest = earliest_audit_date(conn)
+            earliest = earliest_audit_date(conn, billing_tz)
             if earliest is None:
                 render_error(
                     "Usage error: --as-of has nothing to replay",
@@ -965,7 +969,7 @@ def revenue_cmd(
                     f"Earliest audit row: {earliest.isoformat()}.",
                 )
                 raise typer.Exit(code=2)
-            all_rows = reconstruct_key_state_at(conn, as_of_date)
+            all_rows = reconstruct_key_state_at(conn, as_of_date, tz=billing_tz)
         else:
             all_rows = list_api_keys(conn)
     finally:

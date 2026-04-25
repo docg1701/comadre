@@ -1007,7 +1007,10 @@ def _audit_event_to_export_dict(event: AuditEventRow) -> dict[str, object]:
     Always emits ``action``, ``actor``, ``occurred_at``. Emits ``details``
     only when the source row carried a non-empty payload (post forbidden-key
     filter). The filter is defense-in-depth — ``log_event`` already enforces
-    the same blocklist at write time."""
+    the same blocklist at write time. Corrupt rows (non-decodable JSON or
+    JSON whose top-level is not an object) emit ``details: {"_corrupt": true}``
+    so the export honestly signals that something was elided rather than
+    silently dropping the field."""
     out: dict[str, object] = {
         "action": event.action,
         "actor": event.actor,
@@ -1017,11 +1020,18 @@ def _audit_event_to_export_dict(event: AuditEventRow) -> dict[str, object]:
         try:
             raw = json.loads(event.details_json)
         except json.JSONDecodeError:
-            raw = None
+            out["details"] = {"_corrupt": True}
+            return out
         if isinstance(raw, dict):
             cleaned = filter_forbidden_keys(raw)
             if cleaned:
                 out["details"] = cleaned
+        else:
+            # Non-dict top-level (list / string / number) — out-of-band
+            # insertion path; surface a sentinel rather than dropping
+            # silently. The forbidden-key filter is dict-shaped, so we
+            # cannot scrub a non-dict payload safely; mark and move on.
+            out["details"] = {"_corrupt": True}
     return out
 
 
@@ -1135,6 +1145,7 @@ def export_customer_cmd(
             raise typer.Exit(code=5) from None
 
         audit_events: list[AuditEventRow] = []
+        audit_events_total = 0
         if include_audit:
             # Audit rows live on customer-id targets (create_customer,
             # update_customer, delete_customer, correct_tax_id) AND on
@@ -1143,6 +1154,18 @@ def export_customer_cmd(
             # the export reads as a unified history.
             try:
                 target_ids = [customer_id, *(k.id for k in keys)]
+                # Pre-count the total so the envelope can honestly signal
+                # truncation. The COUNT runs over the same target set with
+                # idx_audit_target — O(N) at most rather than O(log N), but
+                # bounded by typical audit scale and only fires when the
+                # operator opts in to ``--include-audit``.
+                placeholders = ",".join("?" * len(target_ids))
+                total_row = conn.execute(
+                    f"SELECT COUNT(*) FROM audit_log "  # nosec B608  # placeholders is ",".join("?" * n) — only ? tokens
+                    f"WHERE target_id IN ({placeholders})",
+                    target_ids,
+                ).fetchone()
+                audit_events_total = int(total_row[0]) if total_row else 0
                 audit_events = list_audit_events(
                     conn, target_ids, limit=_EXPORT_AUDIT_LIMIT
                 )
@@ -1191,9 +1214,19 @@ def export_customer_cmd(
         ],
     }
     if include_audit:
+        # ``list_audit_events`` returns DESC (newest first) for the
+        # ``show --audit-tail`` UX. The export envelope is documented as
+        # chronological in monetization.md §1.4, so reverse to ASC here.
+        chronological = sorted(audit_events, key=lambda e: (e.occurred_at, e.id))
         payload["audit_events"] = [
-            _audit_event_to_export_dict(event) for event in audit_events
+            _audit_event_to_export_dict(event) for event in chronological
         ]
+        # Honest truncation signalling — an LGPD Art. 18 II/V response must
+        # be provably complete or provably partial. ``audit_events_total``
+        # is the unfiltered count over the customer's target ids; the list
+        # itself is capped at ``_EXPORT_AUDIT_LIMIT``.
+        payload["audit_events_total"] = audit_events_total
+        payload["audit_events_truncated"] = audit_events_total > len(audit_events)
 
     # 8. PII-austere INFO log. Never tax_id / name / email / ciphertext.
     _logger.info(
@@ -1365,10 +1398,11 @@ def correct_tax_id_cmd(
         )
         raise typer.Exit(code=6)
 
-    # 5. Encrypt new tax-ID via the single-Fernet boundary.
-    new_encrypted = encrypt_tax_id(digits, settings.key_registry_encryption_key)
-
-    # 6. Open DB + migrations (exit 5).
+    # 5. Open DB + migrations (exit 5). The DB ladder runs BEFORE encryption
+    # so a missing customer / tombstoned target / config error short-circuits
+    # without ever encrypting the operator-supplied tax-ID into a Fernet
+    # ciphertext that would otherwise sit in process memory for an aborted
+    # operation. LGPD memory-residence-window minimisation (review-pass).
     try:
         conn = get_connection(settings.key_registry_db_path)
     except (sqlite3.Error, OSError, RuntimeError) as exc:
@@ -1383,8 +1417,8 @@ def correct_tax_id_cmd(
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
 
-        # 7. Pre-fetch the customer for the confirmation prompt + tombstone
-        # check; exit 3 on missing.
+        # 6. Pre-fetch the customer for the tombstone check + the
+        # confirmation prompt's identifier; exit 3 on missing.
         existing = get_customer(conn, customer_id)
         if existing is None:
             render_error(
@@ -1393,12 +1427,16 @@ def correct_tax_id_cmd(
             )
             raise typer.Exit(code=3)
 
-        # 8. Confirmation gate (Destroy-tier symmetry — irreversible
-        # overwrite of operator-supplied PII).
+        # 7. Confirmation gate (Destroy-tier symmetry — irreversible
+        # overwrite of operator-supplied PII). The prompt names the
+        # ``customer_id`` only — the customer's ``name`` is PII that the
+        # ``_logger.info`` discipline omits, so the interactive prompt
+        # follows the same rule (the operator can ``show <id>`` if they
+        # need to confirm identity before answering ``y``).
         if not yes:
             try:
                 typer.confirm(
-                    f"Replace tax-ID for {existing.id} ({existing.name}). "
+                    f"Replace tax-ID for {existing.id}. "
                     "The previous value will be overwritten and cannot be "
                     "recovered. Continue?",
                     default=False,
@@ -1413,6 +1451,10 @@ def correct_tax_id_cmd(
                         "scripted correction under nohup / systemd / docker exec."
                     )
                 raise typer.Exit(code=2) from None
+
+        # 8. Encrypt new tax-ID via the single-Fernet boundary, only after
+        # the customer is confirmed present and the operator has authorized.
+        new_encrypted = encrypt_tax_id(digits, settings.key_registry_encryption_key)
 
         # 9. Helper dispatch.
         try:

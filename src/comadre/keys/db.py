@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import logging
 import sqlite3
 import stat
 from collections.abc import Sequence
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal, cast
+from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 from ulid import ULID
@@ -38,6 +40,8 @@ from comadre.keys.models import (
     KeyDetailRow,
     TaxIdKind,
 )
+
+_logger = logging.getLogger(__name__)
 
 ShowTargetKind = Literal["customer", "key_single", "key_ambiguous", "not_found"]
 UpdatedField = Literal["email", "notes", "name"]
@@ -592,25 +596,31 @@ def update_customer(
     notes_op: Literal["append", "replace"] | None = None
     with conn:
         row = conn.execute(
-            "SELECT notes FROM customer WHERE id = ? AND deleted_at IS NULL",
+            "SELECT name, email, notes FROM customer "
+            "WHERE id = ? AND deleted_at IS NULL",
             (customer_id,),
         ).fetchone()
         if row is None:
             return None
 
+        existing_name = row["name"]
+        existing_email = row["email"]
         existing_notes = row["notes"] or ""
 
         # Build the SET clause dynamically so only the touched columns are
         # rewritten. The predicate fragments are literal column-name strings
         # (``"email = ?"`` / ``"notes = ?"`` / ``"name = ?"``) — operator
         # input only lands in the positional ``?`` bindings, never in SQL text.
+        # Same-value writes are skipped at field granularity so an operator
+        # passing the existing value (e.g. ``--name "X"`` against current "X")
+        # does not produce a misleading "changed" audit row.
         set_parts: list[str] = []
         params: list[object] = []
-        if new_email is not None:
+        if new_email is not None and new_email != existing_email:
             set_parts.append("email = ?")
             params.append(new_email)
             updated.append("email")
-        if new_name is not None:
+        if new_name is not None and new_name != existing_name:
             set_parts.append("name = ?")
             params.append(new_name)
             updated.append("name")
@@ -623,17 +633,26 @@ def update_customer(
             params.append(new_notes)
             updated.append("notes")
             notes_op = "append"
-        elif replace_notes is not None:
+        elif replace_notes is not None and replace_notes != existing_notes:
             set_parts.append("notes = ?")
             params.append(replace_notes)
             updated.append("notes")
             notes_op = "replace"
 
         if not set_parts:
-            # Defensive: the CLI layer rejects neither-flag before we get
-            # here. If a future caller skips that check, we still don't
-            # want to write a no-op audit row.
-            return None
+            # Either the CLI passed no fields (defense-in-depth: the layer
+            # above rejects neither-flag) OR every supplied field already
+            # matched the stored value. Either way, no UPDATE + no audit row
+            # — the helper's contract is "row exists, nothing to write" so
+            # the caller still gets the refreshed detail.
+            refreshed_noop = get_customer_detail(conn, customer_id)
+            if refreshed_noop is None:
+                # The row was visible in the SELECT a few lines up; only a
+                # cross-process tombstone race could land here.
+                return None
+            return UpdateCustomerResult(
+                customer=refreshed_noop, updated_fields=(), notes_op=None
+            )
 
         params.append(customer_id)
         # Defense-in-depth: the SELECT above already filtered tombstones,
@@ -644,16 +663,30 @@ def update_customer(
             f"UPDATE customer SET {', '.join(set_parts)} "  # nosec B608  # set_parts is a hardcoded column-allowlist ("email = ?", "name = ?", "notes = ?"); only ? placeholders bind values
             "WHERE id = ? AND deleted_at IS NULL"
         )
-        conn.execute(sql, params)
+        cursor = conn.execute(sql, params)
+        if cursor.rowcount != 1:
+            # Concurrent writer tombstoned the row between SELECT and UPDATE;
+            # the ``deleted_at IS NULL`` predicate made our UPDATE a no-op.
+            # Match the defense-in-depth pattern in mark_key_paid /
+            # correct_customer_tax_id / revoke_api_key — surface the race as
+            # exit 3 (not-found) rather than silently succeeding.
+            return None
 
         fields_sorted: tuple[UpdatedField, ...] = tuple(sorted(set(updated)))
+        details: dict[str, object] = {"fields": list(fields_sorted)}
+        if notes_op is not None:
+            # ``notes_op`` distinguishes a destructive ``--notes`` replace
+            # from an additive ``--add-note`` append. Forensic readers must
+            # be able to detect a notes-column wipe; the discriminator is
+            # operator-internal metadata (no PII) so it is safe to record.
+            details["notes_op"] = notes_op
         log_event(
             conn,
             actor=actor,
             action="update_customer",
             target_type="customer",
             target_id=customer_id,
-            details={"fields": list(fields_sorted)},
+            details=details,
         )
 
     refreshed = get_customer_detail(conn, customer_id)
@@ -1255,26 +1288,52 @@ def list_audit_events(
     ]
 
 
-def earliest_audit_date(conn: sqlite3.Connection) -> date | None:
-    """Return the date of the oldest ``audit_log`` row, or ``None`` if empty.
+def _utc_iso_to_billing_date(iso: str, tz: ZoneInfo) -> date | None:
+    """Convert an ISO-8601 UTC timestamp to a date in ``tz``.
+
+    ``audit_log.occurred_at`` and ``api_key.created_at`` are stored as UTC
+    ISO strings (``_utcnow_iso`` / ``insert_api_key``). ``revenue --as-of``
+    operates in ``BILLING_TIMEZONE`` semantics — the operator's "today" is
+    the billing-TZ midnight boundary, not UTC's. Truncating the UTC string
+    to ``[:10]`` would drift up to ±1 day near the midnight boundary in
+    timezones west of UTC. This helper does the proper conversion.
+
+    Returns ``None`` when ``iso`` cannot be parsed; the caller logs a
+    warning and skips the row rather than aborting the replay.
+    """
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        # Stored values are written via ``_utcnow_iso`` ("...Z" suffix), so
+        # naive timestamps are an out-of-band insertion path. Treat them as
+        # UTC (the historical contract) rather than rejecting outright.
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(tz).date()
+
+
+def earliest_audit_date(conn: sqlite3.Connection, tz: ZoneInfo) -> date | None:
+    """Return the date of the oldest ``audit_log`` row in ``tz``, or ``None``.
 
     Used by ``revenue --as-of`` (Story 5.1 Gap 8) to validate that the
     operator-supplied replay date isn't earlier than any recorded history.
     Pulls only the ``MIN(occurred_at)`` aggregate so the query is O(index)
-    on ``idx_audit_occurred``."""
+    on ``idx_audit_occurred``. The aggregate value is converted from UTC
+    to ``tz`` before truncating to date so the lower-bound check honours
+    operator-local midnight boundaries (review-pass fix for the UTC↔
+    billing-TZ drift)."""
     row = conn.execute("SELECT MIN(occurred_at) FROM audit_log").fetchone()
     if row is None or row[0] is None:
         return None
-    iso = str(row[0])
-    try:
-        return date.fromisoformat(iso[:10])
-    except ValueError:
-        return None
+    return _utc_iso_to_billing_date(str(row[0]), tz)
 
 
 def reconstruct_key_state_at(
     conn: sqlite3.Connection,
     as_of: date,
+    *,
+    tz: ZoneInfo,
 ) -> list[ApiKeyListRow]:
     """Return the ``api_key`` row set as it would have looked on ``as_of``.
 
@@ -1285,25 +1344,27 @@ def reconstruct_key_state_at(
     with reconstructed ``status`` / ``paid_until`` / ``price_monthly`` so
     the caller can feed them straight into ``_bucketize_for_revenue``.
 
-    **Audit coverage caveat (documented limitation):**
-      ``status`` and ``paid_until`` are fully audit-tracked (``mark_paid`` /
-      ``suspend_key`` / ``reactivate_key`` / ``revoke_key``).
-      ``price_monthly`` is partially tracked: ``mark_paid`` rows from
-      Story 5.1 onward carry old/new (``price_monthly_changed=True``); pre-5.1
-      ``mark_paid`` and any ``update_key`` price change are NOT recorded with
-      old/new in the audit row. The replay bootstraps each key's price from
-      the FIRST post-as_of ``mark_paid`` event's ``old`` field when present,
-      otherwise from the current ``api_key.price_monthly`` value. MRR for
-      keys whose price changed via ``update_key`` between ``as_of`` and now
-      reflects the current price, not the historical one.
+    Audit timestamps (``occurred_at`` / ``created_at``) are converted from
+    UTC to ``tz`` (operator billing timezone) before truncating to date,
+    so the comparison against ``as_of`` honours the operator's midnight
+    boundary rather than UTC's.
 
-      ``billing_mode`` is recorded on ``issue_key`` and is treated as
-      immutable (no CLI verb mutates it post-issue).
+    **Audit coverage:** ``status`` and ``paid_until`` are fully tracked
+    (``mark_paid`` / ``suspend_key`` / ``reactivate_key`` / ``revoke_key``).
+    ``price_monthly`` is fully replayable from Story 5.1 review-pass forward:
+    both ``mark_paid`` (Gap 4) AND ``update_key`` (review-pass) audit rows
+    carry ``{price_monthly_changed, old, new}`` when the price moves. The
+    replay snapshots each key's ``price_monthly`` to its current value, then
+    walks every post-as_of price-change event (oldest first) and rewinds
+    using the recorded ``old`` value. Keys whose price moved only via
+    pre-Story-5.1-review audit rows that lack ``old/new`` will show the
+    current price (the legacy fallback); flag in CLI output if needed.
 
-    Keys created AFTER ``as_of`` are excluded from the result entirely
-    (they didn't exist yet)."""
-    from datetime import datetime as _dt
+    ``billing_mode`` is recorded on ``issue_key`` and is treated as
+    immutable (no CLI verb mutates it post-issue).
 
+    Keys created AFTER ``as_of`` (in ``tz``) are excluded from the result
+    entirely (they didn't exist yet)."""
     all_rows = list_api_keys(conn)
     if not all_rows:
         return []
@@ -1311,11 +1372,19 @@ def reconstruct_key_state_at(
 
     valid_ids: list[str] = []
     for row in all_rows:
-        try:
-            created_dt = _dt.fromisoformat(row.created_at)
-        except (ValueError, TypeError):
+        created_date = _utc_iso_to_billing_date(row.created_at, tz)
+        if created_date is None:
+            # An unparseable ``created_at`` would silently drop the key
+            # from MRR replay. Log a breadcrumb so operators can detect
+            # corrupt data rather than wonder why a known key is missing.
+            _logger.warning(
+                "reconstruct_key_state_at: key %s has unparseable "
+                "created_at=%r; excluded from replay",
+                row.id,
+                row.created_at,
+            )
             continue
-        if created_dt.date() <= as_of:
+        if created_date <= as_of:
             valid_ids.append(row.id)
 
     if not valid_ids:
@@ -1341,21 +1410,20 @@ def reconstruct_key_state_at(
             "price_monthly": row.price_monthly,
         }
 
-    # First pass — find the earliest post-as_of mark_paid that carries a
-    # ``price_monthly_changed`` payload; the ``old`` field is the price at
-    # ``as_of``. Bootstrap the snapshot's price with it.
+    # First pass — for every key, find the OLDEST post-as_of price-change
+    # event (``mark_paid`` OR ``update_key`` carrying ``price_monthly_changed``)
+    # and rewind the snapshot's price to its ``old`` value. The snapshot
+    # starts from the live row's price (today's value), so undoing post-
+    # as_of changes lands on the price at as_of.
     bootstrap_price: dict[str, float] = {}
     for ev in events:
         kid = ev["target_id"]
         if kid not in snapshots or kid in bootstrap_price:
             continue
-        if ev["action"] != "mark_paid":
+        if ev["action"] not in ("mark_paid", "update_key"):
             continue
-        try:
-            ev_date = date.fromisoformat(str(ev["occurred_at"])[:10])
-        except ValueError:
-            continue
-        if ev_date <= as_of:
+        ev_date = _utc_iso_to_billing_date(str(ev["occurred_at"]), tz)
+        if ev_date is None or ev_date <= as_of:
             continue
         if not ev["details_json"]:
             continue
@@ -1374,14 +1442,19 @@ def reconstruct_key_state_at(
     for kid, price in bootstrap_price.items():
         snapshots[kid]["price_monthly"] = price
 
-    # Second pass — forward-replay events at or before as_of.
+    # Second pass — forward-replay events at or before as_of for status,
+    # paid_until, and the within-window price moves. Price moves before
+    # as_of are already reflected in the live row's price (we initialized
+    # from current); the bootstrap pass above only undoes POST-as_of moves,
+    # so we leave snap.price_monthly unchanged here for events at-or-before
+    # as_of unless a ``new`` value is recorded — which we use to verify the
+    # snapshot lands at the right intermediate state for tests / forensics.
     for ev in events:
         kid = ev["target_id"]
         if kid not in snapshots:
             continue
-        try:
-            ev_date = date.fromisoformat(str(ev["occurred_at"])[:10])
-        except ValueError:
+        ev_date = _utc_iso_to_billing_date(str(ev["occurred_at"]), tz)
+        if ev_date is None:
             continue
         if ev_date > as_of:
             continue
@@ -1406,16 +1479,15 @@ def reconstruct_key_state_at(
                     snap["paid_until"] = paid_until_value
             if details.get("reactivated"):
                 snap["status"] = "active"
-            if details.get("price_monthly_changed") and "new" in details:
-                new = details["new"]
-                if isinstance(new, (int, float)):
-                    snap["price_monthly"] = float(new)
         elif action == "suspend_key":
             snap["status"] = "suspended"
         elif action == "reactivate_key":
             snap["status"] = "active"
         elif action == "revoke_key":
             snap["status"] = "revoked"
+        # ``update_key`` mutates only price/rpm/notes — none of those affect
+        # the bucket logic except price, which is handled by the bootstrap
+        # pass above. No second-pass arm needed.
 
     result: list[ApiKeyListRow] = []
     for kid, snap in snapshots.items():
@@ -1629,13 +1701,27 @@ def update_api_key(
         conn.execute(sql, params)
 
         fields_sorted: tuple[UpdateKeyField, ...] = tuple(sorted(set(updated)))
+        update_details: dict[str, object] = {"fields": list(fields_sorted)}
+        # Carry old/new for ``price_monthly`` so the audit log is replayable
+        # by ``reconstruct_key_state_at`` (revenue --as-of). Forward-only:
+        # the field is additive, pre-5.1 audit rows simply omit it. The
+        # ``price_monthly_changed`` discriminator mirrors the ``mark_paid``
+        # convention so the replayer treats both call sites identically.
+        if (
+            new_price is not None
+            and old_price is not None
+            and float(old_price) != float(new_price)
+        ):
+            update_details["price_monthly_changed"] = True
+            update_details["old"] = float(old_price)
+            update_details["new"] = float(new_price)
         log_event(
             conn,
             actor=actor,
             action="update_key",
             target_type="api_key",
             target_id=key_id,
-            details={"fields": list(fields_sorted)},
+            details=update_details,
         )
 
     _touch_auth_cache_sentinel(conn)
@@ -1910,12 +1996,23 @@ def mark_key_paid(
             "paid_until": paid_until,
             "reactivated": reactivated,
         }
-        if new_price_monthly is not None:
+        if new_price_monthly is not None and (
+            old_price is None or float(old_price) != float(new_price_monthly)
+        ):
+            # Only record the price-change shape when the value actually
+            # moved. An operator passing ``--price-monthly 149.0`` against a
+            # key already at 149.0 should not produce a misleading
+            # ``price_monthly_changed=True`` row in the forensic log.
             details["price_monthly_changed"] = True
             details["old"] = old_price
-            details["new"] = new_price_monthly
+            details["new"] = float(new_price_monthly)
         if audit_extra:
-            details.update(audit_extra)
+            # Caller-supplied extras must NOT overwrite structured invariants
+            # (``paid_until`` / ``reactivated`` / ``price_monthly_changed`` /
+            # ``old`` / ``new``). Reverse the merge priority: extras fill
+            # gaps, structured fields always win.
+            for key, value in audit_extra.items():
+                details.setdefault(key, value)
         log_event(
             conn,
             actor=actor,

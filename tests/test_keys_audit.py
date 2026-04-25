@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from comadre.keys.audit import get_cli_actor, log_event
+from comadre.keys.audit import filter_forbidden_keys, get_cli_actor, log_event
 
 
 @pytest.fixture()
@@ -80,6 +80,45 @@ def test_log_event_forbidden_keys_raise_value_error(
                 target_id=None,
                 details=details,
             )
+
+
+def test_log_event_forbidden_key_buried_in_list_of_dicts_raises(
+    conn: sqlite3.Connection,
+) -> None:
+    """FR30 review-pass widening: the write-side guard must walk both
+    ``Mapping`` and ``Sequence`` so a forbidden key inside a list of dicts
+    is rejected before it lands in the audit log on disk. Symmetric with
+    the read-side ``filter_forbidden_keys``."""
+    with pytest.raises(ValueError, match="forbidden personal data"):
+        log_event(
+            conn,
+            actor="cli:x",
+            action="x",
+            target_type=None,
+            target_id=None,
+            details={"changes": [{"name": "Helena"}]},
+        )
+
+
+def test_filter_forbidden_keys_recurses_into_lists_and_dicts() -> None:
+    """Read-side defense-in-depth: forbidden keys nested inside lists,
+    lists-of-dicts, and dicts-of-lists are all stripped. The output
+    preserves list shape so callers see a faithful structure minus the
+    PII keys."""
+    payload: dict[str, object] = {
+        "items": [{"name": "leak", "ok": 1}, {"email": "x@y", "ok": 2}],
+        "nested": {"deeper": [{"cpf": "...", "kind": "cpf"}]},
+        "scalar": 42,
+        "tax_id": "raw",
+    }
+    cleaned = filter_forbidden_keys(payload)
+    assert cleaned == {
+        "items": [{"ok": 1}, {"ok": 2}],
+        "nested": {"deeper": [{"kind": "cpf"}]},
+        "scalar": 42,
+    }
+    # Source dict is not mutated.
+    assert "tax_id" in payload
 
 
 def test_log_event_caller_owns_txn_and_none_details_writes_sql_null(

@@ -8,7 +8,9 @@ commit or both roll back.
 FR30 defense-in-depth: `details` must not carry personal data. A blocklist
 raises `ValueError` if a forbidden key slips through — never `assert`, which
 Python strips under `-O` / `PYTHONOPTIMIZE=1`. The check is case-insensitive
-and walks nested dicts so `{"meta": {"CPF": "..."}}` still fails.
+and recurses into nested `Mapping` AND `Sequence` values so a forbidden key
+buried in `{"items": [{"name": "..."}]}` still fails. Symmetric with
+`filter_forbidden_keys` (read-side defense-in-depth).
 """
 
 from __future__ import annotations
@@ -34,14 +36,24 @@ _FORBIDDEN_DETAIL_KEYS = frozenset(
 )
 
 
+def _assert_no_forbidden_value(value: object) -> None:
+    """Recurse into mappings and sequences, asserting no forbidden keys."""
+    if isinstance(value, Mapping):
+        _assert_no_forbidden_keys(value)
+    # str / bytes are Sequences but never carry nested keys; explicit guard
+    # so the recursion does not iterate characters.
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            _assert_no_forbidden_value(item)
+
+
 def _assert_no_forbidden_keys(payload: Mapping[str, object]) -> None:
     for key, value in payload.items():
         if key.lower() in _FORBIDDEN_DETAIL_KEYS:
             raise ValueError(
                 f"audit details contain forbidden personal data key: {key!r}"
             )
-        if isinstance(value, Mapping):
-            _assert_no_forbidden_keys(value)
+        _assert_no_forbidden_value(value)
 
 
 def _filter_forbidden_value(value: object) -> object:

@@ -104,7 +104,9 @@ def test_update_customer_audit_details_carries_only_field_names(
     finally:
         conn.close()
     details = json.loads(row[0])
-    assert details == {"fields": ["email", "notes"]}
+    # ``notes_op`` distinguishes destructive --notes replace from --add-note
+    # append; review-pass addition. Operator-internal metadata, not PII.
+    assert details == {"fields": ["email", "notes"], "notes_op": "append"}
     assert "secret@hidden.com" not in row[0]
     assert "PII content here" not in row[0]
 
