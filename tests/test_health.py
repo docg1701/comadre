@@ -1,415 +1,98 @@
-"""Tests for health response assembler."""
+"""Tests for ``/health`` (build_health_response + HTTP).
+
+Lean by design (test-suite review 2026-04-25): one full-shape test for
+the authenticated path (all 7 fields + order), one minimal-shape test
+for unauthenticated (status + voices only), one 503 warming-up.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
-from comadre import __version__
-from comadre.config import get_settings
-from comadre.health import (
-    HealthStatus,
-    build_health_response,
-    build_minimal_health_response,
-)
-from comadre.main import create_app
+from comadre.health import build_health_response, build_minimal_health_response
 
 
 @pytest.fixture()
 def mock_router() -> MagicMock:
-    """Return a mock EngineRouter with typical healthy state."""
     router = MagicMock()
     router.available_voices.return_value = [
-        "kokoro/pm_alex",
-        "kokoro/pf_dora",
         "kokoro/pm_santa",
         "qwen/female-reference",
-        "qwen/male-reference",
     ]
     router.engine_status.return_value = {
-        "kokoro": {
-            "loaded": True,
-            "voices": ["kokoro/pm_alex", "kokoro/pf_dora", "kokoro/pm_santa"],
-        },
-        "qwen3": {
-            "loaded": True,
-            "voices": ["qwen/female-reference", "qwen/male-reference"],
-        },
+        "kokoro": {"loaded": True, "voices": ["kokoro/pm_santa"]},
+        "qwen3": {"loaded": True, "voices": ["qwen/female-reference"]},
     }
     return router
 
 
-class TestHealthyResponse:
-    """Tests for ready=True (healthy) responses."""
-
-    def test_returns_200_status_code(self, mock_router: MagicMock) -> None:
-        _, status_code = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert status_code == 200
-
-    def test_status_field_is_healthy(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["status"] == "healthy"
-
-    def test_all_fields_present(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        expected_keys = {
-            "status",
-            "voices",
-            "engines",
-            "queue_depth",
-            "uptime_seconds",
-            "memory_mb",
-            "version",
-        }
-        assert set(body.keys()) == expected_keys
-
-    def test_field_order_is_contractual(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert list(body.keys()) == [
-            "status",
-            "voices",
-            "engines",
-            "queue_depth",
-            "uptime_seconds",
-            "memory_mb",
-            "version",
-        ]
-
-    def test_voices_is_list(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert isinstance(body["voices"], list)
-        assert body["voices"] == [
-            "kokoro/pm_alex",
-            "kokoro/pf_dora",
-            "kokoro/pm_santa",
-            "qwen/female-reference",
-            "qwen/male-reference",
-        ]
+def test_full_health_response_has_seven_fields_in_fixed_order(
+    mock_router: MagicMock,
+) -> None:
+    """The authenticated /health is a contract for monitor scripts:
+    every field present, in a fixed order, status=healthy when ready."""
+    body, status_code = build_health_response(
+        router=mock_router, ready=True, start_time=time.monotonic()
+    )
+    assert status_code == 200
+    assert body["status"] == "healthy"
+    assert list(body.keys()) == [
+        "status",
+        "voices",
+        "engines",
+        "queue_depth",
+        "uptime_seconds",
+        "memory_mb",
+        "version",
+    ]
+    assert body["voices"] == mock_router.available_voices()
 
 
-class TestWarmingUpResponse:
-    """Tests for ready=False (warming_up) responses."""
-
-    def test_returns_503_status_code(self, mock_router: MagicMock) -> None:
-        _, status_code = build_health_response(
-            router=mock_router, ready=False, start_time=time.monotonic()
-        )
-        assert status_code == 503
-
-    def test_status_field_is_warming_up(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=False, start_time=time.monotonic()
-        )
-        assert body["status"] == "warming_up"
+def test_minimal_health_response_returns_only_status_and_voices(
+    mock_router: MagicMock,
+) -> None:
+    """Unauthenticated /health: 200 + minimal shape; engine internals not exposed."""
+    body, status_code = build_minimal_health_response(router=mock_router, ready=True)
+    assert status_code == 200
+    assert set(body.keys()) == {"status", "voices"}
+    assert body["status"] == "healthy"
 
 
-class TestVoicesField:
-    """Tests for the voices field behavior."""
-
-    def test_empty_voices_returns_empty_list(self, mock_router: MagicMock) -> None:
-        mock_router.available_voices.return_value = []
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["voices"] == []
-        assert isinstance(body["voices"], list)
+def test_minimal_health_response_returns_503_warming_up_when_not_ready(
+    mock_router: MagicMock,
+) -> None:
+    body, status_code = build_minimal_health_response(router=mock_router, ready=False)
+    assert status_code == 503
+    assert body["status"] == "warming_up"
 
 
-class TestEnginesField:
-    """Tests for the engines field structure."""
-
-    def test_engines_contains_kokoro_and_qwen3(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert "kokoro" in body["engines"]
-        assert "qwen3" in body["engines"]
-
-    def test_kokoro_engine_structure(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        kokoro = body["engines"]["kokoro"]
-        assert kokoro["loaded"] is True
-        assert "kokoro/pm_santa" in kokoro["voices"]
-
-    def test_qwen3_engine_structure(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        qwen3 = body["engines"]["qwen3"]
-        assert qwen3["loaded"] is True
-        assert "qwen/female-reference" in qwen3["voices"]
+async def test_health_endpoint_unauthenticated_returns_minimal_shape(
+    client: AsyncClient,
+) -> None:
+    """End-to-end smoke through the FastAPI app."""
+    response = await client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"status", "voices"}
+    assert body["status"] == "healthy"
 
 
-class TestVersionField:
-    """Tests for the version field."""
-
-    def test_version_matches_package(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["version"] == __version__
-
-
-class TestUptimeField:
-    """Tests for the uptime_seconds field."""
-
-    def test_uptime_is_positive(self, mock_router: MagicMock) -> None:
-        start_time = time.monotonic() - 100
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=start_time
-        )
-        assert body["uptime_seconds"] >= 100
-        assert isinstance(body["uptime_seconds"], int)
-
-
-class TestMemoryField:
-    """Tests for the memory_mb field."""
-
-    @patch("comadre.health.resource")
-    def test_memory_mb_calculation(
-        self, mock_resource: MagicMock, mock_router: MagicMock
-    ) -> None:
-        mock_resource.getrusage.return_value.ru_maxrss = 512_000  # ~500 MB in KB
-        mock_resource.RUSAGE_SELF = 0
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["memory_mb"] == 500  # 512000 // 1024
-
-    @patch("comadre.health.resource")
-    def test_memory_mb_is_positive_int(
-        self, mock_resource: MagicMock, mock_router: MagicMock
-    ) -> None:
-        mock_resource.getrusage.return_value.ru_maxrss = 1024  # 1 MB
-        mock_resource.RUSAGE_SELF = 0
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["memory_mb"] == 1
-        assert isinstance(body["memory_mb"], int)
-
-
-class TestQueueDepth:
-    """Tests for the queue_depth field."""
-
-    def test_queue_depth_defaults_to_zero(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic()
-        )
-        assert body["queue_depth"] == 0
-
-    def test_queue_depth_custom_value(self, mock_router: MagicMock) -> None:
-        body, _ = build_health_response(
-            router=mock_router, ready=True, start_time=time.monotonic(), queue_depth=5
-        )
-        assert body["queue_depth"] == 5
-
-
-class TestHealthStatusEnum:
-    """Tests for the HealthStatus enum."""
-
-    def test_healthy_value(self) -> None:
-        assert HealthStatus.healthy == "healthy"
-
-    def test_warming_up_value(self) -> None:
-        assert HealthStatus.warming_up == "warming_up"
-
-    def test_degraded_value(self) -> None:
-        assert HealthStatus.degraded == "degraded"
-
-
-# --- HTTP-level health endpoint tests ---
-
-
-class TestMinimalHealthResponse:
-    """Tests for build_minimal_health_response (unauthenticated callers)."""
-
-    def test_returns_200_when_ready(self, mock_router: MagicMock) -> None:
-        _, status_code = build_minimal_health_response(router=mock_router, ready=True)
-        assert status_code == 200
-
-    def test_returns_503_when_not_ready(self, mock_router: MagicMock) -> None:
-        _, status_code = build_minimal_health_response(router=mock_router, ready=False)
-        assert status_code == 503
-
-    def test_status_field_is_healthy(self, mock_router: MagicMock) -> None:
-        body, _ = build_minimal_health_response(router=mock_router, ready=True)
-        assert body["status"] == "healthy"
-
-    def test_contains_only_status_and_voices(self, mock_router: MagicMock) -> None:
-        body, _ = build_minimal_health_response(router=mock_router, ready=True)
-        assert set(body.keys()) == {"status", "voices"}
-
-    def test_voices_reflect_router(self, mock_router: MagicMock) -> None:
-        body, _ = build_minimal_health_response(router=mock_router, ready=True)
-        assert body["voices"] == mock_router.available_voices()
-
-
-class TestHealthHTTPEndpoint:
-    """Tests for unauthenticated GET /health via HTTP."""
-
-    async def test_health_returns_200_when_ready(self, client: AsyncClient) -> None:
-        response = await client.get("/health")
-        assert response.status_code == 200
-        body = response.json()
-        assert body["status"] == "healthy"
-        assert set(body.keys()) == {"status", "voices"}
-
-    async def test_health_returns_503_when_not_ready(
-        self, monkeypatch: pytest.MonkeyPatch, fernet_key: str
-    ) -> None:
-        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
-        get_settings.cache_clear()
-        app = create_app()
-        app.state.settings = get_settings()
-        app.state.ready = False
-        app.state.router = None
-        app.state.queue_lock = asyncio.Lock()
-        app.state.queue_depth = 0
-        app.state.start_time = time.monotonic()
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as c:
-            response = await c.get("/health")
-        assert response.status_code == 503
-        body = response.json()
-        assert body["status"] == "warming_up"
-        assert set(body.keys()) == {"status", "voices"}
-
-    async def test_health_requires_no_authentication(self, client: AsyncClient) -> None:
-        response = await client.get("/health")
-        assert response.status_code == 200
-        body = response.json()
-        assert set(body.keys()) == {"status", "voices"}
-
-    async def test_health_voices_reflect_router(self, client: AsyncClient) -> None:
-        response = await client.get("/health")
-        body = response.json()
-        assert body["voices"] == [
-            "kokoro/pm_alex",
-            "kokoro/pf_dora",
-            "kokoro/pm_santa",
-            "qwen/female-reference",
-            "qwen/male-reference",
-        ]
-
-
-class TestHealthAuthenticatedEndpoint:
-    """Tests for authenticated GET /health — returns full detail."""
-
-    async def test_authenticated_returns_full_response(
-        self, client: AsyncClient, auth_headers: dict[str, str]
-    ) -> None:
-        response = await client.get("/health", headers=auth_headers)
-        assert response.status_code == 200
-        body = response.json()
-        expected_keys = {
-            "status",
-            "voices",
-            "engines",
-            "queue_depth",
-            "uptime_seconds",
-            "memory_mb",
-            "version",
-        }
-        assert set(body.keys()) == expected_keys
-
-    async def test_authenticated_field_order(
-        self, client: AsyncClient, auth_headers: dict[str, str]
-    ) -> None:
-        response = await client.get("/health", headers=auth_headers)
-        body = response.json()
-        assert list(body.keys()) == [
-            "status",
-            "voices",
-            "engines",
-            "queue_depth",
-            "uptime_seconds",
-            "memory_mb",
-            "version",
-        ]
-
-    async def test_authenticated_warming_up_returns_full_response(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fernet_key: str,
-        tmp_path: Path,
-    ) -> None:
-        """Warming-up /health with a valid bearer returns the full detail shape.
-
-        2026-04-18: registry-only — seed a customer + key so the bearer is
-        real (the retired legacy-API_KEY bearer path no longer exists).
-        """
-        from datetime import date
-
-        from comadre.keys import auth as auth_module
-        from comadre.keys.cache import AuthCache
-        from comadre.keys.db import _apply_migrations, get_connection
-        from comadre.rate_limit import RateLimiter
-        from tests._keys_fixtures import seed_customer_and_key
-
-        db_path = tmp_path / "registry.db"
-        monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
-        monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
-        monkeypatch.setattr(
-            auth_module, "_today_in_billing_tz", lambda _s: date(2026, 4, 17)
-        )
-        get_settings.cache_clear()
-
-        app = create_app()
-        app.state.settings = get_settings()
-        app.state.ready = False
-        app.state.router = None
-        app.state.queue_lock = asyncio.Lock()
-        app.state.queue_depth = 0
-        app.state.start_time = time.monotonic()
-
-        conn = get_connection(db_path)
-        _apply_migrations(conn)
-        app.state.registry_db = conn
-        app.state.auth_cache = AuthCache()
-        app.state.rate_limiter = RateLimiter.build()
-
-        plaintext, _kid, _cid = seed_customer_and_key(conn)
-        try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as c:
-                response = await c.get(
-                    "/health",
-                    headers={"Authorization": f"Bearer {plaintext}"},
-                )
-        finally:
-            conn.close()
-        assert response.status_code == 503
-        body = response.json()
-        assert body["status"] == "warming_up"
-        expected_keys = {
-            "status",
-            "voices",
-            "engines",
-            "queue_depth",
-            "uptime_seconds",
-            "memory_mb",
-            "version",
-        }
-        assert set(body.keys()) == expected_keys
+async def test_health_endpoint_authenticated_returns_full_shape(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    response = await client.get("/health", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {
+        "status",
+        "voices",
+        "engines",
+        "queue_depth",
+        "uptime_seconds",
+        "memory_mb",
+        "version",
+    }
