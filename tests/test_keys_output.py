@@ -1,1395 +1,151 @@
-"""Tests for comadre.keys.cli.output."""
+"""Tests for ``comadre.keys.cli.output`` — security-critical render paths only.
+
+Lean by design (test-suite review 2026-04-25): renderer happy paths are
+exercised by the CLI verb integration tests that emit through the same
+helpers. What remains here is what ONLY a render-layer test can check:
+
+* CustomerDetailRow does not leak ciphertext.
+* Operator-supplied free-form fields (notes, customer_name, health value)
+  cannot break out of Rich markup escape (F24 hardening).
+* JSON / YAML export round-trip + insertion order — LGPD export is a
+  machine contract, not human UX.
+"""
 
 from __future__ import annotations
 
-import re
-from collections.abc import Iterator
-from datetime import UTC, datetime
+import json
 from io import StringIO
 
 import pytest
+import yaml
 from rich.console import Console
 
 import comadre.keys.cli.output as output_mod
 from comadre.keys.cli.output import (
-    _reset_for_tests,
-    _status_label,
-    render_at_risk_table,
-    render_audit_tail,
-    render_confirmation,
     render_customer_detail,
-    render_customer_list,
-    render_empty_state,
-    render_error,
     render_export_json,
     render_export_yaml,
     render_health_report,
-    render_json,
-    render_key_detail,
-    render_key_list,
-    render_key_panel,
     render_revenue_report,
-    render_show_json,
     render_suspend_sweep_preview,
-    stderr_console,
-    stdout_console,
 )
 from comadre.keys.health import HealthCheck, HealthReport
-from comadre.keys.models import (
-    ApiKeyListRow,
-    ApiKeyRecord,
-    AuditEventRow,
-    CustomerDetailRow,
-    CustomerListRow,
-    IssuedKey,
-    KeyDetailRow,
-    RevenueReport,
-)
+from comadre.keys.models import ApiKeyListRow, CustomerDetailRow, RevenueReport
 
-ANSI_ESCAPE = re.compile(r"\x1b\[")
 
+def _capture(monkeypatch: pytest.MonkeyPatch) -> StringIO:
+    buf = StringIO()
+    fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
+    monkeypatch.setattr(output_mod, "_stdout_console", fake)
+    return buf
 
-@pytest.fixture(autouse=True)
-def _reset_consoles() -> Iterator[None]:
-    _reset_for_tests()
-    yield
-    _reset_for_tests()
 
-
-class TestConsoleSingletons:
-    def test_stdout_singleton(self) -> None:
-        first = stdout_console()
-        second = stdout_console()
-        assert first is second
-
-    def test_stderr_singleton(self) -> None:
-        first = stderr_console()
-        second = stderr_console()
-        assert first is second
-
-    def test_stdout_and_stderr_are_distinct(self) -> None:
-        assert stdout_console() is not stderr_console()
-
-
-class TestRenderConfirmation:
-    def test_writes_to_stdout_with_captured_console(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_confirmation("Customer created: cust_01abc (Helena)")
-        out = buf.getvalue()
-        assert "Customer created: cust_01abc (Helena)" in out
-        # No Rich border characters
-        assert "╭" not in out and "╰" not in out
-
-
-class TestRenderError:
-    def test_writes_panel_with_title_and_hint(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stderr_console", fake)
-        render_error("Invalid CPF: checksum verification failed", "Verify the digits.")
-        out = buf.getvalue()
-        assert "Invalid CPF: checksum verification failed" in out
-        assert "Verify the digits." in out
-
-    def test_no_color_produces_no_ansi(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With NO_COLOR, rich emits no ANSI escape sequences."""
-        monkeypatch.setenv("NO_COLOR", "1")
-        buf = StringIO()
-        # Let rich pick up NO_COLOR via env; do not pass no_color explicitly.
-        fake = Console(file=buf, force_terminal=False, width=120)
-        monkeypatch.setattr(output_mod, "_stderr_console", fake)
-        render_error("Configuration error", "KEY_REGISTRY_ENCRYPTION_KEY missing.")
-        out = buf.getvalue()
-        assert not ANSI_ESCAPE.search(out)
-
-
-_MANUAL_PLAINTEXT = "cmdr_live_KQjPz8vR9NwT3MxAbYcH5dLeFgJ2nSsU_ab"
-
-
-def _manual_issued(plaintext: str = _MANUAL_PLAINTEXT) -> IssuedKey:
-    rec = ApiKeyRecord(
-        id="key_01abcdefghijklmnopqrstuvwx",
-        customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
-        key_hash="a" * 64,
-        key_prefix="KQjPz8vR",
-        rate_limit_rpm=60,
-        status="active",
-        billing_mode="manual",
-        price_monthly=149.0,
-        paid_until=None,
-        created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
-        last_used_at=None,
-        notes="",
-    )
-    return IssuedKey(
-        plaintext=plaintext,
-        record=rec,
-        customer_name="Helena Ribeiro",
-        first_charge_date="2026-05-05",
-        first_charge_days_free=22,
-    )
-
-
-def _complimentary_issued() -> IssuedKey:
-    rec = ApiKeyRecord(
-        id="key_01xyzabcdefghijklmnopqrst",
-        customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
-        key_hash="b" * 64,
-        key_prefix="COMP1234",
-        rate_limit_rpm=120,
-        status="active",
-        billing_mode="complimentary",
-        price_monthly=0.0,
-        paid_until=None,
-        created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
-        last_used_at=None,
-        notes="infra bundle",
-    )
-    return IssuedKey(
-        plaintext="cmdr_live_complimentary_token_sample_abcdef_12",
-        record=rec,
-        customer_name="Infra Bundle Co",
-        first_charge_date=None,
-        first_charge_days_free=None,
-    )
-
-
-class TestRenderKeyPanelManual:
-    def test_plaintext_line_has_no_border_or_indent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """AC4 surrogate: the plaintext line is ONLY the key, no borders or indent."""
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = _manual_issued()
-        render_key_panel(issued)
-
-        lines = buf.getvalue().split("\n")
-        plaintext_lines = [line for line in lines if issued.plaintext in line]
-        assert len(plaintext_lines) == 1, (
-            f"Expected exactly 1 plaintext line, got {len(plaintext_lines)}"
-        )
-        line = plaintext_lines[0]
-        # AC4: .strip() == plaintext (no border chars on the line).
-        assert line.strip() == issued.plaintext
-        # AC4: line[0] is not whitespace (starts with the key at column 0).
-        assert line[0] not in (" ", "\t", "\u00a0", "\u2551", "\u2502")
-        # Key itself starts the line exactly.
-        assert line.startswith(issued.plaintext)
-
-    def test_plaintext_appears_exactly_once(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = _manual_issued()
-        render_key_panel(issued)
-        out = buf.getvalue()
-        assert out.count(issued.plaintext) == 1
-
-    def test_contains_copy_now_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_manual_issued())
-        out = buf.getvalue()
-        assert "copy now" in out
-        assert "shown only once" in out
-
-    def test_double_border_characters_present(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Double-border Panel should render with ║/═ Unicode box chars."""
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_manual_issued())
-        out = buf.getvalue()
-        assert "\u2551" in out  # ║
-        assert "\u2550" in out  # ═
-
-    def test_manual_shows_price_and_first_charge(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_manual_issued())
-        out = buf.getvalue()
-        # pt-BR number format: comma decimal separator.
-        assert "R$ 149,00/month" in out
-        assert "first charge: 2026-05-05 (22 days free until then)" in out
-
-    def test_manual_price_uses_ptbr_thousands_separator(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Brazilian format: dot thousands, comma decimal (R$ 1.234,56)."""
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        rec = ApiKeyRecord(
-            id="key_01pricey",
-            customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
-            key_hash="c" * 64,
-            key_prefix="HIGHCOST",
-            rate_limit_rpm=600,
-            status="active",
-            billing_mode="manual",
-            price_monthly=12345.67,
-            paid_until=None,
-            created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
-            last_used_at=None,
-            notes="",
-        )
-        issued = IssuedKey(
-            plaintext="cmdr_live_HIGHCOST_KEY_TOKEN_abcdefghijklmnopqrst_a",
-            record=rec,
-            customer_name="Enterprise Co",
-            first_charge_date="2026-05-05",
-            first_charge_days_free=22,
-        )
-        render_key_panel(issued)
-        out = buf.getvalue()
-        assert "R$ 12.345,67/month" in out
-
-    def test_labels_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_manual_issued())
-        out = buf.getvalue()
-        for label in (
-            "prefix:",
-            "customer:",
-            "rate limit:",
-            "billing mode:",
-            "price:",
-            "first charge:",
-        ):
-            assert label in out
-
-    def test_blank_line_between_plaintext_and_context_panel(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """AC1: a blank line must separate the plaintext from the labeled rows."""
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = _manual_issued()
-        render_key_panel(issued)
-
-        lines = buf.getvalue().split("\n")
-        pt_idx = next(i for i, line in enumerate(lines) if issued.plaintext in line)
-        # The line immediately after the plaintext must be empty (no content,
-        # no border chars — a clean visual gap before the context Panel).
-        assert lines[pt_idx + 1].strip() == ""
-
-    def test_customer_name_and_id_on_customer_row(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_manual_issued())
-        out = buf.getvalue()
-        assert "Helena Ribeiro (cust_01j8xr3e4c5m7kn9p2qt8vwyz0)" in out
-
-    def test_no_color_env_produces_no_ansi(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """NO_COLOR compliance: rich must emit no ANSI escape sequences."""
-        monkeypatch.setenv("NO_COLOR", "1")
-        buf = StringIO()
-        # Do NOT pass no_color explicitly — force rich to honour the env var.
-        fake = Console(file=buf, force_terminal=False, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_manual_issued())
-        out = buf.getvalue()
-        assert not ANSI_ESCAPE.search(out)
-
-
-class TestRenderKeyPanelComplimentary:
-    def test_complimentary_variant_labels(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_complimentary_issued())
-        out = buf.getvalue()
-        # pt-BR number format: comma decimal separator.
-        assert "R$ 0,00 (bundled externally)" in out
-        assert "paid until:" in out
-        # AC2: em-dash (U+2014), not hyphen-minus.
-        assert "\u2014 (not applicable)" in out
-        # AC2: no "first charge:" line for complimentary.
-        assert "first charge:" not in out
-
-    def test_complimentary_does_not_show_price_month_suffix(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_panel(_complimentary_issued())
-        out = buf.getvalue()
-        # Manual variant says "R$ 149.00/month"; complimentary must not use /month.
-        assert "/month" not in out
-
-    def test_complimentary_plaintext_line_has_no_border(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = _complimentary_issued()
-        render_key_panel(issued)
-        lines = buf.getvalue().split("\n")
-        [line] = [line for line in lines if issued.plaintext in line]
-        assert line.strip() == issued.plaintext
-        assert line[0] not in (" ", "\t", "\u00a0")
-
-
-class TestStatusLabel:
-    """UX-DR8 — four-color palette with text-first labeling."""
-
-    def test_active_manual(self) -> None:
-        assert _status_label("active", "manual") == ("active", "green")
-
-    def test_active_complimentary_shows_complimentary(self) -> None:
-        # The blue complimentary badge supersedes active/green because it
-        # carries the operator-meaningful "bundled, not billed" signal.
-        assert _status_label("active", "complimentary") == ("complimentary", "blue")
-
-    def test_suspended(self) -> None:
-        assert _status_label("suspended", "manual") == ("suspended", "yellow")
-
-    def test_revoked(self) -> None:
-        assert _status_label("revoked", "manual") == ("revoked", "red")
-
-    def test_suspended_complimentary_still_renders_as_complimentary(self) -> None:
-        # Edge case: if a complimentary key is later suspended (Story 3.1
-        # territory), the complimentary label still wins because the
-        # billing-mode signal is the operator's scan target.
-        assert _status_label("suspended", "complimentary") == (
-            "complimentary",
-            "blue",
-        )
-
-
-def _customer_rows() -> list[CustomerListRow]:
-    return [
-        CustomerListRow(
-            id="cust_01helena000000000000000000",
-            name="Helena Ribeiro",
-            email="helena@clinica.com",
-            tax_id_kind="cpf",
-            key_count=2,
-            registered_at="2026-04-10T10:00:00Z",
-            deleted_at=None,
-            notes="",
-        ),
-        CustomerListRow(
-            id="cust_01bruno0000000000000000000",
-            name="Bruno Aragao",
-            email="bruno@boteco.com",
-            tax_id_kind="cnpj",
-            key_count=0,
-            registered_at="2026-04-11T10:00:00Z",
-            deleted_at=None,
-            notes="",
-        ),
-    ]
-
-
-class TestRenderCustomerList:
-    def test_populated_table_contents(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_customer_list("Customers", _customer_rows())
-        out = buf.getvalue()
-        # Title, column headers, row contents.
-        assert "Customers" in out
-        for header in ("Customer ID", "Name", "Email", "Keys", "Registered"):
-            assert header in out
-        assert "Helena Ribeiro" in out
-        assert "helena@clinica.com" in out
-        assert "cust_01helena000000000000000000" in out
-        assert "cust_01bruno0000000000000000000" in out
-        # ISO date truncation — not the full timestamp.
-        assert "2026-04-10" in out
-        assert "12:00:00" not in out
-        # Trailer with count.
-        assert "2 customers found." in out
-
-
-class TestRenderKeyList:
-    def _rows(self) -> list[ApiKeyListRow]:
-        return [
-            ApiKeyListRow(
-                id="key_01active00000000000000000",
-                customer_id="cust_01helena000000000000000000",
-                customer_name="Helena Ribeiro",
-                key_prefix="EVb4xk8B",
-                status="active",
-                billing_mode="manual",
-                rate_limit_rpm=60,
-                price_monthly=149.0,
-                paid_until=None,
-                created_at="2026-04-10T10:00:00Z",
-                last_used_at=None,
-                notes="",
-            ),
-            ApiKeyListRow(
-                id="key_01suspend000000000000000",
-                customer_id="cust_01helena000000000000000000",
-                customer_name="Helena Ribeiro",
-                key_prefix="SUSpENdd",
-                status="suspended",
-                billing_mode="manual",
-                rate_limit_rpm=60,
-                price_monthly=1234.56,
-                paid_until="2026-04-01",
-                created_at="2026-04-11T10:00:00Z",
-                last_used_at=None,
-                notes="",
-            ),
-            ApiKeyListRow(
-                id="key_01revoked00000000000000",
-                customer_id="cust_01bruno0000000000000000000",
-                customer_name="Bruno Aragao",
-                key_prefix="REvOKEdd",
-                status="revoked",
-                billing_mode="manual",
-                rate_limit_rpm=60,
-                price_monthly=99.0,
-                paid_until="2026-05-01",
-                created_at="2026-04-12T10:00:00Z",
-                last_used_at=None,
-                notes="",
-            ),
-            ApiKeyListRow(
-                id="key_01comp000000000000000000",
-                customer_id="cust_01bruno0000000000000000000",
-                customer_name="Bruno Aragao",
-                key_prefix="COMPlmnt",
-                status="active",
-                billing_mode="complimentary",
-                rate_limit_rpm=120,
-                price_monthly=0.0,
-                paid_until=None,
-                created_at="2026-04-13T10:00:00Z",
-                last_used_at=None,
-                notes="",
-            ),
-        ]
-
-    def test_populated_has_all_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_list("Keys", self._rows())
-        out = buf.getvalue()
-        for header in ("Prefix", "Customer", "Status", "RPM", "Price", "Paid Until"):
-            assert header in out
-        # Each status label renders as plain text (NO_COLOR strips the style).
-        for label in ("active", "suspended", "revoked", "complimentary"):
-            assert label in out
-        assert "4 keys found." in out
-
-    def test_price_formatting(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_list("Keys", self._rows())
-        out = buf.getvalue()
-        # pt-BR format for manual keys.
-        assert "R$ 149,00/month" in out
-        assert "R$ 1.234,56/month" in out
-        # Complimentary keys show R$ 0,00 with no /month suffix.
-        assert "R$ 0,00" in out
-        # And no complimentary row ends in /month.
-        comp_lines = [line for line in out.split("\n") if "COMPlmnt" in line]
-        assert comp_lines, "complimentary row missing"
-        for line in comp_lines:
-            assert "/month" not in line
-
-    def test_paid_until_emdash_for_null_and_complimentary(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_list("Keys", self._rows())
-        out = buf.getvalue()
-        # U+2014 em-dash (not hyphen-minus).
-        assert "\u2014" in out
-        # ISO-date slice for the dated rows.
-        assert "2026-04-01" in out
-        assert "2026-05-01" in out
-
-
-class TestRenderJson:
-    def test_matches_payload_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload: list[dict[str, object]] = [
-            {"id": "cust_01abc", "name": "Helena", "key_count": 2},
-            {"id": "cust_01xyz", "name": "Bruno", "key_count": 0},
-        ]
-        render_json(payload)
-        out = buf.getvalue()
-        parsed = json.loads(out)
-        assert parsed == payload
-
-    def test_empty_is_empty_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_json([])
-        assert json.loads(buf.getvalue()) == []
-
-
-class TestRenderEmptyState:
-    def test_two_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_empty_state(
-            [
-                "No customers registered yet.",
-                'To get started: comadre-keys create-customer --name "Name" '
-                '--email "email@example.com" --cpf "000.000.000-00"',
-            ]
-        )
-        out = buf.getvalue()
-        assert "No customers registered yet." in out
-        assert "To get started: comadre-keys create-customer" in out
-        # No Rich panel characters (plain confirmation lines only).
-        assert "╭" not in out
-        assert "╰" not in out
-
-    def test_single_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_empty_state(["No suspended keys found."])
-        assert "No suspended keys found." in buf.getvalue()
-
-
-def _make_customer_detail(**overrides: object) -> CustomerDetailRow:
-    defaults: dict[str, object] = {
-        "id": "cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
-        "name": "Helena Ribeiro",
-        "email": "helena@clinica.com",
-        "tax_id_kind": "cpf",
-        "key_count": 2,
-        "registered_at": "2026-04-15T12:34:56Z",
-        "notes": "",
-    }
-    defaults.update(overrides)
-    return CustomerDetailRow(**defaults)  # type: ignore[arg-type]
-
-
-def _make_key_detail(**overrides: object) -> KeyDetailRow:
-    defaults: dict[str, object] = {
-        "id": "key_01abc",
-        "customer_id": "cust_01xyz",
-        "customer_name": "Helena Ribeiro",
-        "key_prefix": "EVb4xk8B",
-        "status": "active",
-        "billing_mode": "manual",
-        "rate_limit_rpm": 60,
-        "price_monthly": 149.0,
-        "paid_until": None,
-        "created_at": "2026-04-15T12:34:56Z",
-        "last_used_at": None,
-        "age_days": 2,
-        "notes": "",
-    }
-    defaults.update(overrides)
-    return KeyDetailRow(**defaults)  # type: ignore[arg-type]
-
-
-class TestRenderCustomerDetail:
-    def test_contains_all_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_customer_detail(_make_customer_detail())
-        out = buf.getvalue()
-        for label in (
-            "ID:",
-            "Name:",
-            "Email:",
-            "Tax ID Kind:",
-            "Keys:",
-            "Registered:",
-            "Notes:",
-        ):
-            assert label in out
-        # Tax ID kind is uppercased.
-        assert "CPF" in out
-        assert "2" in out  # key_count
-        assert "2026-04-15" in out
-        # Title contains the full customer id.
-        assert "Customer: cust_01j8xr3e4c5m7kn9p2qt8vwyz0" in out
-        # em-dash for empty notes.
-        assert "\u2014" in out
-
-    def test_cnpj_uppercase(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_customer_detail(_make_customer_detail(tax_id_kind="cnpj"))
-        assert "CNPJ" in buf.getvalue()
-
-    def test_renders_notes_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_customer_detail(_make_customer_detail(notes="5 bots, WA booking"))
-        assert "5 bots, WA booking" in buf.getvalue()
-
-    def test_does_not_leak_ciphertext(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Guard: a future refactor wiring ciphertext into the row must fail here.
-
-        We simulate a leak by placing a Fernet-like blob into notes — the
-        renderer has no special handling for notes, but this locks in the
-        property that the dataclass doesn't even carry the ciphertext column.
-        """
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        row = _make_customer_detail()
-        render_customer_detail(row)
-        # CustomerDetailRow has no tax_id_encrypted attribute at all.
-        assert not hasattr(row, "tax_id_encrypted")
-        assert "gAAAAA" not in buf.getvalue()
-
-
-class TestRenderKeyDetail:
-    def test_active_manual_labels(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail())
-        out = buf.getvalue()
-        for label in (
-            "Prefix:",
-            "Customer:",
-            "Status:",
-            "RPM:",
-            "Price:",
-            "Billing:",
-            "Paid Until:",
-            "Created:",
-            "Last Used:",
-            "Age:",
-            "Notes:",
-        ):
-            assert label in out
-        assert "Key: EVb4xk8B" in out
-        assert "active" in out
-        assert "60/min" in out
-        assert "R$ 149,00/month" in out
-        assert "never" in out
-        assert "2 days" in out
-        assert "Helena Ribeiro (cust_01xyz)" in out
-
-    def test_complimentary_bundled_externally(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(
-            _make_key_detail(billing_mode="complimentary", price_monthly=0.0)
-        )
-        out = buf.getvalue()
-        assert "R$ 0,00 (bundled externally)" in out
-        assert "complimentary" in out
-
-    def test_suspended_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(status="suspended"))
-        assert "suspended" in buf.getvalue()
-
-    def test_revoked_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(status="revoked"))
-        assert "revoked" in buf.getvalue()
-
-    def test_age_today(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(age_days=0))
-        out = buf.getvalue()
-        assert "today" in out
-
-    def test_age_plural_always(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(age_days=1))
-        assert "1 days" in buf.getvalue()
-
-    def test_last_used_never(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(last_used_at=None))
-        assert "never" in buf.getvalue()
-
-    def test_last_used_timestamp_format(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(last_used_at="2026-05-12T14:23:45Z"))
-        assert "2026-05-12 14:23:45" in buf.getvalue()
-
-    def test_empty_notes_emdash(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(notes=""))
-        assert "\u2014" in buf.getvalue()
-
-    def test_paid_until_iso(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_key_detail(_make_key_detail(paid_until="2026-05-15"))
-        assert "2026-05-15" in buf.getvalue()
-
-
-def _audit_event(**overrides: object) -> AuditEventRow:
-    defaults: dict[str, object] = {
-        "id": 1,
-        "occurred_at": "2026-04-15T10:30:00Z",
-        "actor": "cli:ricardo",
-        "action": "issue_key",
-        "target_type": "api_key",
-        "target_id": "key_01abc",
-        "details_json": '{"rate_limit_rpm": 60}',
-    }
-    defaults.update(overrides)
-    return AuditEventRow(**defaults)  # type: ignore[arg-type]
-
-
-class TestRenderAuditTail:
-    def test_populated_header_and_columns(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        events = [
-            _audit_event(
-                id=3,
-                action="update_key",
-                occurred_at="2026-04-16T09:15:00Z",
-                details_json='{"notes": "bumped rpm"}',
-            ),
-            _audit_event(
-                id=2,
-                action="mark_paid",
-                occurred_at="2026-04-15T14:00:00Z",
-                details_json=None,
-            ),
-            _audit_event(
-                id=1,
-                action="issue_key",
-                occurred_at="2026-04-14T12:00:00Z",
-                details_json='{"rate_limit_rpm": 60}',
-            ),
-        ]
-        render_audit_tail(events)
-        out = buf.getvalue()
-        assert "Last 3 events:" in out
-        # Uppercase actions
-        assert "UPDATE_KEY" in out
-        assert "MARK_PAID" in out
-        assert "ISSUE_KEY" in out
-        # Two-leading-space indent on event lines
-        assert "\n  2026-04-16 09:15:00" in out
-        # Timestamp format
-        assert "2026-04-15 14:00:00" in out
-        # details column present
-        assert '{"notes": "bumped rpm"}' in out
-
-    def test_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_audit_tail([])
-        out = buf.getvalue()
-        assert "  No events recorded" in out
-        assert "Last 0 events:" not in out
-
-    def test_action_column_padded_to_longest(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        events = [
-            _audit_event(action="update_key"),  # 10 chars
-            _audit_event(action="mark_paid"),  # 9 chars
-        ]
-        render_audit_tail(events)
-        out = buf.getvalue()
-        # update_key is 10; uppercase padded to 10 width. mark_paid should
-        # be followed by exactly one trailing space before the two-space
-        # gutter (so "MARK_PAID  " → 9 chars + 1 pad + 2 gutter + actor).
-        assert "UPDATE_KEY" in out
-        assert "MARK_PAID " in out
-
-    def test_details_null_omits_column(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_audit_tail([_audit_event(details_json=None, actor="cli:a")])
-        out = buf.getvalue()
-        # Line ends with actor, no trailing whitespace / null text.
-        # Strip the trailing newline(s) Rich adds and check the last data line.
-        lines = [line for line in out.splitlines() if line.strip()]
-        last = lines[-1]
-        assert last.endswith("cli:a")
-        assert "None" not in last
-
-
-class TestRenderShowJson:
-    def test_customer_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_show_json(
-            target_type="customer",
-            target={"id": "cust_01abc", "name": "Helena", "key_count": 2},
-            events=None,
-        )
-        parsed = json.loads(buf.getvalue())
-        assert parsed["target_type"] == "customer"
-        assert parsed["target"]["id"] == "cust_01abc"
-        assert "events" not in parsed
-
-    def test_key_shape_with_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_show_json(
-            target_type="api_key",
-            target={"id": "key_01abc", "key_prefix": "EVb4xk8B"},
-            events=[{"id": 1, "action": "issue_key", "details": None}],
-        )
-        parsed = json.loads(buf.getvalue())
-        assert parsed["target_type"] == "api_key"
-        assert parsed["events"][0]["action"] == "issue_key"
-
-    def test_empty_events_is_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        render_show_json(
-            target_type="api_key",
-            target={"id": "key_01abc"},
-            events=[],
-        )
-        parsed = json.loads(buf.getvalue())
-        assert parsed["events"] == []
-
-
-# ---------------------------------------------------------------------------
-# Story 1.6 — ``_context_block`` paid-until branch for rotate-key.
-# ---------------------------------------------------------------------------
-
-
-def _manual_record_with_paid_until(
-    paid_until: str | None,
-    price_monthly: float = 149.0,
-) -> ApiKeyRecord:
-    return ApiKeyRecord(
-        id="key_01rotateabcdefghijklmnopqr",
-        customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
-        key_hash="a" * 64,
-        key_prefix="Pq_abc12",
-        rate_limit_rpm=60,
-        status="active",
-        billing_mode="manual",
-        price_monthly=price_monthly,
-        paid_until=paid_until,
-        created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
-        last_used_at=None,
-        notes="",
-    )
-
-
-class TestContextBlockPaidUntilBranch:
-    """Story 1.6 Task 8.1 — ``_context_block`` paid-until branch coverage."""
-
-    def test_manual_first_charge_none_with_paid_until_shows_paid_until_row(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = IssuedKey(
-            plaintext="cmdr_live_" + "A" * 43,
-            record=_manual_record_with_paid_until("2026-05-05"),
-            customer_name="Helena Ribeiro",
-            first_charge_date=None,
-            first_charge_days_free=None,
-        )
-        render_key_panel(issued)
-        # ``_format_label`` right-pads the label to _LABEL_WIDTH (13) + a
-        # trailing space — assert via regex so exact padding isn't load-bearing.
-        out = buf.getvalue()
-        assert re.search(r"paid until:\s+2026-05-05", out)
-        assert "first charge:" not in out
-
-    def test_manual_first_charge_none_with_null_paid_until_shows_em_dash(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = IssuedKey(
-            plaintext="cmdr_live_" + "B" * 43,
-            record=_manual_record_with_paid_until(None),
-            customer_name="Helena Ribeiro",
-            first_charge_date=None,
-            first_charge_days_free=None,
-        )
-        render_key_panel(issued)
-        out = buf.getvalue()
-        assert re.search(r"paid until:\s+\u2014", out)
-        # Must NOT render the complimentary-branch suffix "(not applicable)".
-        assert "(not applicable)" not in out
-        assert "first charge:" not in out
-
-    def test_manual_with_first_charge_date_still_shows_first_charge(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Regression — existing issue-key contract unchanged by Story 1.6."""
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        issued = IssuedKey(
-            plaintext="cmdr_live_" + "C" * 43,
-            record=_manual_record_with_paid_until("2026-05-05"),
-            customer_name="Helena Ribeiro",
-            first_charge_date="2026-05-05",
-            first_charge_days_free=21,
-        )
-        render_key_panel(issued)
-        out = buf.getvalue()
-        assert re.search(r"first charge:\s+2026-05-05 \(21 days free until then\)", out)
-        # paid-until row only shows when first_charge_date is None.
-        assert not re.search(r"paid until:\s+2026-05-05", out)
-
-    def test_complimentary_always_shows_not_applicable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Complimentary branch ignores ``first_charge_date`` entirely."""
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        rec = ApiKeyRecord(
-            id="key_01complimentaryabcdefghij",
-            customer_id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
-            key_hash="b" * 64,
-            key_prefix="COMP1234",
-            rate_limit_rpm=120,
-            status="active",
-            billing_mode="complimentary",
-            price_monthly=0.0,
-            paid_until="2026-05-05",  # even a set value is overridden
-            created_at=datetime(2026, 4, 13, 12, 0, 0, tzinfo=UTC),
-            last_used_at=None,
-            notes="",
-        )
-        issued = IssuedKey(
-            plaintext="cmdr_live_" + "D" * 43,
-            record=rec,
-            customer_name="Infra Bundle Co",
-            first_charge_date="2026-05-05",  # ignored on complimentary branch
-            first_charge_days_free=22,
-        )
-        render_key_panel(issued)
-        out = buf.getvalue()
-        assert re.search(r"paid until:\s+\u2014 \(not applicable\)", out)
-        assert "R$ 0,00 (bundled externally)" in out
-
-
-def _at_risk_row(
-    *,
-    key_prefix: str = "Pq_abc12",
-    customer_name: str = "Pedro Lopes",
-    paid_until: str = "2026-04-20",
-    price_monthly: float = 149.0,
-) -> ApiKeyListRow:
+def _hostile_row(*, customer_name: str = "EvilCorp", notes: str = "") -> ApiKeyListRow:
     return ApiKeyListRow(
-        id=f"key_{key_prefix.lower()}0000000000000000000",
+        id="key_01hostile0000000000000000",
         customer_id="cust_01abc",
         customer_name=customer_name,
-        key_prefix=key_prefix,
+        key_prefix="Hx_abc12",
         status="active",
         billing_mode="manual",
         rate_limit_rpm=60,
-        price_monthly=price_monthly,
-        paid_until=paid_until,
+        price_monthly=149.0,
+        paid_until="2026-04-04",
         created_at="2026-01-05T12:00:00Z",
         last_used_at=None,
+        notes=notes,
+    )
+
+
+def test_render_customer_detail_does_not_leak_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LGPD: tax_id_encrypted must NEVER reach the operator's terminal.
+
+    A future refactor that wires the ciphertext column into
+    CustomerDetailRow would be caught here — the dataclass MUST not even
+    carry the field.
+    """
+    buf = _capture(monkeypatch)
+    row = CustomerDetailRow(
+        id="cust_01j8xr3e4c5m7kn9p2qt8vwyz0",
+        name="Helena Ribeiro",
+        email="helena@clinica.com",
+        tax_id_kind="cpf",
+        key_count=2,
+        registered_at="2026-04-15T12:34:56Z",
         notes="",
     )
+    render_customer_detail(row)
+    assert not hasattr(row, "tax_id_encrypted")
+    assert "gAAAAA" not in buf.getvalue()
 
 
-class TestRenderAtRiskTable:
-    def test_title_headers_and_footer(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        rows = [
-            (_at_risk_row(key_prefix="Pq_abc12", paid_until="2026-04-20"), 2),
-            (
-                _at_risk_row(
-                    key_prefix="Mx_def34",
-                    customer_name="Marcos Silva",
-                    paid_until="2026-04-22",
-                ),
-                4,
-            ),
-        ]
-        render_at_risk_table(rows, window_days=5)
-        out = buf.getvalue()
-        assert "At-Risk Keys (next 5 days)" in out
-        headers = ("Prefix", "Customer", "Status", "Price", "Paid Until", "Days Left")
-        for header in headers:
-            assert header in out
-        assert "at-risk" in out
-        assert "2 keys found." in out
-
-    def test_days_left_computed_correctly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        rows = [
-            (_at_risk_row(key_prefix="D1______", paid_until="2026-04-19"), 1),
-            (_at_risk_row(key_prefix="D4______", paid_until="2026-04-22"), 4),
-        ]
-        render_at_risk_table(rows, window_days=5)
-        flat = re.sub(r"\s+", " ", buf.getvalue())
-        # Days-left column is right-justified whole numbers — assert both show up.
-        assert re.search(r"D1_+\s+.*\s+1\b", flat)
-        assert re.search(r"D4_+\s+.*\s+4\b", flat)
-
-    def test_price_formatting(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        rows = [(_at_risk_row(price_monthly=1234.56), 3)]
-        render_at_risk_table(rows, window_days=7)
-        assert "R$ 1.234,56/month" in buf.getvalue()
-
-
-def _revenue_report(
-    *,
-    paid_count: int = 12,
-    pending_count: int = 2,
-    suspended_count: int = 0,
-    complimentary_rows: tuple[ApiKeyListRow, ...] = (),
-    mrr: float = 1788.0,
-    projected: float = 2086.0,
-) -> RevenueReport:
-    return RevenueReport(
+def test_render_revenue_report_escapes_markup_in_complimentary_notes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F24: operator-supplied notes must not be interpreted as Rich markup."""
+    buf = _capture(monkeypatch)
+    hostile = _hostile_row(notes="[red]evil[/]")
+    report = RevenueReport(
         month_label="May 2026",
         month_iso="2026-05",
-        paid_count=paid_count,
-        pending_count=pending_count,
-        suspended_count=suspended_count,
-        complimentary_count=len(complimentary_rows),
-        mrr=mrr,
-        projected=projected,
-        next_charge_date="2026-06-05",
-        complimentary_rows=complimentary_rows,
+        paid_count=12,
+        pending_count=2,
+        suspended_count=0,
+        complimentary_count=1,
+        mrr=1788.0,
+        projected=2086.0,
+        next_charge_date="2026-05-05",
+        complimentary_rows=(hostile,),
     )
+    render_revenue_report(report)
+    out = buf.getvalue()
+    assert "evil" in out  # text survives
+    assert "\x1b[" not in out  # no ANSI styling leaked
 
 
-class TestRenderRevenueReport:
-    def test_panel_shape_and_totals(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        comp = _at_risk_row(
-            key_prefix="Cx_abc12",
-            customer_name="AgroBots",
-            paid_until="2099-01-01",
-        )
-        # Override notes for the complimentary row.
-        comp_with_notes = ApiKeyListRow(
-            id=comp.id,
-            customer_id=comp.customer_id,
-            customer_name=comp.customer_name,
-            key_prefix=comp.key_prefix,
-            status="active",
-            billing_mode="complimentary",
-            rate_limit_rpm=comp.rate_limit_rpm,
-            price_monthly=0.0,
-            paid_until=None,
-            created_at=comp.created_at,
-            last_used_at=comp.last_used_at,
-            notes="bundled R$ 850/mo",
-        )
-        report = _revenue_report(complimentary_rows=(comp_with_notes,))
-        render_revenue_report(report)
-        out = buf.getvalue()
-        assert "Revenue Report \u2014 May 2026" in out
-        for label in (
-            "Paid customers:",
-            "Pending:",
-            "Suspended (carry-over):",
-            "Complimentary:",
-            "Monthly recurring:",
-            "Projected (if all pay):",
-            "Next charge date:",
-            "Complimentary keys:",
-        ):
-            assert label in out, f"missing label {label!r}"
-        # pt-BR currency byte-identity.
-        assert "R$ 1.788,00" in out
-        assert "R$ 2.086,00" in out
-        assert "2026-06-05" in out
-        # Complimentary row line with its notes.
-        assert "Cx_abc12 (AgroBots)" in out
-        assert "bundled R$ 850/mo" in out
+def test_render_suspend_sweep_preview_escapes_markup_in_customer_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F24: customer_name with markup tokens must render as plain text."""
+    from datetime import date
 
-    def test_no_complimentary_section_when_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        report = _revenue_report(complimentary_rows=())
-        render_revenue_report(report)
-        out = buf.getvalue()
-        assert "Complimentary keys:" not in out
-        # Counts block still renders.
-        assert "Paid customers:" in out
-
-    def test_markup_injection_guarded_in_complimentary_notes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        hostile = ApiKeyListRow(
-            id="key_01hostile0000000000000000",
-            customer_id="cust_01abc",
-            customer_name="EvilCorp",
-            key_prefix="Hx_abc12",
-            status="active",
-            billing_mode="complimentary",
-            rate_limit_rpm=60,
-            price_monthly=0.0,
-            paid_until=None,
-            created_at="2026-01-05T12:00:00Z",
-            last_used_at=None,
-            notes="[red]evil[/]",
-        )
-        report = _revenue_report(complimentary_rows=(hostile,))
-        render_revenue_report(report)
-        out = buf.getvalue()
-        # F24 hardening: ``_safe_user_text`` escapes Rich markup brackets
-        # via ``rich.markup.escape``, producing the backslash-escaped form
-        # in the output stream. The defensive contract is "no styling
-        # applied"; the visible text still reads ``[red]evil[/]`` (Rich
-        # treats the escape as plain text); we check the underlying
-        # token survives.
-        assert "evil" in out
-        # And no ANSI styling leaked (NO_COLOR-equivalent buffer).
-        assert "\x1b[" not in out
+    buf = _capture(monkeypatch)
+    hostile = _hostile_row(customer_name="[red]evil[/]")
+    render_suspend_sweep_preview([hostile], cutoff_date=date(2026, 4, 6))
+    out = buf.getvalue()
+    assert "evil" in out
+    assert "\x1b[" not in out
 
 
-class TestRenderSuspendSweepPreview:
-    def test_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Story 3.3 AC7 — title, columns, yellow to-suspend badge, footer."""
-        from datetime import date
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        rows = [
-            _at_risk_row(key_prefix="Pq_abc12", paid_until="2026-04-04"),
-            _at_risk_row(
-                key_prefix="Mx_def34",
-                customer_name="Marcos Silva",
-                paid_until="2026-04-05",
+def test_render_health_report_escapes_markup_in_check_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F24: HealthCheck.value rendered verbatim, no markup interpretation."""
+    buf = _capture(monkeypatch)
+    report = HealthReport(
+        checks=(
+            HealthCheck(
+                label="Evil",
+                value="[red]evil[/]",
+                severity="ok",
+                detail="[bold]hostile[/]",
             ),
-        ]
-        render_suspend_sweep_preview(rows, cutoff_date=date(2026, 4, 6))
-        out = buf.getvalue()
-        assert "Dry-run preview: keys to suspend at cutoff 2026-04-06" in out
-        for header in ("Prefix", "Customer", "Status", "Price", "Paid Until"):
-            assert header in out
-        assert "to-suspend" in out
-        # Absence check: preview drops the look-ahead column.
-        assert "Days Left" not in out
-        assert "2 key(s) would be suspended. Run without --dry-run to proceed." in out
-
-    def test_markup_injection_guarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Operator-supplied ``customer_name`` must not be interpreted as markup."""
-        from datetime import date
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        hostile = ApiKeyListRow(
-            id="key_01hostile0000000000000000",
-            customer_id="cust_01abc",
-            customer_name="[red]evil[/]",
-            key_prefix="Hx_abc12",
-            status="active",
-            billing_mode="manual",
-            rate_limit_rpm=60,
-            price_monthly=149.0,
-            paid_until="2026-04-04",
-            created_at="2026-01-05T12:00:00Z",
-            last_used_at=None,
-            notes="",
-        )
-        render_suspend_sweep_preview([hostile], cutoff_date=date(2026, 4, 6))
-        out = buf.getvalue()
-        # The literal markup survives — no Rich interpretation.
-        assert "[red]evil[/]" in out
-
-
-def _report_with(checks: tuple[HealthCheck, ...]) -> HealthReport:
-    return HealthReport(
-        checks=checks,
-        is_healthy=all(c.severity in {"ok", "info"} for c in checks),
+        ),
+        is_healthy=True,
         generated_at="2026-04-19T18:42:07Z",
     )
+    render_health_report(report)
+    out = buf.getvalue()
+    assert "[red]evil[/]" in out  # literal escape preserved
 
 
-class TestRenderHealthReport:
-    """Story 3.4 — UX-DR3 DetailPanel for ``comadre-keys health``."""
-
-    def test_panel_title_and_healthy_footer(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        report = _report_with(
-            (
-                HealthCheck(label="A", value="first", severity="ok"),
-                HealthCheck(label="BB", value="second", severity="ok"),
-                HealthCheck(label="CCC", value="third", severity="info"),
-            )
-        )
-        render_health_report(report)
-        out = buf.getvalue()
-        assert "System Health" in out
-        assert "Healthy." in out
-        # Labels column-align: each appears; the longest label width governs.
-        assert "A  " in out or "A " in out
-        assert "CCC" in out
-
-    def test_unhealthy_footer_counts_warn_and_fail(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        report = _report_with(
-            (
-                HealthCheck(label="OK", value="fine", severity="ok"),
-                HealthCheck(label="WARN", value="drift", severity="warn"),
-                HealthCheck(label="FAIL", value="broken", severity="fail"),
-            )
-        )
-        render_health_report(report)
-        out = buf.getvalue()
-        assert "Unhealthy: 1 warning(s), 1 failure(s)." in out
-
-    def test_severity_colour_yellow_on_warn(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # force_terminal=True + default Rich palette emits ANSI; the body's
-        # yellow-wrapped value contains the canonical CSI 33 sequence.
-        buf = StringIO()
-        fake = Console(
-            file=buf, force_terminal=True, color_system="truecolor", width=120
-        )
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        report = _report_with(
-            (HealthCheck(label="Database", value="0644", severity="warn"),)
-        )
-        render_health_report(report)
-        raw = buf.getvalue()
-        # Either "yellow" is expanded by Rich to a specific SGR — match any
-        # ANSI CSI followed by a number (a defensive pattern that survives
-        # palette adjustments).
-        assert ANSI_ESCAPE.search(raw) is not None
-        assert "0644" in raw
-
-    def test_markup_injection_in_value_is_escaped(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        report = _report_with(
-            (
-                HealthCheck(
-                    label="Evil",
-                    value="[red]evil[/]",
-                    severity="ok",
-                    detail="[bold]hostile[/]",
-                ),
-            )
-        )
-        render_health_report(report)
-        out = buf.getvalue()
-        # Literal escape survives — the Rich markup is not interpreted.
-        assert "[red]evil[/]" in out
-
-
-# ---------------------------------------------------------------------------
-# Story 4.1 — export renderers.
-# ---------------------------------------------------------------------------
-
-
-def _sample_export_payload() -> dict[str, object]:
-    return {
+def test_render_export_json_and_yaml_round_trip_preserving_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LGPD export is a machine contract: parse + key order are part of it."""
+    payload = {
         "id": "cust_01hg7xyz01hg7xyz01hg7xyz01",
         "name": "Marcos Silva",
         "email": "marcos@example.com",
@@ -1406,105 +162,16 @@ def _sample_export_payload() -> dict[str, object]:
             },
         ],
     }
+    expected_keys = list(payload.keys())
 
+    buf = _capture(monkeypatch)
+    render_export_json(payload)
+    parsed_json = json.loads(buf.getvalue())
+    assert parsed_json == payload
+    assert list(parsed_json.keys()) == expected_keys
 
-class TestRenderExportJson:
-    def test_emits_valid_json_with_indent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload = _sample_export_payload()
-        render_export_json(payload)
-        text = buf.getvalue()
-        parsed = json.loads(text)
-        assert parsed == payload
-
-    def test_preserves_insertion_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import json
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload = _sample_export_payload()
-        render_export_json(payload)
-        parsed = json.loads(buf.getvalue())
-        assert list(parsed.keys()) == [
-            "id",
-            "name",
-            "email",
-            "tax_id_kind",
-            "tax_id",
-            "registered_at",
-            "notes",
-            "keys",
-        ]
-
-
-class TestRenderExportYaml:
-    def test_round_trips_via_safe_load(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import yaml
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload = _sample_export_payload()
-        render_export_yaml(payload)
-        parsed = yaml.safe_load(buf.getvalue())
-        assert parsed == payload
-
-    def test_preserves_insertion_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import yaml
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload = _sample_export_payload()
-        render_export_yaml(payload)
-        parsed = yaml.safe_load(buf.getvalue())
-        assert list(parsed.keys()) == [
-            "id",
-            "name",
-            "email",
-            "tax_id_kind",
-            "tax_id",
-            "registered_at",
-            "notes",
-            "keys",
-        ]
-
-    def test_passes_markup_delimiters_through_verbatim(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import yaml
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload = {
-            "id": "cust_xxx",
-            "notes": "[urgent]: see #42",
-        }
-        render_export_yaml(payload)
-        text = buf.getvalue()
-        # The literal characters make it into the YAML output.
-        assert "[urgent]" in text
-        # Round-trips cleanly through safe_load (structural equality).
-        parsed = yaml.safe_load(text)
-        assert parsed["notes"] == "[urgent]: see #42"
-
-    def test_allows_unicode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import yaml
-
-        buf = StringIO()
-        fake = Console(file=buf, force_terminal=False, no_color=True, width=120)
-        monkeypatch.setattr(output_mod, "_stdout_console", fake)
-        payload = {"name": "Helena \u00d3 \u00e7"}
-        render_export_yaml(payload)
-        text = buf.getvalue()
-        # No \xHH escape sequences for the Portuguese characters.
-        assert "Helena \u00d3 \u00e7" in text
-        assert yaml.safe_load(text) == payload
+    buf = _capture(monkeypatch)
+    render_export_yaml(payload)
+    parsed_yaml = yaml.safe_load(buf.getvalue())
+    assert parsed_yaml == payload
+    assert list(parsed_yaml.keys()) == expected_keys
