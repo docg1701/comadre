@@ -133,6 +133,22 @@ def registry_db_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
+def registry_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """Yield a fresh registry SQLite connection with migrations applied.
+
+    Saves the ``get_connection + _apply_migrations + try/finally close`` boilerplate
+    in db/auth tests. Tests that need multiple DBs (e.g. rotate_encryption_keys
+    happy + rollback) open additional connections inline.
+    """
+    conn = get_connection(tmp_path / "registry.db")
+    try:
+        _apply_migrations(conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
 def app(
     mock_router: MagicMock,
     monkeypatch: pytest.MonkeyPatch,

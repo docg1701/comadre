@@ -1,12 +1,9 @@
 """Shared fixtures for the CI non-regression suite.
 
-The suite boots the production Caddy image with the production ``Caddyfile``
-against a stubbed upstream so assertions exercise the real reverse-proxy
-header surface without paying the Kokoro/Qwen3 model-download cost.
-
-Strategy A (caddy-only + nginx stub on a user-defined Docker network) is the
-current implementation. See ``tests/test_non_regression/README.md`` for the
-rationale and the extension contract for stories 4.5b-4.5g.
+Boots the production Caddy image with the production ``Caddyfile`` against
+a stubbed nginx upstream so assertions exercise the real reverse-proxy
+header surface without the Kokoro/Qwen3 model-download cost. See
+``tests/test_non_regression/README.md`` for rationale.
 """
 
 from __future__ import annotations
@@ -31,13 +28,12 @@ _UPSTREAM_CONTAINER = "comadre-nr-upstream"
 _UPSTREAM_HOSTNAME = "tts-service"
 _BASE_URL = "https://localhost"
 
+# Story 4.5d: stub's body-size ceiling raised to 100 MB so any 4xx the suite
+# observes originates UNAMBIGUOUSLY from Caddy, never from nginx's default.
 _UPSTREAM_NGINX_CONF = """\
 events {}
 http {
     access_log /dev/null;
-    # Story 4.5d — raise the stub's body-size ceiling 100x above the Caddy
-    # limit so any 4xx the suite observes originates UNAMBIGUOUSLY from
-    # Caddy, never from nginx's default 1 MB fallback. Do NOT lower.
     client_max_body_size 100M;
     server {
         listen 8000 default_server;
@@ -49,21 +45,18 @@ http {
 }
 """
 
+_READY_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.RequestError,
+    ssl.SSLError,
+    OSError,
+)
+
 
 def _docker(args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run ``docker`` with stderr surfaced via ``pytest.fail`` on non-zero exit.
-
-    The default ``CalledProcessError.__str__`` shows only the exit code, which
-    turns a CI failure into an opaque ``returncode 125`` — operators then have
-    to re-run locally to see what docker actually rejected. Wrapping here
-    makes the fixture-side failure message carry the captured stderr.
-    """
+    """Run ``docker``, surfacing stderr via pytest.fail on non-zero exit."""
     try:
         return subprocess.run(
-            ["docker", *args],
-            check=True,
-            capture_output=True,
-            text=True,
+            ["docker", *args], check=True, capture_output=True, text=True
         )
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip() or "(no output)"
@@ -71,19 +64,10 @@ def _docker(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _prepull_images() -> None:
-    """Pull the two images the session fixture needs before the readiness poll.
-
-    Docker-Hub throttling on cold CI runners can push the first ``docker run``
-    past the 30 s wait budget. Pre-pulling separates the "image fetch" wall
-    time from the "stack comes up" wall time so a slow pull surfaces as a
-    pull error, not as a confusing "Caddy did not come up" timeout.
-    """
+    """Pre-pull images so a slow pull surfaces as a pull error, not a
+    confusing 'Caddy did not come up' timeout under DockerHub throttling."""
     for image in ("caddy:2-alpine", "nginx:alpine"):
-        subprocess.run(
-            ["docker", "pull", image],
-            capture_output=True,
-            check=False,
-        )
+        subprocess.run(["docker", "pull", image], capture_output=True, check=False)
 
 
 def _tear_down_stack() -> None:
@@ -95,51 +79,53 @@ def _tear_down_stack() -> None:
     )
     ids = [line for line in probe.stdout.split() if line]
     if ids:
-        subprocess.run(
-            ["docker", "rm", "-f", *ids],
-            capture_output=True,
-            check=False,
-        )
+        subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, check=False)
     subprocess.run(
-        ["docker", "network", "rm", _NETWORK],
-        capture_output=True,
-        check=False,
+        ["docker", "network", "rm", _NETWORK], capture_output=True, check=False
     )
 
 
-_READY_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    httpx.RequestError,
-    ssl.SSLError,
-    OSError,
-)
+def _verify_upstream_reachable() -> None:
+    """Probe ``GET /health`` (matches @api, proxied to stub) so a stub that
+    failed to start surfaces as a clean fixture error rather than a confusing
+    'stub signature missing' assertion in every test. ``/`` would not catch
+    this — Caddy serves it from file_server without touching reverse_proxy.
+    """
+    try:
+        resp = httpx.get(
+            f"{_BASE_URL}/health", verify=False, follow_redirects=False, timeout=2.0
+        )
+    except _READY_EXCEPTIONS as exc:
+        raise RuntimeError(
+            f"Stub unreachable through Caddy: GET /health raised {exc!r}. "
+            f"Check `docker logs {_UPSTREAM_CONTAINER}`."
+        ) from exc
+    if resp.status_code >= 500:
+        raise RuntimeError(f"Stub returned {resp.status_code} on /health")
+    if b"non-regression-stub" not in resp.content:
+        raise RuntimeError(
+            f"GET /health status={resp.status_code} but stub signature missing — "
+            f"Caddy may be answering /health itself. Body: {resp.content[:200]!r}"
+        )
 
 
 def _wait_for_caddy(timeout_seconds: float = 30.0) -> None:
-    """Poll HTTP (port 80) AND HTTPS (port 443) until both return non-5xx.
+    """Poll HTTP+HTTPS until both return non-5xx, then verify upstream stub.
 
-    The earlier implementation returned on the first successful HTTPS
-    response regardless of status, which could fire before Caddy's
-    self-signed cert was provisioned or before port 80 was bound — both
-    latent flakes for the 308 probe and the parametrised matrix. The
-    tightened readiness signal is "Caddy has answered both ports with a
-    non-5xx status at least once". Exceptions are narrowed to the
-    connect/TLS/read family so a real bug does not get swallowed by the
-    original ``except Exception`` blanket.
+    Earlier impl returned on first HTTPS success (regardless of status), which
+    fired before Caddy's self-signed cert was provisioned or port 80 was
+    bound — both latent flakes. ``_READY_EXCEPTIONS`` narrowed from blanket
+    ``Exception`` so real bugs do not get swallowed.
     """
     deadline = time.monotonic() + timeout_seconds
-    last_error: BaseException | str | None = None
+    last_error: object = None
     while time.monotonic() < deadline:
         try:
             https_resp = httpx.get(
-                f"{_BASE_URL}/",
-                verify=False,
-                follow_redirects=False,
-                timeout=2.0,
+                f"{_BASE_URL}/", verify=False, follow_redirects=False, timeout=2.0
             )
             http_resp = httpx.get(
-                "http://localhost/",
-                follow_redirects=False,
-                timeout=2.0,
+                "http://localhost/", follow_redirects=False, timeout=2.0
             )
             if https_resp.status_code < 500 and http_resp.status_code < 500:
                 _verify_upstream_reachable()
@@ -151,76 +137,19 @@ def _wait_for_caddy(timeout_seconds: float = 30.0) -> None:
             last_error = exc
         time.sleep(0.5)
     raise RuntimeError(
-        f"Caddy non-regression stack did not come up within "
-        f"{timeout_seconds}s: {last_error!r}"
+        f"Caddy stack did not come up in {timeout_seconds}s: {last_error!r}"
     )
 
 
-def _verify_upstream_reachable() -> None:
-    """Probe an ``@api``-scoped path once to confirm Caddy can reach the stub.
-
-    The readiness poll above hits ``/`` which is served by Caddy's
-    ``file_server`` (landing page) and never touches ``reverse_proxy``. If
-    the nginx stub failed to start (mount/permission error, port
-    conflict, config typo) Caddy still answers ``/`` with 200 from
-    ``file_server`` and the readiness check passes — but every
-    non-regression test that asserts on the upstream signature then fails
-    with a confusing "stub signature missing" assertion rather than a
-    clean "stub unreachable" fixture error.
-
-    This probe fires ``GET /health``, which matches ``@api`` and is
-    proxied to the stub. A 502/504 (upstream unreachable) or a 200
-    without ``non-regression-stub`` in the body names the real cause
-    before any test runs.
-    """
-    try:
-        resp = httpx.get(
-            f"{_BASE_URL}/health",
-            verify=False,
-            follow_redirects=False,
-            timeout=2.0,
-        )
-    except _READY_EXCEPTIONS as exc:
-        raise RuntimeError(
-            f"Non-regression stack: upstream stub is not reachable through "
-            f"Caddy. GET /health raised {exc!r}. Check that the "
-            f"{_UPSTREAM_CONTAINER!r} container is running and that the "
-            f"`{_NETWORK}` docker network resolves `{_UPSTREAM_HOSTNAME}`."
-        ) from exc
-    if resp.status_code >= 500:
-        raise RuntimeError(
-            f"Non-regression stack: upstream stub returned "
-            f"{resp.status_code} on GET /health — the stub container may "
-            f"have failed to start. Check `docker logs "
-            f"{_UPSTREAM_CONTAINER}`."
-        )
-    if b"non-regression-stub" not in resp.content:
-        raise RuntimeError(
-            f"Non-regression stack: GET /health returned {resp.status_code} "
-            f"but the upstream stub signature `non-regression-stub` is "
-            f"missing from the response body. Caddy may be answering /health "
-            f"itself instead of proxying, or the stub has been replaced. "
-            f"Response body (first 200 bytes): {resp.content[:200]!r}"
-        )
-
-
 @pytest.fixture(scope="session")
-def compose_stack(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> Iterator[str]:
-    """Yield the HTTPS base URL of a locally-spawned Caddy + nginx stub stack.
+def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """Yield the HTTPS base URL of a locally-spawned Caddy + nginx stack.
 
-    Skips the whole module when docker is unavailable so a developer running
-    ``uv run pytest -m non_regression`` without docker gets a clear reason
-    rather than a stack of subprocess errors.
+    Skips (not fails) when docker is unavailable so a developer running
+    ``pytest -m non_regression`` without docker gets a clear reason.
     """
     if shutil.which("docker") is None:
         pytest.skip("docker CLI not on PATH")
-    # Skip (not fail) when the daemon is down so a laptop developer running
-    # ``pytest -m non_regression`` without docker gets a clean skip reason.
-    # ``_docker`` below converts CalledProcessError into pytest.fail, which is
-    # the desired shape once we are past this gate — so the daemon check uses
-    # subprocess directly.
     probe = subprocess.run(
         ["docker", "version", "--format", "{{.Server.Version}}"],
         capture_output=True,
@@ -237,20 +166,15 @@ def compose_stack(
     repo_root = Path(__file__).resolve().parents[2]
     caddyfile = repo_root / "deploy" / "caddy" / "Caddyfile"
     landing_dir = repo_root / "deploy" / "landing"
+    landing_index = landing_dir / "index.html"
     if not caddyfile.is_file():
         pytest.fail(f"Caddyfile missing at {caddyfile}")
     if not landing_dir.is_dir():
         pytest.fail(f"Landing dir missing at {landing_dir}")
-    # Caddy's `file_server` serves `/` from this directory; without an
-    # index.html the root probe returns 404 and the security-headers
-    # assertions silently exercise the error path instead of the
-    # documented happy path. Surface the misconfiguration loudly.
-    landing_index = landing_dir / "index.html"
+    # Without index.html the root probe returns 404 and security-headers
+    # assertions silently exercise the error path.
     if not landing_index.is_file():
-        pytest.fail(
-            f"Landing index missing at {landing_index} — "
-            "deploy/landing/ must contain an index.html for Caddy file_server"
-        )
+        pytest.fail(f"Landing index missing at {landing_index}")
 
     tmp_dir = tmp_path_factory.mktemp("non-regression")
     nginx_conf = tmp_dir / "nginx.conf"
@@ -310,16 +234,10 @@ def compose_stack(
 
 @pytest.fixture()
 def probe_client(compose_stack: str) -> Iterator[httpx.Client]:
-    """HTTPS client targeting the locally-spawned Caddy stack.
-
-    ``verify=False`` because Caddy's localhost cert is self-signed.
-    ``follow_redirects=False`` because the HTTP->HTTPS 308 is a first-class
-    probe target (AC6), not a transparent implementation detail to hide.
-    """
+    """HTTPS client for the locally-spawned Caddy stack. ``verify=False``
+    (self-signed) and ``follow_redirects=False`` (the 308 is a probe target,
+    AC6, not a transparent detail to hide)."""
     with httpx.Client(
-        base_url=compose_stack,
-        verify=False,
-        follow_redirects=False,
-        timeout=5.0,
+        base_url=compose_stack, verify=False, follow_redirects=False, timeout=5.0
     ) as client:
         yield client
