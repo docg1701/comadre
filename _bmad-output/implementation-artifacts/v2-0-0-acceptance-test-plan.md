@@ -517,14 +517,15 @@ Galvani questionou: "todos os bugs encontrados saíram em rodadas anteriores ou 
 - **F — long-running stability baseline ✅** — pré-loadtest: 1.405-1.409 GiB/replica. Pós-690-req capacity: 1.415-1.425 GiB/replica. Delta +6-16 MiB consistente com fragmentação de heap, sem indício de leak. Audio dir vazio antes/depois (cleanup cron 0 */6 funciona quando fira). Disk 33% (19G livres). Caddy 33MiB. Replicas healthy 30+ min sem flake. **Baseline registrada para comparação futura**; user vai validar prolonged uptime nos próximos dias.
 - **I — HTTP method coverage ✅** — `HEAD /v1/audio/speech` → 405 + `Allow: POST` (body vazio per spec). `OPTIONS /v1/audio/speech` → 405 + envelope JSON `method_not_allowed_error` + `Use POST...`. `PATCH/PUT/DELETE/TRACE /v1/audio/speech` → 405 + envelope idêntico. `HEAD /health` → 405 + `Allow: GET`. `OPTIONS /health` → 405 + envelope `Use GET for /health`. Nenhum método extra retorna 200 silently — superfície fechada e contratualmente correta.
 
+**G — browser test interativo ✅** — Galvani validou manualmente em ambos os hosts (10.10.10.207 e comadre-tts.duckdns.org). Form aceita API key + texto, gera áudio, audio player toca, download funciona. CSP `connect-src 'self'` permite o `fetch('/v1/audio/speech')`. Sem console errors. Round-trip browser-to-API-to-OGG completo nos 2 hosts.
+
 **Não validado (decisão consciente):**
 
-- **G — browser test interativo** — Galvani vai testar manualmente como último step.
 - **H — domain rotation post-bootstrap** — Galvani decidiu fora de escopo.
 - **F prolonged uptime (> 1h)** — baseline capturada; observação contínua = trabalho de produção, não pré-deploy.
 - **Qwen3 na Oracle** — decisão deliberada (clientes voice-clone vão pra VPS GPU separada).
 
-**Total final ciclo 2.0.0:** 23 fixes (3 críticos + 20 menores), 217 tests passando, pre-commit + mypy + ruff clean, CI verde nos 2 últimos pushes. Cold-path coverage: 21/21 CLI verbos + 8/8 ansible playbooks + ambos engines (Kokoro + Qwen3) + multi-replica + saturação sob load + 7 HTTP methods. **Status: 100% pronto para produção, pendente apenas teste manual no browser.**
+**Total final ciclo 2.0.0:** 23 fixes (3 críticos + 20 menores), 217 tests passando, pre-commit + mypy + ruff clean, CI verde nos últimos 4 pushes. Cold-path coverage: 21/21 CLI verbos + 8/8 ansible playbooks + ambos engines (Kokoro + Qwen3) + multi-replica + saturação sob load + 7 HTTP methods + browser interativo nos 2 hosts. **Status: 100% pronto para produção. Acceptance closed.**
 
 ---
 
