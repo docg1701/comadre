@@ -79,10 +79,15 @@ COPY noise/ /app/noise/
 COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
 RUN chmod +x /app/scripts/entrypoint.sh
 
-# Create non-root user and volume mount points
+# Create non-root user and volume mount points.
+# /var/lib/comadre is the comadre-registry named-volume mountpoint. Pre-creating
+# it appuser-owned ensures Docker's "copy mountpoint ownership into empty named
+# volume on first mount" behaviour gives the volume the right owner — without
+# this, the volume comes up root:root 0755 and the non-root appuser cannot
+# create registry.db (sqlite3.OperationalError: unable to open database file).
 RUN useradd --create-home --shell /bin/bash appuser && \
-    mkdir -p /models /audio /voices && \
-    chown -R appuser:appuser /app /models /audio /voices
+    mkdir -p /models /audio /voices /var/lib/comadre && \
+    chown -R appuser:appuser /app /models /audio /voices /var/lib/comadre
 
 ENV PATH="/app/.venv/bin:$PATH"
 
