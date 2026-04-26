@@ -408,6 +408,39 @@ Validar **toda** a superfície entregue no ciclo 2.0.0 (Epics 1-5) no ambiente r
 
 ---
 
+## Resultado pós-correções (2026-04-26 — fresh deploy + retest)
+
+**11 patches aplicados em 12 commits** (1 follow-up pra typer.Exit caught by RuntimeError wrap), 220 testes passando (211 originais + 9 novos pra cobertura B2/B10), pre-commit + mypy + ruff clean.
+
+### Críticos validados em produção fresca
+
+- **B2** ✅ — Migration v3 + UNIQUE PARTIAL INDEX. Duplicata via formatado `111.444.777-35` E unformatted `11144477735` ambas rejeitadas com exit 2 + ConfirmationLine "CPF already registered to another active customer". Tombstone limpa lookup → re-registro permitido.
+- **B10** ✅ — Chave manual nova com paid_until=NULL → POST `/v1/audio/speech` retorna 200 com OGG/Opus 5722 bytes em 1.06s. Trial window respeitado.
+- **B16** ✅ — Cron na VPS agora `/bin/bash -c '... source /etc/comadre/backup-env; docker compose exec -T tts-service comadre-keys-backup ...'`. Backup binary baked no image. Manual run gera archive `registry.db.backup-2026-04-26T04-49-11Z.tar.gz.enc` 1574 bytes.
+
+### Médios validados
+
+- **B1** ✅ checksum CPF inválido = exit 2
+- **B6** ✅ "Last 1 event" (singular)
+- **B7** ✅ no-op update → "No changes: ... — already up to date"
+- **B8** ✅ update_key audit emite `rpm_changed: true, rpm_old: 60, rpm_new: 30` + `notes_changed: true`
+- **B11** ✅ trailing space removido do hint (verificado via test)
+- **B12** ✅ `suspend --reason "B12 retest"` → audit `{"reason": "B12 retest"}`
+- **B3** ✅ create-customer `--notes` >8192 chars → exit 2
+
+### Sem fix (decididos por escopo)
+
+- **B4** flag inconsistency `--price`/`--price-monthly` — breaking change, deferida
+- **B5** exit code 3 docs-only update (CLAUDE.md tem nota implícita; não aplicado)
+- **B9** test gap pra `Timezone drift` no 10º check — observação, não crítico
+- **B13** suspend audit details_json é NULL (não string vazia, friction log estava errado) — não-bug; consumidores Python tratam None corretamente
+- **B15** revenue mostra complimentary suspensa sem marker — UX wart; deferida
+- **B18** falso-positivo (CLAUDE.md está correto, meu plano de teste tinha typo)
+- **B19** `/docs` 404 com type=caddy_error — Caddy config; deferida
+- **B20** body validation errors genéricos — deferida
+
+---
+
 ## Strategy de execução
 
 1. **Pré-voo (Fase 0)** primeiro — confirma que ambiente está sano.
