@@ -117,6 +117,12 @@
             state: started
             auto_remove: false
 
+        # B26 — `mode_parse: modern` is required so the "0644" string is
+        # parsed as octal (0o644 = 0644). The legacy default parses it as
+        # decimal 644, which lands as 0o1204 on disk
+        # (sticky + --w----r--), making files non-writable by appuser and
+        # marking regular files with the sticky bit. Read still works
+        # because of the world-read bit, but the contract is broken.
         - name: "[Voices] Copy Kokoro .npy files into volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
@@ -125,6 +131,7 @@
             owner_id: 0
             group_id: 0
             mode: "0644"
+            mode_parse: modern
           loop: "{{ kokoro_files.files }}"
           loop_control:
             label: "{{ item.path | basename }}"
@@ -137,6 +144,7 @@
             owner_id: 0
             group_id: 0
             mode: "0644"
+            mode_parse: modern
           loop: "{{ qwen_files.files }}"
           loop_control:
             label: "{{ item.path | basename }}"
