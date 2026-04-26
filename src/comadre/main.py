@@ -335,6 +335,41 @@ def _format_validation_error(exc: RequestValidationError) -> tuple[str, str]:
             f"Field '{field}' has an invalid value",
             f"Allowed values: {expected}." if expected else _GENERIC_VALIDATION_HINT,
         )
+    if err_type in {
+        "greater_than",
+        "greater_than_equal",
+        "less_than",
+        "less_than_equal",
+    }:
+        ctx = first.get("ctx") or {}
+        bound_label = {
+            "greater_than": "greater than",
+            "greater_than_equal": "≥",
+            "less_than": "less than",
+            "less_than_equal": "≤",
+        }[err_type]
+        bound_value = ctx.get(
+            {
+                "greater_than": "gt",
+                "greater_than_equal": "ge",
+                "less_than": "lt",
+                "less_than_equal": "le",
+            }[err_type]
+        )
+        clause = f" {bound_label} {bound_value}" if bound_value is not None else ""
+        return (
+            f"Field '{field}' is out of range{clause}",
+            (
+                f"Provide a value{clause} for '{field}'."
+                if bound_value is not None
+                else f"Provide a valid value for '{field}'."
+            ),
+        )
+    if err_type in {"dict_type", "model_attributes_type"}:
+        return (
+            "Request body must be a JSON object",
+            _GENERIC_VALIDATION_HINT,
+        )
     if err_type == "value_error":
         # ``model_validator`` ValueErrors — already carry a tailored msg
         # (e.g. the Qwen3 char-limit message). Surface verbatim.

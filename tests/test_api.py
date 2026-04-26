@@ -106,6 +106,14 @@ async def test_speech_validation_messages_are_field_specific(
             {"voice": "kokoro/pm_santa"},
             "is required",
         ),
+        (
+            {"input": "hi", "voice": "kokoro/pm_santa", "speed": 99.0},
+            "out of range",
+        ),
+        (
+            {"input": "hi", "voice": "kokoro/pm_santa", "response_format": "mp3"},
+            "invalid value",
+        ),
     ]
     for body, expected_fragment in cases:
         response = await client.post(

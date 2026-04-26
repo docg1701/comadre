@@ -38,12 +38,17 @@
 	# legitimate request is Content-Length-framed; stray TE values reach
 	# reverse_proxy with ambiguous framing otherwise (RFC-7230 §3.3.3).
 	# Mirrors AWS API Gateway / Cloudflare — neither accepts arbitrary TE.
+	#
+	# B21 — these matchers use `error` (not `respond`) so the response body
+	# flows through the `handle_errors` block below and ships the canonical
+	# JSON envelope with the full security-header set, instead of Caddy's
+	# bare `text/plain` default that bypasses both contracts.
 	@api_has_te {
 		path /v1/* /health
 		header Transfer-Encoding *
 	}
 	handle @api_has_te {
-		respond "Transfer-Encoding not permitted on /v1/* and /health; send Content-Length" 411
+		error "Transfer-Encoding not permitted on /v1/* and /health; send Content-Length" 411
 	}
 
 	# 2. Content-Length header present but not a canonical non-negative
@@ -59,7 +64,7 @@
 		expression `!{http.request.header.content-length}.matches('^[0-9]{1,10}$')`
 	}
 	handle @api_malformed_cl {
-		respond "malformed Content-Length header" 400
+		error "malformed Content-Length header" 400
 	}
 
 	# 3. Valid Content-Length > 1 MiB → 413.
@@ -69,7 +74,7 @@
 		expression `{http.request.header.content-length}.matches('^[0-9]{1,10}$') && int({http.request.header.content-length}) > 1048576`
 	}
 	handle @api_oversized_body {
-		respond "Payload Too Large" 413
+		error "Payload Too Large" 413
 	}
 
 	# 4. Write method (POST/PUT/PATCH) with neither Content-Length nor
@@ -82,7 +87,7 @@
 		not header Transfer-Encoding *
 	}
 	handle @api_missing_cl {
-		respond "Length Required" 411
+		error "Length Required" 411
 	}
 
 	# 5. API paths → tts-service (reverse proxy with rate-limit-aware XFF).
