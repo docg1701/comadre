@@ -315,3 +315,28 @@ Final smoke test:
 | D3 | freshness modelling | application (`health.py`)| `859eff4` |
 | D4 | YAML folding        | `health.yml`             | `859eff4` |
 | D5 | parallel assertion  | `health.yml`             | `e66fcde` |
+
+## Cross-architecture validation — Oracle Cloud Ampere A1 (aarch64)
+
+After the Proxmox x86_64 round-2 success, the same four-playbook pipeline
+was exercised on the Oracle Cloud Ampere A1 host (`129.153.94.188` /
+`comadre-tts.duckdns.org`, aarch64, ubuntu user with NOPASSWD sudo,
+`qwen3_enabled: false` per the inventory because the prebuilt
+`qwen3-tts-cli` binary is x86_64-only):
+
+| Playbook            | OK | Failed | Skipped |
+|---------------------|---:|-------:|--------:|
+| `cleanup.yml`       | 24 |      0 |       0 |
+| `bootstrap.yml`     | 41 |      0 |       1 |
+| `deploy-voices.yml` | 16 |      0 |       0 |
+| `health.yml`        | 33 |      0 |       5 |
+
+Zero aarch64-specific friction. The `health.yml` skip count differs by
+one from Proxmox (5 vs 6) because Oracle's run hit one less branch in
+the diagnostic surfaces. Final smoke test: `/health` → `healthy` with
+59 voices loaded (54 Kokoro built-in + 5 custom, **0 Qwen** as
+expected); Caddy provisioned a fresh Let's Encrypt cert via ACME HTTP-01
+without operator intervention (issuer = E7, valid 2026-04-26 →
+2026-07-25); test TTS request via real DNS returned 19 KB of OGG Opus.
+
+The D1-D5 fixes hold across both x86_64 and aarch64 deploy targets.
