@@ -150,6 +150,154 @@ def test_insert_customer_rolls_back_when_audit_fails(
     assert registry_conn.execute("SELECT COUNT(*) FROM customer").fetchone()[0] == 0
 
 
+def test_v003_tax_id_lookup_unique_rejects_duplicate_active(
+    registry_conn: sqlite3.Connection,
+) -> None:
+    """B2 — partial UNIQUE INDEX on ``tax_id_lookup`` rejects two active
+    customers with the same tax-ID lookup digest. Tombstoned rows
+    (``deleted_at IS NOT NULL``) and NULL-lookup rows (pre-v3 backfill)
+    are excluded from the constraint.
+    """
+    same_lookup = b"\xaa" * 32
+    insert_customer(
+        registry_conn,
+        _make_record(),
+        actor="cli:tester",
+        tax_id_lookup=same_lookup,
+    )
+
+    second = CustomerRecord(
+        id="cust_99zzzzzz",
+        name="Bruno",
+        email="bruno@x.com",
+        tax_id_kind="cpf",
+        tax_id_encrypted=b"different-ciphertext",
+        notes="",
+        registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+        deleted_at=None,
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="tax_id_lookup"):
+        insert_customer(
+            registry_conn, second, actor="cli:tester", tax_id_lookup=same_lookup
+        )
+
+    # Distinct lookup → accepted.
+    other = CustomerRecord(
+        id="cust_77yyyyyy",
+        name="Carla",
+        email="carla@x.com",
+        tax_id_kind="cpf",
+        tax_id_encrypted=b"yet-another",
+        notes="",
+        registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+        deleted_at=None,
+    )
+    insert_customer(
+        registry_conn, other, actor="cli:tester", tax_id_lookup=b"\xbb" * 32
+    )
+    assert registry_conn.execute("SELECT COUNT(*) FROM customer").fetchone()[0] == 2
+
+
+def test_v003_tax_id_lookup_unique_excludes_tombstones_and_null(
+    registry_conn: sqlite3.Connection,
+) -> None:
+    """B2 — partial UNIQUE excludes tombstones and NULL-lookup rows so:
+    1. A pre-v3 row (``tax_id_lookup IS NULL``) does NOT block a new row
+       with a matching backfilled lookup until the operator backfills.
+    2. A hard-deleted CPF can be re-registered later (LGPD).
+    """
+    # Pre-v3 row (NULL lookup).
+    insert_customer(
+        registry_conn,
+        _make_record(),
+        actor="cli:tester",
+        tax_id_lookup=None,
+    )
+    # New row with a non-NULL lookup digest — must be accepted (no
+    # collision with NULL).
+    new_row = CustomerRecord(
+        id="cust_88wwwwww",
+        name="Diana",
+        email="diana@x.com",
+        tax_id_kind="cpf",
+        tax_id_encrypted=b"x",
+        notes="",
+        registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+        deleted_at=None,
+    )
+    insert_customer(
+        registry_conn, new_row, actor="cli:tester", tax_id_lookup=b"\xcc" * 32
+    )
+
+    # Tombstone the new_row → its lookup must be cleared (helper does
+    # this) so a third registration with the same digest is allowed.
+    from comadre.keys.db import delete_customer_hard
+
+    delete_customer_hard(registry_conn, "cust_88wwwwww", actor="cli:tester")
+    re_registered = CustomerRecord(
+        id="cust_55vvvvvv",
+        name="Diana 2",
+        email="diana2@x.com",
+        tax_id_kind="cpf",
+        tax_id_encrypted=b"y",
+        notes="",
+        registered_at=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+        deleted_at=None,
+    )
+    insert_customer(
+        registry_conn, re_registered, actor="cli:tester", tax_id_lookup=b"\xcc" * 32
+    )
+
+
+def test_backfill_tax_id_lookup_is_idempotent(tmp_path: Path) -> None:
+    """B2 — backfill helper populates NULL lookups, leaves filled ones
+    untouched, skips tombstones, and is safe to call repeatedly.
+    """
+    from comadre.keys.crypto import compute_tax_id_lookup
+    from comadre.keys.db import backfill_tax_id_lookup_if_needed
+
+    key = SecretStr(Fernet.generate_key().decode())
+    conn = get_connection(tmp_path / "backfill.db")
+    try:
+        _apply_migrations(conn)
+        # Two active rows (NULL lookup), one to be tombstoned.
+        for cid, canonical in (
+            ("cust_01aaaaaa", "12345678909"),
+            ("cust_02bbbbbb", "11144477735"),
+            ("cust_03cccccc", "39053344705"),
+        ):
+            _seed_active(conn, cid=cid, canonical=canonical, kind="cpf", key=key)
+        from comadre.keys.db import delete_customer_hard
+
+        delete_customer_hard(conn, "cust_03cccccc", actor="cli:tester")
+
+        # First call backfills the two active rows.
+        first = backfill_tax_id_lookup_if_needed(conn, encryption_key=key)
+        assert first == 2
+
+        # Second call is a no-op.
+        second = backfill_tax_id_lookup_if_needed(conn, encryption_key=key)
+        assert second == 0
+
+        # Tombstone's lookup remains NULL.
+        row = conn.execute(
+            "SELECT tax_id_lookup FROM customer WHERE id = ?", ("cust_03cccccc",)
+        ).fetchone()
+        assert row["tax_id_lookup"] is None
+
+        # Active rows have the correct deterministic digest.
+        for cid, canonical in (
+            ("cust_01aaaaaa", "12345678909"),
+            ("cust_02bbbbbb", "11144477735"),
+        ):
+            row = conn.execute(
+                "SELECT tax_id_lookup FROM customer WHERE id = ?", (cid,)
+            ).fetchone()
+            assert bytes(row["tax_id_lookup"]) == compute_tax_id_lookup(canonical, key)
+    finally:
+        conn.close()
+
+
 def test_rotate_encryption_keys_happy_path_and_rollback(tmp_path: Path) -> None:
     """Story 4.2 atomicity: every active row re-encrypted under the new key,
     OR — on a wrong old key — every row left byte-identical and no audit."""

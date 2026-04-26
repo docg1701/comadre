@@ -458,22 +458,56 @@
           cron_tz={{ billing_timezone | default('UTC') }}
       changed_when: true
 
+    # B16 — write backup passphrase to a host env file so the cron job
+    # can source it without ansible-playbook on the VPS. The previous
+    # cron line invoked ``ansible-playbook`` (not installed on the VPS)
+    # against a path on the operator's laptop (not present on the VPS),
+    # so the nightly backup never fired. The new design mirrors the
+    # suspension-sweep cron: a tiny shell line that ``docker compose
+    # exec``s a binary baked into the image.
+    - name: "[Cron] Ensure /etc/comadre exists for backup env file"
+      become: true
+      ansible.builtin.file:
+        path: /etc/comadre
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: "[Cron] Write backup passphrase to /etc/comadre/backup-env"
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/comadre/backup-env
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+        # Single-line ``KEY=value`` — ``set -a; source FILE; set +a`` in
+        # the cron line exports it to the docker exec environment.
+        content: |
+          BACKUP_PASSPHRASE={{ backup_passphrase }}
+      no_log: true
+
     - name: "[Cron] Configure nightly key-registry backup at 02:00 operator TZ"
       ansible.builtin.cron:
         name: "comadre-keys-backup"
         minute: "0"
         hour: "{{ backup_hour | default(2) }}"
-        # /bin/bash -c + ``set -o pipefail`` so ``cmd | logger`` preserves the
-        # playbook's exit code through the pipe. Matches the suspension-sweep
-        # cron pattern.
-        # ``inventory_file`` is passed by ansible-playbook; falls back to
-        # production.yml so an Oracle host bootstrapped with -i oracle.yml
-        # writes the cron pointing at oracle.yml, not at the wrong inventory.
+        # B16 — self-contained cron: source the passphrase env, then
+        # docker exec the script baked into the image at
+        # ``/usr/local/bin/comadre-keys-backup`` (Dockerfile, B16 patch).
+        # Mirrors the suspension-sweep cron pattern exactly: no ansible
+        # on the VPS, no operator laptop paths, no script piping. The
+        # ``-e BACKUP_PASSPHRASE`` form (no ``=value``) tells docker to
+        # pull from the calling shell's env, keeping the secret out of
+        # ``/proc/<pid>/cmdline``.
         job: >-
           /bin/bash -c 'set -o pipefail;
+          set -a; . /etc/comadre/backup-env; set +a;
           cd ~/comadre &&
-          ansible-playbook -i {{ inventory_file | default('deploy/ansible/inventory/production.yml') }}
-          deploy/ansible/playbooks/backup-keys.yml 2>&1 |
+          docker compose exec -T
+          -e BACKUP_PASSPHRASE
+          -e BACKUP_RETENTION_DAYS={{ backup_retention_days | default(14) }}
+          tts-service comadre-keys-backup 2>&1 |
           logger -t comadre-keys-backup'
 
     # Backup-cron marker — same in-container write contract as the

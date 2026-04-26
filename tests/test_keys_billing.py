@@ -56,13 +56,18 @@ def test_days_until_positive_and_zero() -> None:
 
 class TestManualBillingProvider:
     def test_payment_currency_branches(self) -> None:
-        """Complimentary always current; manual depends on paid_until vs today."""
+        """Complimentary always current; manual depends on paid_until vs today.
+
+        ``paid_until is None`` is the trial window: the ``issue-key`` panel
+        advertises a free runway and the auth path honours it. A regression
+        here would 401 every freshly-issued manual key (B10, 2026-04-26).
+        """
         provider = ManualBillingProvider()
         today = date(2026, 4, 15)
         assert provider.is_payment_current(
             _record(billing_mode="complimentary"), today=today
         )
-        assert not provider.is_payment_current(_record(paid_until=None), today=today)
+        assert provider.is_payment_current(_record(paid_until=None), today=today)
         assert provider.is_payment_current(
             _record(paid_until="2026-04-15"), today=today
         )

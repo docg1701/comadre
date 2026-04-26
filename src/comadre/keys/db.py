@@ -245,7 +245,7 @@ class ShowTarget:
     value: CustomerDetailRow | KeyDetailRow | list[KeyDetailRow] | None
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 def _utcnow_iso() -> str:
@@ -397,7 +397,49 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
 _MIGRATION_FILES: tuple[tuple[int, str], ...] = (
     (1, "v001_initial.sql"),
     (2, "v002_rate_limit_upper_bound.sql"),
+    (3, "v003_tax_id_lookup_unique.sql"),
 )
+
+
+def backfill_tax_id_lookup_if_needed(
+    conn: sqlite3.Connection, *, encryption_key: SecretStr
+) -> int:
+    """Populate ``customer.tax_id_lookup`` for any active rows where it is NULL.
+
+    Idempotent. Returns the number of rows backfilled. Called from FastAPI
+    lifespan and ``comadre-keys`` startup so v2→v3 upgrades become invisible
+    to the operator: the partial UNIQUE INDEX takes effect on the next
+    ``create-customer`` after the first backfill run.
+
+    Tombstoned rows (``deleted_at IS NOT NULL``) are skipped — their
+    ciphertext is the zero-length blob ``X''`` and Fernet would raise
+    ``InvalidToken``; LGPD scrubbed any PII so the lookup column has
+    nothing meaningful to record.
+
+    The single-Fernet invariant is preserved: this helper imports
+    ``decrypt_tax_id`` and ``compute_tax_id_lookup`` from
+    ``keys.crypto``; no other module gets a Fernet handle.
+    """
+    from comadre.keys.crypto import compute_tax_id_lookup, decrypt_tax_id
+
+    rows = conn.execute(
+        "SELECT id, tax_id_encrypted FROM customer "
+        "WHERE deleted_at IS NULL AND tax_id_lookup IS NULL"
+    ).fetchall()
+    if not rows:
+        return 0
+    backfilled = 0
+    with conn:
+        for row in rows:
+            canonical = decrypt_tax_id(bytes(row["tax_id_encrypted"]), encryption_key)
+            lookup = compute_tax_id_lookup(canonical, encryption_key)
+            cursor = conn.execute(
+                "UPDATE customer SET tax_id_lookup = ? "
+                "WHERE id = ? AND deleted_at IS NULL AND tax_id_lookup IS NULL",
+                (lookup, row["id"]),
+            )
+            backfilled += cursor.rowcount
+    return backfilled
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -451,12 +493,25 @@ def insert_customer(
     record: CustomerRecord,
     *,
     actor: str,
+    tax_id_lookup: bytes | None = None,
 ) -> None:
     """Insert a customer and its audit row in a single transaction.
 
     Callers must NOT open a surrounding `with conn:` — this function opens
     the transaction itself so the customer and audit writes either both
     commit or both roll back.
+
+    ``tax_id_lookup`` (B2): deterministic HMAC of the canonical tax-ID
+    keyed by ``KEY_REGISTRY_ENCRYPTION_KEY`` — feeds the v3 partial UNIQUE
+    INDEX. Callers compute it via ``crypto.compute_tax_id_lookup``. ``None``
+    is accepted for backwards compatibility (test fixtures that don't care
+    about the duplicate-detection invariant); production write paths
+    (``create-customer``, ``correct-tax-id``) MUST pass a value so the
+    UNIQUE constraint applies.
+
+    ``sqlite3.IntegrityError`` from the partial UNIQUE INDEX surfaces to
+    the caller, which translates it to the user-facing "tax-ID already
+    registered" message.
     """
     from comadre.keys.audit import log_event
 
@@ -471,15 +526,16 @@ def insert_customer(
     with conn:
         conn.execute(
             "INSERT INTO customer ("
-            "id, name, email, tax_id_kind, tax_id_encrypted, notes, "
-            "registered_at, deleted_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "id, name, email, tax_id_kind, tax_id_encrypted, tax_id_lookup, "
+            "notes, registered_at, deleted_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.id,
                 record.name,
                 record.email,
                 record.tax_id_kind,
                 record.tax_id_encrypted,
+                tax_id_lookup,
                 record.notes,
                 registered_at_iso,
                 deleted_at_iso,
@@ -717,6 +773,7 @@ def correct_customer_tax_id(
     *,
     new_tax_id_encrypted: bytes,
     new_tax_id_kind: TaxIdKind,
+    new_tax_id_lookup: bytes,
     reason: str,
     actor: str,
 ) -> CorrectTaxIdResult | None:
@@ -742,9 +799,10 @@ def correct_customer_tax_id(
         old_kind = cast(TaxIdKind, row["tax_id_kind"])
 
         cursor = conn.execute(
-            "UPDATE customer SET tax_id_encrypted = ?, tax_id_kind = ? "
+            "UPDATE customer "
+            "SET tax_id_encrypted = ?, tax_id_kind = ?, tax_id_lookup = ? "
             "WHERE id = ? AND deleted_at IS NULL",
-            (new_tax_id_encrypted, new_tax_id_kind, customer_id),
+            (new_tax_id_encrypted, new_tax_id_kind, new_tax_id_lookup, customer_id),
         )
         if cursor.rowcount != 1:
             raise RuntimeError(
@@ -832,10 +890,16 @@ def delete_customer_hard(
         keys_purged = cursor.rowcount
 
         # Step 2 — scrub PII on the customer row + stamp deleted_at.
+        # B2: ``tax_id_lookup`` is also nulled so the partial UNIQUE
+        # INDEX (``WHERE deleted_at IS NULL AND tax_id_lookup IS NOT
+        # NULL``) doesn't pin the digest of a tombstoned tax-ID. This
+        # also lets the same CPF be re-registered later — LGPD allows
+        # re-onboarding after hard-delete; the tombstone holds no PII.
         now_iso = _utcnow_iso()
         conn.execute(
             "UPDATE customer SET name = '', email = '', "
-            "tax_id_encrypted = X'', notes = '', deleted_at = ? "
+            "tax_id_encrypted = X'', tax_id_lookup = NULL, "
+            "notes = '', deleted_at = ? "
             "WHERE id = ? AND deleted_at IS NULL",
             (now_iso, customer_id),
         )
@@ -897,7 +961,11 @@ def rotate_encryption_keys(
     to pass tax-ID material.
     """
     from comadre.keys.audit import log_event
-    from comadre.keys.crypto import decrypt_tax_id, encrypt_tax_id
+    from comadre.keys.crypto import (
+        compute_tax_id_lookup,
+        decrypt_tax_id,
+        encrypt_tax_id,
+    )
 
     occurred_at = _utcnow_iso()
     rows_re_encrypted = 0
@@ -916,15 +984,23 @@ def rotate_encryption_keys(
         for row in rows:
             canonical = decrypt_tax_id(bytes(row["tax_id_encrypted"]), old_key)
             new_ciphertext = encrypt_tax_id(canonical, new_key)
+            # B2: the tax_id_lookup column is HMAC keyed by the encryption
+            # key, so a key rotation MUST recompute it in the same
+            # transaction or the partial UNIQUE INDEX would silently
+            # accept duplicates (old-key HMAC collides with new-key HMAC
+            # only by chance). The recompute is free in I/O terms — we
+            # already have the canonical plaintext in scope from decrypt.
+            new_lookup = compute_tax_id_lookup(canonical, new_key)
             # ``rowcount`` instead of ``+= 1`` so the audit total stays
             # honest if a concurrent writer tombstones a row between
             # the SELECT and this UPDATE — the ``deleted_at IS NULL``
             # predicate would then match zero rows and the counter
             # must reflect that.
             cursor = conn.execute(
-                "UPDATE customer SET tax_id_encrypted = ? "
+                "UPDATE customer "
+                "SET tax_id_encrypted = ?, tax_id_lookup = ? "
                 "WHERE id = ? AND deleted_at IS NULL",
-                (new_ciphertext, row["id"]),
+                (new_ciphertext, new_lookup, row["id"]),
             )
             rows_re_encrypted += cursor.rowcount
 
@@ -1715,6 +1791,21 @@ def update_api_key(
             update_details["price_monthly_changed"] = True
             update_details["old"] = float(old_price)
             update_details["new"] = float(new_price)
+        # B8 — carry rpm old/new symmetrically with price. Useful for
+        # forensic replay of throughput contract changes (relevant to
+        # at-risk and capacity-planning queries). ``rpm_old/rpm_new``
+        # avoids colliding with the ``old/new`` keys reserved for the
+        # price-replay path.
+        if new_rpm is not None and old_rpm is not None and int(old_rpm) != int(new_rpm):
+            update_details["rpm_changed"] = True
+            update_details["rpm_old"] = int(old_rpm)
+            update_details["rpm_new"] = int(new_rpm)
+        # B8 — flag (not full content) for notes. Audit reader can see
+        # the row mutation without us writing operator-internal note
+        # text into the audit_log column (which is also how
+        # ``update_customer notes_op`` keeps the discipline).
+        if new_notes is not None:
+            update_details["notes_changed"] = True
         log_event(
             conn,
             actor=actor,
@@ -2036,6 +2127,7 @@ def suspend_key(
     *,
     actor: str,
     today: date,
+    reason: str | None = None,
 ) -> SuspendKeyResult | None:
     """Mark an active ``api_key`` row suspended (Story 3.1 — manual verb).
 
@@ -2043,10 +2135,13 @@ def suspend_key(
     row is revoked (terminal) or already suspended (rejects the no-op so the
     operator sees the correction rather than a misleading audit row).
 
-    Writes an audit row with ``action='suspend_key'`` and ``details_json IS
-    NULL`` — matching the action-name the cron sweep (Story 3.3) will use
-    so ``show --audit-tail`` renders manual and cron suspensions identically
-    (operators distinguish via the actor column).
+    Writes an audit row with ``action='suspend_key'``. When ``reason`` is
+    provided, the audit ``details_json`` carries ``{"reason": <text>}`` (B12
+    forensia). Callers must sanitise ``reason`` upstream — empty / NUL /
+    multi-line input is the CLI layer's responsibility (mirrors
+    ``revoke_api_key --reason`` validators). Cron-sweep callers pass
+    ``reason=None`` so manual + cron suspensions render identically in
+    ``show --audit-tail`` (operators distinguish via the actor column).
 
     Callers MUST NOT wrap this in ``with conn:`` — the function owns its
     transaction so the UPDATE and audit row either both commit or both
@@ -2076,13 +2171,14 @@ def suspend_key(
                 "suspend_key: update failed to match any row after SELECT "
                 f"succeeded for {key_id!r}"
             )
+        details: dict[str, object] | None = {"reason": reason} if reason else None
         log_event(
             conn,
             actor=actor,
             action="suspend_key",
             target_type="api_key",
             target_id=key_id,
-            details=None,
+            details=details,
         )
 
     _touch_auth_cache_sentinel(conn)

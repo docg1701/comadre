@@ -122,11 +122,16 @@ class ApiKeySuspendedError(ComadreError):
     """
 
     def __init__(self, operator_contact_hint: str) -> None:
+        # B11 — strip trailing space when ``operator_contact_hint`` is
+        # empty (the 2.0.0 default). The previous f-string left
+        # "Your API key has been suspended. " with a dangling space that
+        # made monitoring grep patterns fragile.
+        suffix = f" {operator_contact_hint}" if operator_contact_hint else ""
         super().__init__(
             message="Your API key has been suspended",
             status_code=401,
             error_type="authentication_error",
-            hint=f"Your API key has been suspended. {operator_contact_hint}",
+            hint=f"Your API key has been suspended.{suffix}",
         )
 
 
@@ -134,11 +139,13 @@ class ApiKeyRevokedError(ComadreError):
     """Raised when the key was found but its status is 'revoked'."""
 
     def __init__(self, operator_contact_hint: str) -> None:
+        # B11 — same trailing-space cleanup as ``ApiKeySuspendedError``.
+        suffix = f" {operator_contact_hint}" if operator_contact_hint else ""
         super().__init__(
             message="Your API key has been revoked",
             status_code=401,
             error_type="authentication_error",
-            hint=f"Your API key has been revoked. {operator_contact_hint}",
+            hint=f"Your API key has been revoked.{suffix}",
         )
 
 
@@ -184,6 +191,32 @@ class InvalidTaxIdError(ComadreError):
             status_code=400,
             error_type="invalid_request_error",
             hint=f"Verify the {label} digits and try again.",
+        )
+        self.kind = kind
+
+
+class DuplicateTaxIdError(ComadreError):
+    """Raised when ``create-customer`` / ``correct-tax-id`` would store a
+    CPF/CNPJ that is already registered against an active customer (B2).
+
+    Anti-enumeration: the raw value is NEVER carried on the exception.
+    The message and hint are static; the operator already typed the
+    value so echoing it back is redundant and would leak through a
+    forensic ``stderr`` capture.
+    """
+
+    def __init__(self, kind: Literal["cpf", "cnpj"]) -> None:
+        label = kind.upper()
+        super().__init__(
+            message=f"{label} already registered to another active customer",
+            status_code=409,
+            error_type="invalid_request_error",
+            hint=(
+                "Run 'comadre-keys list-customers' to find the existing "
+                "customer. To re-register a previously hard-deleted "
+                f"{label}, the tombstone must be in place "
+                "(``tax_id_lookup`` is cleared on hard-delete)."
+            ),
         )
         self.kind = kind
 

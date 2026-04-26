@@ -364,6 +364,9 @@ def mark_paid_cmd(
     )
 
 
+_SUSPEND_REASON_MAX = 1024
+
+
 @app.command("suspend")
 def suspend_cmd(
     key_prefix: str = typer.Argument(
@@ -374,11 +377,62 @@ def suspend_cmd(
             'Example: "Pq_abc12".'
         ),
     ),
+    reason: str | None = typer.Option(
+        None,
+        "--reason",
+        help=(
+            "Optional free-form reason (<=1024 chars, single line). Recorded "
+            "in the audit_log row's details_json so forensia can distinguish "
+            "abuse / contract / billing-dispute suspensions. Cron-driven "
+            "suspensions (Story 3.3 sweep) are anonymous by design — manual "
+            "suspensions benefit from operator context."
+        ),
+    ),
 ) -> None:
     """Manually suspend an API key (out-of-cycle; for abuse or contract disputes).
 
-    Example: comadre-keys suspend Pq_abc12
+    Example: comadre-keys suspend Pq_abc12 --reason "abuse — repeated 429"
     """
+    # B12 — --reason shape validation (mirrors revoke-key validators).
+    # When ``--reason`` is omitted the audit row carries ``details_json IS
+    # NULL`` (same as the cron sweep), keeping rendering parity for
+    # ``show --audit-tail``. When provided, NUL / newline / empty / oversize
+    # are rejected with exit 2.
+    if reason is not None:
+        if "\x00" in reason:
+            render_error(
+                "Usage error: --reason contains illegal characters",
+                "Reason text must not contain NUL bytes.",
+            )
+            raise typer.Exit(code=2)
+        if "\n" in reason or "\r" in reason:
+            render_error(
+                "Usage error: --reason must be a single line",
+                (
+                    "Reason text must be a single line. Newlines would forge "
+                    "dated entries in the stored audit row."
+                ),
+            )
+            raise typer.Exit(code=2)
+        stripped = reason.strip()
+        if not stripped:
+            render_error(
+                "Usage error: --reason must be non-empty",
+                (
+                    "Provide --reason text with content. Whitespace-only "
+                    "reasons are rejected; omit --reason for an anonymous "
+                    "suspension."
+                ),
+            )
+            raise typer.Exit(code=2)
+        if len(stripped) > _SUSPEND_REASON_MAX:
+            render_error(
+                f"Usage error: --reason exceeds {_SUSPEND_REASON_MAX} characters",
+                f"Trim --reason to {_SUSPEND_REASON_MAX} chars or fewer.",
+            )
+            raise typer.Exit(code=2)
+        reason = stripped
+
     # 1. Settings + TZ (exit 6).
     loaded = load_settings_and_tz()
     if loaded is None:
@@ -410,6 +464,7 @@ def suspend_cmd(
                 key_row.id,
                 actor=get_cli_actor(),
                 today=today,
+                reason=reason,
             )
         except ValueError as exc:
             msg = str(exc)

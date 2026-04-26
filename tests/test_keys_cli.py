@@ -81,7 +81,9 @@ def test_create_customer_invalid_cpf_exits_4(env: dict[str, str]) -> None:
             "111.222.333-99",
         ],  # invalid checksum
     )
-    assert result.exit_code == 4
+    # B1 — checksum failure is a usage-domain validation error, exit 2.
+    # Exit 4 is reserved for ``rotate-encryption-key`` Fernet shape failure.
+    assert result.exit_code == 2
 
 
 def test_create_customer_missing_encryption_key_exits_6(

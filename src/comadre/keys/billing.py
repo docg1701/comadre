@@ -45,10 +45,14 @@ class ManualBillingProvider(BillingProvider):
                 "(no PSP adapter); use 'manual' or 'complimentary'."
             )
         if key.paid_until is None:
-            # Never marked paid — trial window. Story 2.1's auth path
-            # treats this as allow-while-active (SLA). Story 3.3's sweep
-            # won't suspend it because NULL < today is NULL, not true.
-            return False
+            # Never marked paid — trial window. The ``issue-key`` panel
+            # advertises a free runway up to ``first_charge_date`` and the
+            # auth path honours it (allow-while-active SLA). Story 3.3's
+            # sweep also leaves NULL rows alone (predicate is strict
+            # ``paid_until < ?`` — NULL compares as NULL, not true). The
+            # operator transitions out of trial via ``mark-paid``, which
+            # writes a concrete date that this branch then evaluates.
+            return True
         # Malformed paid_until raises ``ValueError``; the auth path catches
         # it, logs ERROR, and fails closed via ``ApiKeySuspendedError`` —
         # see ``comadre.keys.auth.verify_api_key_registry``.

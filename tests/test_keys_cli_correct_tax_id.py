@@ -167,15 +167,16 @@ def test_correct_tax_id_kind_change_cpf_to_cnpj(env: dict[str, str]) -> None:
     assert details["new_kind"] == "cnpj"
 
 
-def test_correct_tax_id_invalid_checksum_exits_4(env: dict[str, str]) -> None:
-    """Bad CPF / CNPJ checksum exits 4; rejected input never echoed."""
+def test_correct_tax_id_invalid_checksum_exits_2(env: dict[str, str]) -> None:
+    """B1 — bad CPF / CNPJ checksum exits 2 (usage-domain validation),
+    not 4. Rejected input never echoed (anti-enumeration FR37/NFR16)."""
     cid, _ = _seed(env)
     result = runner.invoke(
         app,
         ["correct-tax-id", cid, "--new-cpf", "00000000000", "--reason", "x", "--yes"],
     )
     _, stderr = buffers()
-    assert result.exit_code == 4
+    assert result.exit_code == 2
     assert "00000000000" not in stderr
 
 

@@ -145,6 +145,10 @@ async def test_status_and_billing_branches_raise_correct_errors(
         ({"status": "revoked"}, ApiKeyRevokedError),
         ({"paid_until": "2020-01-01"}, ApiKeySuspendedError),
         ({"billing_mode": "complimentary", "paid_until": None}, None),
+        # B10 regression: a freshly-issued manual key (paid_until=None) is in
+        # the trial window — auth must allow it. Operator transitions out of
+        # trial via ``mark-paid``; sweep won't suspend NULL rows.
+        ({"billing_mode": "manual", "paid_until": None}, None),
     ]
     for kwargs, expected_exc in cases:
         label = expected_exc.__name__ if expected_exc else "comp"

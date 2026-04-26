@@ -52,6 +52,7 @@ from comadre.keys.cli.output import (
     stderr_console,
 )
 from comadre.keys.crypto import (
+    compute_tax_id_lookup,
     decrypt_tax_id,
     encrypt_tax_id,
     strip_tax_id,
@@ -62,6 +63,7 @@ from comadre.keys.db import (
     CorrectTaxIdResult,
     UpdateCustomerResult,
     _apply_migrations,
+    backfill_tax_id_lookup_if_needed,
     correct_customer_tax_id,
     count_tombstones,
     delete_customer_hard,
@@ -143,6 +145,19 @@ def create_customer(
             "Provide --name without NUL, newline, or ANSI-escape bytes.",
         )
         raise typer.Exit(code=2)
+    # B3 — cap --notes at the same length the ``update-customer --notes``
+    # path enforces, so the operator never gets into a state where a
+    # ``create-customer`` succeeded but the next ``update-customer
+    # --notes`` (replace mode) would silently fail or truncate. Defense-
+    # in-depth: SQLite has no native TEXT length cap, so a runaway
+    # ``--notes`` would otherwise grow the registry row unbounded.
+    if len(notes) > _UPDATE_CUSTOMER_NOTES_REPLACE_MAX:
+        render_error(
+            f"Usage error: --notes exceeds {_UPDATE_CUSTOMER_NOTES_REPLACE_MAX} "
+            "characters",
+            f"Trim --notes to {_UPDATE_CUSTOMER_NOTES_REPLACE_MAX} chars or fewer.",
+        )
+        raise typer.Exit(code=2)
     if not name.strip():
         render_error(
             "Usage error: --name must not be empty or whitespace-only",
@@ -208,7 +223,7 @@ def create_customer(
             validate_cnpj(digits)
     except InvalidTaxIdError as exc:
         render_error(exc.message, exc.hint)
-        raise typer.Exit(code=4) from None
+        raise typer.Exit(code=2) from None
 
     # 4. Validate name/email by constructing the pydantic model.
     from comadre.keys.models import CustomerCreate
@@ -228,8 +243,12 @@ def create_customer(
         )
         raise typer.Exit(code=2) from None
 
-    # 5. Encrypt tax ID.
+    # 5. Encrypt tax ID + compute the deterministic lookup digest (B2 —
+    # the partial UNIQUE INDEX on tax_id_lookup detects duplicates at the
+    # DB boundary; same-key HMAC means rotate-encryption-key recomputes
+    # both columns atomically).
     encrypted = encrypt_tax_id(digits, settings.key_registry_encryption_key)
+    lookup = compute_tax_id_lookup(digits, settings.key_registry_encryption_key)
 
     # 6. Open DB, apply migrations, insert customer + audit in one txn.
     record = CustomerRecord(
@@ -247,7 +266,25 @@ def create_customer(
         conn = get_connection(settings.key_registry_db_path)
         try:
             _apply_migrations(conn)
-            insert_customer(conn, record, actor=get_cli_actor())
+            backfill_tax_id_lookup_if_needed(
+                conn, encryption_key=settings.key_registry_encryption_key
+            )
+            try:
+                insert_customer(
+                    conn, record, actor=get_cli_actor(), tax_id_lookup=lookup
+                )
+            except sqlite3.IntegrityError as exc:
+                # B2: partial UNIQUE INDEX rejected the insert because an
+                # active row already holds the same tax-ID. Translate to
+                # the user-facing ``DuplicateTaxIdError`` shape — the raw
+                # value never appears in the error chain (anti-enumeration).
+                if "tax_id_lookup" not in str(exc):
+                    raise
+                from comadre.exceptions import DuplicateTaxIdError
+
+                err = DuplicateTaxIdError(kind)
+                render_error(err.message, err.hint)
+                raise typer.Exit(code=2) from None
         finally:
             conn.close()
     except (sqlite3.Error, OSError, RuntimeError) as exc:
@@ -968,6 +1005,18 @@ def update_customer_cmd(
         )
         raise typer.Exit(code=3)
 
+    if not result.updated_fields:
+        # B7 \u2014 same-value writes intentionally produce no UPDATE and no
+        # audit row (CLAUDE.md "no-op write" contract). Surface that
+        # honestly to the operator instead of "Updated: ... \u2014 " with
+        # an empty suffix that implies a mutation happened.
+        _logger.info("Updated customer (no-op) | id=%s | fields=", customer_id)
+        render_confirmation(
+            f"No changes: {result.customer.id} ({result.customer.name}) "
+            "\u2014 already up to date"
+        )
+        return
+
     _logger.info(
         "Updated customer | id=%s | fields=%s",
         customer_id,
@@ -1373,7 +1422,7 @@ def correct_tax_id_cmd(
             validate_cnpj(digits)
     except InvalidTaxIdError as exc:
         render_error(exc.message, exc.hint)
-        raise typer.Exit(code=4) from None
+        raise typer.Exit(code=2) from None
 
     # 4. Settings ladder (exit 6).
     try:
@@ -1413,6 +1462,9 @@ def correct_tax_id_cmd(
     try:
         try:
             _apply_migrations(conn)
+            backfill_tax_id_lookup_if_needed(
+                conn, encryption_key=settings.key_registry_encryption_key
+            )
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
@@ -1452,9 +1504,11 @@ def correct_tax_id_cmd(
                     )
                 raise typer.Exit(code=2) from None
 
-        # 8. Encrypt new tax-ID via the single-Fernet boundary, only after
-        # the customer is confirmed present and the operator has authorized.
+        # 8. Encrypt new tax-ID via the single-Fernet boundary + compute
+        # the v3 lookup digest (B2 — both columns rotate atomically in the
+        # ``correct_customer_tax_id`` helper).
         new_encrypted = encrypt_tax_id(digits, settings.key_registry_encryption_key)
+        new_lookup = compute_tax_id_lookup(digits, settings.key_registry_encryption_key)
 
         # 9. Helper dispatch.
         try:
@@ -1463,9 +1517,18 @@ def correct_tax_id_cmd(
                 customer_id,
                 new_tax_id_encrypted=new_encrypted,
                 new_tax_id_kind=new_kind,
+                new_tax_id_lookup=new_lookup,
                 reason=reason,
                 actor=get_cli_actor(),
             )
+        except sqlite3.IntegrityError as exc:
+            if "tax_id_lookup" not in str(exc):
+                raise
+            from comadre.exceptions import DuplicateTaxIdError
+
+            err = DuplicateTaxIdError(new_kind)
+            render_error(err.message, err.hint)
+            raise typer.Exit(code=2) from None
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None

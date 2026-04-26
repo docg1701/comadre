@@ -67,6 +67,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Opening key registry at %s", settings.key_registry_db_path)
     app.state.registry_db = get_connection(settings.key_registry_db_path)
     _apply_migrations(app.state.registry_db)
+    # B2: backfill the v3 tax_id_lookup column on first-startup-after-upgrade
+    # so the partial UNIQUE INDEX takes effect against pre-existing rows.
+    # Idempotent and free for new deployments (no rows to backfill).
+    from comadre.keys.db import backfill_tax_id_lookup_if_needed
+
+    backfilled = backfill_tax_id_lookup_if_needed(
+        app.state.registry_db,
+        encryption_key=settings.key_registry_encryption_key,
+    )
+    if backfilled:
+        logger.info("Backfilled tax_id_lookup for %d customer row(s)", backfilled)
     sentinel_path = Path(f"{settings.key_registry_db_path}.invalidate")
     # F16 — cross-mount sentinel probe. Touch the sentinel as the API
     # process and read it back to confirm the parent directory is

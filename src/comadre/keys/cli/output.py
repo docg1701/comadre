@@ -681,7 +681,9 @@ def render_audit_tail(events: list[AuditEventRow]) -> None:
         render_confirmation("  No events recorded")
         return
 
-    render_confirmation(f"Last {len(events)} events:")
+    # B6 — singular/plural agreement when the audit-tail returns exactly 1.
+    plural = "" if len(events) == 1 else "s"
+    render_confirmation(f"Last {len(events)} event{plural}:")
     action_width = max(len(event.action) for event in events)
     for event in events:
         timestamp = event.occurred_at.replace("T", " ").removesuffix("Z")

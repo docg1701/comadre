@@ -72,6 +72,13 @@ RUN rm -rf /tmp/espeak-ng && \
 COPY deploy/bin/qwen3-tts-cli /usr/local/bin/qwen3-tts-cli
 RUN chmod +x /usr/local/bin/qwen3-tts-cli
 
+# Bake the backup script into the image as a real binary on PATH (B16 — the
+# nightly cron used to invoke ``ansible-playbook`` from the VPS, but that
+# tool isn't installed there. The cron now ``docker compose exec``s this
+# script directly, mirroring the suspension-sweep cron pattern).
+COPY deploy/ansible/scripts/backup-keys.sh /usr/local/bin/comadre-keys-backup
+RUN chmod +x /usr/local/bin/comadre-keys-backup
+
 # Copy noise WAV files for post-processing
 COPY noise/ /app/noise/
 

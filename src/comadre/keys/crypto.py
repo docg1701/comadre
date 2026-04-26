@@ -78,6 +78,32 @@ def encrypt_tax_id(canonical: str, key: SecretStr) -> bytes:
     return fernet.encrypt(canonical.encode())
 
 
+def compute_tax_id_lookup(canonical: str, key: SecretStr) -> bytes:
+    """Return a deterministic 32-byte HMAC-SHA256 of ``canonical`` keyed by ``key``.
+
+    Used by the ``customer.tax_id_lookup`` column (B2 / migration v3) to
+    enforce CPF/CNPJ uniqueness without exposing plaintext or relying on
+    randomised Fernet ciphertexts. Same input + same key → same output;
+    different keys → different outputs (recomputed during
+    ``rotate_encryption_keys``).
+
+    The HMAC key is the same secret as ``encrypt_tax_id``: an attacker
+    with the DB file alone cannot brute-force this column without also
+    holding ``KEY_REGISTRY_ENCRYPTION_KEY`` — same defense-in-depth as
+    ``tax_id_encrypted``. Callers MUST pass the canonical (stripped +
+    uppercased) form via ``strip_tax_id`` so masked / lowercase variants
+    of the same tax-ID hash to the same digest.
+    """
+    import hashlib
+    import hmac
+
+    return hmac.new(
+        key.get_secret_value().encode(),
+        canonical.encode(),
+        hashlib.sha256,
+    ).digest()
+
+
 def decrypt_tax_id(ciphertext: bytes, key: SecretStr) -> str:
     """Fernet-decrypt a tax ID stored via ``encrypt_tax_id``.
 
