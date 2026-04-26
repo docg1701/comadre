@@ -184,6 +184,84 @@ def test_missing_or_stale_backup_and_cron_markers_warn(tmp_path: Path) -> None:
     assert "expected within 48h" in (backup.detail or "")
 
 
+def test_freshly_installed_cron_with_no_history_is_info_not_warn(
+    tmp_path: Path,
+) -> None:
+    """A freshly-installed suspension/backup cron that hasn't fired yet is
+    the legitimate post-bootstrap state, not operational drift. Within the
+    grace period (one staleness window from marker mtime) the freshness
+    rows must report ``info`` so ``is_healthy`` stays True. Beyond the
+    window, they escalate to ``warn``.
+
+    Without this contract, ``ansible-playbook health.yml`` fails
+    immediately after a green ``bootstrap.yml`` because the daily-suspension
+    cron only fires at 00:30 operator-TZ and the backup cron at 02:00 — a
+    deploy that ran at 22:00 has nothing to point at and would otherwise
+    flip is_healthy=False.
+    """
+    db_path = tmp_path / "registry.db"
+
+    # Write both markers with an mtime well inside the grace window.
+    for kind, content in (
+        ("cron", "schedule=30 0 * * *\ncron_tz=UTC"),
+        ("backup-cron", "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=14\n"),
+    ):
+        marker = Path(f"{db_path}.{kind}-installed")
+        marker.write_text(content, encoding="utf-8")
+        marker.chmod(0o600)
+    # No audit row, no backup archive.
+    conn = get_connection(db_path)
+    try:
+        _apply_migrations(conn)
+        # Replica counter snapshot for Auth cache check.
+        written = datetime.now(UTC) - timedelta(seconds=3)
+        Path(f"{db_path}.counters.test-replica.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "written_at": written.strftime("%Y-%m-%dT%H:%M:%S.")
+                    + f"{written.microsecond // 1000:03d}Z",
+                    "process_uptime_seconds": 60,
+                    "auth_cache": {
+                        "entries": 0,
+                        "maxsize": 4096,
+                        "ttl_seconds": 60,
+                        "hits": 0,
+                        "misses": 0,
+                    },
+                    "per_key": {},
+                }
+            )
+        )
+        report = _collect(conn, db_path)
+    finally:
+        conn.close()
+
+    sweep = _check(report, "Last suspension sweep")
+    backup = _check(report, "Last backup")
+    assert sweep.severity == "info"
+    assert "freshly installed" in sweep.value
+    assert backup.severity == "info"
+    assert "freshly installed" in backup.value
+    assert report.is_healthy is True
+
+    # Push the markers back beyond the grace window → severity escalates.
+    ancient = time.time() - (72 * 3600)
+    for kind in ("cron", "backup-cron"):
+        marker = Path(f"{db_path}.{kind}-installed")
+        os.utime(marker, (ancient, ancient))
+    conn = get_connection(db_path)
+    try:
+        report = _collect(conn, db_path)
+    finally:
+        conn.close()
+    sweep = _check(report, "Last suspension sweep")
+    backup = _check(report, "Last backup")
+    assert sweep.severity == "warn"
+    assert backup.severity == "warn"
+    assert report.is_healthy is False
+
+
 def test_health_report_to_json_aggregates_warn_and_fail_counts() -> None:
     """JSON envelope is what monitoring consumes — must surface warn_count
     + fail_count + is_healthy honestly."""

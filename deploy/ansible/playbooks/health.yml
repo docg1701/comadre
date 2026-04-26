@@ -240,11 +240,16 @@
     # count assertion above but is unrecoverable. Treat any archive smaller
     # than 1 KiB as truncated.
     - name: "[Backup] Smallest archive size in bytes"
+      # NOTE: keep the bash -c body on a single physical YAML line. Folding
+      # via ``>-`` turns inter-line breaks into spaces ONLY when the lines
+      # share the same indentation; a more-indented continuation (e.g. a
+      # leading space before ``| sort``) preserves the newline literally,
+      # which bash receives as a line break and rejects with
+      # ``syntax error near unexpected token '|'``.
       ansible.builtin.command:
         cmd: >-
           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
-          'stat -c %s {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null
-           | sort -n | head -1'
+          'stat -c %s {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null | sort -n | head -1'
       register: backup_min_size
       changed_when: false
 

@@ -106,3 +106,144 @@ and the `db.py::_chmod_0600 + parent.mkdir(mode=0o700)` runtime safety net
 finally has the right inputs to work with.
 
 **Patch:** see Dockerfile change on master.
+
+### D3 — `health.yml` fails on a fresh post-bootstrap deploy
+
+**Symptom:** `ansible-playbook health.yml` immediately after a green
+`bootstrap.yml` exits non-zero on `[DB] Assert comadre-keys health is_healthy`
+with two failing checks:
+
+```
+- Last suspension sweep: never (cron installed but not yet fired)
+  (wait until 00:30 operator-TZ for the first sweep)
+- Last backup: never (run backup-keys.yml)
+```
+
+The in-container `comadre-keys health --format json` exits 7 because both
+"freshness" rows have no antecedent event in `audit_log` / no archive on
+disk. Operators are told to either wait until the next cron firing
+(00:30 / 02:00 operator TZ — up to 24 h) or run `backup-keys.yml`
+manually. That's friction — health.yml should pass on a successful deploy.
+
+**Root cause:** bootstrap.yml installs the cron entries but never fires the
+first iteration of either job. The `comadre-keys health` CLI's freshness
+checks (Story 3.4) are designed to catch a cron that's installed-but-broken
+by reading the most recent successful run; with no run yet, "never" is
+correctly reported but produces a false fail-on-fresh-deploy.
+
+**Fix v1 (REJECTED — operator feedback "não invente health checkpoints"):**
+extend bootstrap.yml's tail with two zero-touch initialisation tasks
+(`[Init] Seed audit_log via suspend-sweep` + `import_playbook:
+backup-keys.yml`). This works but invents new ad-hoc health-related
+plumbing rather than fixing the actual modelling error in the application.
+
+**Fix v2 (SHIPPED):** the bug is in `comadre.keys.health._check_last_sweep`
+and `_check_last_backup`. Both treat "never (cron installed but not yet
+fired)" as `severity="warn"` unconditionally. That conflates **operational
+drift detection** (cron stopped firing) with **deployment readiness**
+(cron just installed, hasn't had a chance yet). Per the official Docker
+healthcheck doctrine, "is the service ready" is binary and time-bounded
+by `start_period`; ongoing operational drift belongs in monitoring, not
+in the deploy gate.
+
+The application change adds a **grace period** to both freshness checks,
+keyed off the marker file's `mtime` (≈ install time, written by
+`bootstrap.yml`'s `cat > {db}.cron-installed`). Within the staleness
+window (48 h, identical to the existing "Last sweep ageing" threshold)
+the "never" reading is `severity="info"` (does not flip `is_healthy`);
+beyond the window it escalates to `warn` (genuine drift — cron daemon
+broken, suspended host, mounted-over crontab). New `install_age_seconds`
+field is added to both `Cron` and `Backup cron` rows' `data` payload so
+the freshness probes can read it without re-stat'ing.
+
+This **deletes** the bootstrap.yml tail extension from Fix v1 and leaves
+all initialisation to the cron daemons themselves — the "first run
+delay" is no longer a deployment problem.
+
+**Patch:** `src/comadre/keys/health.py` (grace-period logic +
+`_marker_install_age_seconds` helper) + new test
+`test_freshly_installed_cron_with_no_history_is_info_not_warn` in
+`tests/test_keys_health.py` (locks the new contract: within window
+→ info + is_healthy=True; beyond → warn + is_healthy=False).
+
+### D4 — `health.yml`'s `[Backup] Smallest archive size` task fails with bash syntax error
+
+**Symptom:** `[Backup] Smallest archive size in bytes` task fails with
+`bash: -c: line 2: syntax error near unexpected token '|'`. Stdout is the
+`stat -c %s` output (so the first command did execute and emit a size), but
+bash rejected the `| sort -n | head -1` pipeline as if it were a separate
+command line.
+
+**Root cause:** YAML folded-scalar (`>-`) bug in `health.yml:244-247`. The
+original block was:
+
+```yaml
+cmd: >-
+  docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
+  'stat -c %s {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null
+   | sort -n | head -1'
+```
+
+YAML folded scalars (`>-`) fold internal newlines into spaces ONLY between
+lines that share the same indentation level. A "more indented" continuation
+line (the third line begins with one extra leading space ` |`) is treated as
+literal — its leading newline is preserved verbatim. So `bash -c` received:
+
+```
+stat -c %s /var/lib/comadre/*.backup-*.tar.gz.enc 2>/dev/null
+ | sort -n | head -1
+```
+
+…with a literal `\n` between the redirect and the pipe. Bash sees a
+complete command on line 1, then tries to start a new command beginning
+with `|` on line 2 — illegal token, syntax error.
+
+**Why this hadn't been caught yet:** the task only fires when ≥ 1 backup
+archive exists in the registry volume (gated by the preceding `[Backup]
+Assert at least one backup archive exists` task). Before this fresh-deploy
+validation, no operator had run `health.yml` immediately after a successful
+`backup-keys.yml` run on a clean volume — every prior `health.yml`
+invocation either skipped this step (no archive) or hit the same syntax
+error and was silently misattributed to "no backup yet".
+
+**Fix:** collapse the bash -c body onto a single physical YAML line. Added
+an inline comment describing the folding gotcha so a future editor doesn't
+re-introduce the multi-line form. Diff:
+
+```diff
+     - name: "[Backup] Smallest archive size in bytes"
++      # NOTE: keep the bash -c body on a single physical YAML line. Folding
++      # via ``>-`` turns inter-line breaks into spaces ONLY when the lines
++      # share the same indentation; a more-indented continuation (e.g. a
++      # leading space before ``| sort``) preserves the newline literally...
+       ansible.builtin.command:
+         cmd: >-
+           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
+-          'stat -c %s {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null
+-           | sort -n | head -1'
++          'stat -c %s {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null | sort -n | head -1'
+```
+
+**Patch:** see health.yml change on master.
+
+## Out-of-scope playbooks for the zero-friction first deploy
+
+`deploy-models.yml` is **opt-in** — it asserts `qwen3_model_local` /
+`qwen3_tokenizer_local` are non-empty (operator-provided local GGUF files
+for offline / air-gapped deploys). The standard deploy path uses
+`QWEN3_MODEL_URL` / `QWEN3_TOKENIZER_URL` set in `.env` and the entrypoint
+auto-downloads on first start; no `deploy-models.yml` run is required and
+running it on a host where the locals are empty fails-fast with a clear
+"set the path" message. This is the documented contract — running it
+without local files is operator error, not deploy friction.
+
+`restore-keys.yml` is operational (disaster recovery) and out of scope for
+a fresh-deploy run. `update.yml` is a re-deploy aid, also out of scope.
+
+The recipes exercised in this validation are:
+- `cleanup.yml`        — destructive teardown
+- `bootstrap.yml`      — fresh deploy (now imports `backup-keys.yml` at end)
+- `deploy-voices.yml`  — load custom voices into volume
+- `health.yml`         — operational invariants
+- `backup-keys.yml`    — invoked transitively via bootstrap.yml's
+                         `import_playbook` tail.

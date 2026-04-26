@@ -224,19 +224,45 @@ def _check_last_sweep(
     *,
     cron_installed: bool,
     staleness_warn_seconds: int,
+    cron_install_age_seconds: int | None = None,
 ) -> HealthCheck:
     last_at = get_last_sweep_timestamp(conn)
     if last_at is None:
         if cron_installed:
+            # Grace period: a freshly installed cron that hasn't fired yet
+            # is the legitimate post-bootstrap state, not operational drift.
+            # Report info (which doesn't flip is_healthy) until the cron
+            # has been installed long enough that it should have fired.
+            # Beyond the staleness threshold the absence is genuine drift
+            # (cron daemon stopped, suspended host, mounted-over crontab) →
+            # warn.
+            within_grace = (
+                cron_install_age_seconds is not None
+                and cron_install_age_seconds < staleness_warn_seconds
+            )
+            if within_grace:
+                return HealthCheck(
+                    label="Last suspension sweep",
+                    value="never (cron freshly installed)",
+                    severity="info",
+                    detail="awaiting first 00:30 operator-TZ firing",
+                    data={
+                        "last_at": None,
+                        "age_seconds": None,
+                        "staleness_warn_seconds": staleness_warn_seconds,
+                        "cron_install_age_seconds": cron_install_age_seconds,
+                    },
+                )
             return HealthCheck(
                 label="Last suspension sweep",
                 value="never (cron installed but not yet fired)",
                 severity="warn",
-                detail="wait until 00:30 operator-TZ for the first sweep",
+                detail="cron should have fired by now — check cron daemon",
                 data={
                     "last_at": None,
                     "age_seconds": None,
                     "staleness_warn_seconds": staleness_warn_seconds,
+                    "cron_install_age_seconds": cron_install_age_seconds,
                 },
             )
         return HealthCheck(
@@ -377,13 +403,33 @@ def _check_cron_marker(marker_path: Path) -> HealthCheck:
             data={"installed": True, "parsed": False},
         )
     value = f"comadre-daily-suspension at {schedule} (CRON_TZ={cron_tz})"
+    # Marker mtime ≈ install time (set by bootstrap.yml's ``cat > marker``).
+    # Surfaced so freshness probes (_check_last_sweep / _check_last_backup)
+    # can grant a grace period: a "never fired yet" reading inside one
+    # cron interval after install is the legitimate post-bootstrap state,
+    # not operational drift.
+    install_age = _marker_install_age_seconds(marker_path)
     return HealthCheck(
         label="Cron",
         value=value,
         severity="ok",
         detail=None,
-        data={"installed": True, "schedule": schedule, "tz": cron_tz},
+        data={
+            "installed": True,
+            "schedule": schedule,
+            "tz": cron_tz,
+            "install_age_seconds": install_age,
+        },
     )
+
+
+def _marker_install_age_seconds(marker_path: Path) -> int | None:
+    """Return seconds since the marker file was written, or None on stat failure."""
+    try:
+        mtime = marker_path.stat().st_mtime
+    except OSError:
+        return None
+    return int(_utcnow().timestamp() - mtime)
 
 
 def _check_billing_timezone_drift(
@@ -551,6 +597,7 @@ def _check_backup_cron_marker(marker_path: Path) -> HealthCheck:
         f"comadre-keys-backup at {schedule} "
         f"(CRON_TZ={cron_tz}, retention={retention_int}d)"
     )
+    install_age = _marker_install_age_seconds(marker_path)
     return HealthCheck(
         label="Backup cron",
         value=value,
@@ -561,6 +608,7 @@ def _check_backup_cron_marker(marker_path: Path) -> HealthCheck:
             "schedule": schedule,
             "tz": cron_tz,
             "retention_days": retention_int,
+            "install_age_seconds": install_age,
         },
     )
 
@@ -571,6 +619,7 @@ def _check_last_backup(
     *,
     allow_warn: bool,
     staleness_warn_seconds: int = 48 * 3600,
+    backup_cron_install_age_seconds: int | None = None,
 ) -> HealthCheck:
     """Look for the most-recent backup artefact.
 
@@ -646,6 +695,29 @@ def _check_last_backup(
         except OSError:
             continue
     if not survivors:
+        # Grace period mirrors _check_last_sweep: a freshly installed
+        # backup cron that hasn't fired yet (deploy < 48h old) is the
+        # legitimate post-bootstrap state, not operational drift. Only
+        # flip to warn once the cron is past the staleness window — by
+        # then it should have produced an archive.
+        within_grace = (
+            backup_cron_install_age_seconds is not None
+            and backup_cron_install_age_seconds < staleness_warn_seconds
+        )
+        if within_grace:
+            return HealthCheck(
+                label="Last backup",
+                value="never (backup cron freshly installed)",
+                severity="info",
+                detail="awaiting first 02:00 operator-TZ firing",
+                data={
+                    "available_after_story_4_3": True,
+                    "path": None,
+                    "backup_cron_install_age_seconds": (
+                        backup_cron_install_age_seconds
+                    ),
+                },
+            )
         return HealthCheck(
             label="Last backup",
             value="never",
@@ -761,7 +833,15 @@ def collect_health_report(
 
     cron_check = _check_cron_marker(marker_path_obj)
     cron_installed = bool(cron_check.data and cron_check.data.get("installed"))
+    cron_install_age_seconds = (cron_check.data or {}).get("install_age_seconds")
+    if not isinstance(cron_install_age_seconds, int):
+        cron_install_age_seconds = None
     backup_cron_check = _check_backup_cron_marker(backup_cron_marker_obj)
+    backup_cron_install_age_seconds = (backup_cron_check.data or {}).get(
+        "install_age_seconds"
+    )
+    if not isinstance(backup_cron_install_age_seconds, int):
+        backup_cron_install_age_seconds = None
 
     snapshots = read_all_snapshots(db_path)
     cache_status = aggregate_cache_status(snapshots)
@@ -788,6 +868,7 @@ def collect_health_report(
             conn,
             cron_installed=cron_installed,
             staleness_warn_seconds=sweep_staleness_warn_seconds,
+            cron_install_age_seconds=cron_install_age_seconds,
         ),
         cron_check,
         backup_cron_check,
@@ -796,6 +877,7 @@ def collect_health_report(
             backup_parent_obj,
             backup_pattern,
             allow_warn=not _BACKUP_NOT_IMPLEMENTED_INFO,
+            backup_cron_install_age_seconds=backup_cron_install_age_seconds,
         ),
         _check_auth_cache(cache_status),
     )
