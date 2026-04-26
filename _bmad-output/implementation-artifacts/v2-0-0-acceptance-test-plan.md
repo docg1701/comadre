@@ -446,6 +446,34 @@ Galvani me chamou pra falar que os 7 deferidos eram "preguiça". Reanalisei e ad
 
 Test suite: 214 → 216 (+2 dos novos B9/B20). Pre-commit + mypy + ruff clean. Total de patches no ciclo de aceitação: 17 fixes (3 críticos + 14 menores).
 
+### Round 3 — full retest pós-compact em 2 hosts (2026-04-26 terceira passada)
+
+Retomei após `/compact` para a re-suíte completa Phases 0-7 + edge cases focados em B2/B10/B16/B19/B20. Hosts: local Proxmox (10.10.10.207, x86_64) + Oracle (129.153.94.188, aarch64).
+
+**Edge cases validados:**
+
+- **B2 invariantes ✅**
+  - HMAC determinístico: `111.444.777-35` formatado vs `11144477735` unformatted → ambos rejeitados com `EXIT=2` + envelope "CPF already registered" (mesmo digest).
+  - CNPJ idem: `11.222.333/0001-81` vs `11222333000181` → dup detectado.
+  - Tombstone reuse: hard-delete + create-customer com mesmo CPF → sucesso (lookup limpo).
+  - `correct-tax-id` collision: tentar trocar Sigma para CPF de AlphaReborn → `EXIT=2` + envelope correto.
+  - `rotate-encryption-key`: 3 rows re-encriptadas, export-customer ainda decripta com nova key, dup detection ainda funciona (lookup recomputado com novo HMAC key) → invariante crítica preservada.
+- **B10 lifecycle ✅** — trial NULL → 200, paid future → 200, paid past → 401, suspend → 401, reactivate (paid_until ainda passado) → 401, mark-paid futuro → 200. Cache invalidação via sentinel funciona (verificado via mtime + curl pós-suspend < 2s).
+- **B16 ✅** — cron literal correto: `0 2 * * * /bin/bash -c 'set -o pipefail; set -a; . /etc/comadre/backup-env; set +a; cd ~/comadre && docker compose exec -T -e BACKUP_PASSPHRASE -e BACKUP_RETENTION_DAYS=14 tts-service comadre-keys-backup 2>&1 | logger ...'`. Binary `/usr/local/bin/comadre-keys-backup` baked no image.
+- **B19/B20 ✅** — todos os envelopes corretos: 404/405/422 → JSON envelope com type-correto, security headers (HSTS/CSP/X-CT-O/X-Frame) presentes, `Server: Caddy` strippado.
+- **Phase 5 rate-limit ✅** — rpm=3 admite 3, 429 no 4º+5º com retry-after + X-RateLimit-Remaining=0 + envelope `rate_limit_error`.
+
+**Achados novos (Round 3):**
+
+- **B21** 🐞 — Caddy bounded-payload (411/413/400 dos matchers `@api_*`) emitia `text/plain` body bypassando JSON envelope contract. Tentativa via `error → handle_errors @cerr_4xx` deixou Caddy emitindo text/plain mesmo assim (config aparenta válida, mas o cerr matcher não chega a sobrescrever o body). **Fix definitivo**: cada `handle @api_*` tem `respond` inline com `header Content-Type "application/json"` e envelope explícito. Site-level `header { ... }` overlay HSTS/CSP/X-CT-O continua aplicando. **Validado em ambos os hosts**: 411 missing CL / 411 chunked TE / 413 oversized 2 MiB / 400 malformed CL → todos JSON envelope `{error:{message,type,hint}}`.
+- **B20.5** 🐞 (extensão do B20) — `_format_validation_error` cobria string fields mas não cobria pydantic numeric-bound (`less_than_equal` / `greater_than_equal` / `less_than` / `greater_than`) nem dict-shape (`dict_type` / `model_attributes_type`). `speed=99` caía no fallback "Invalid request body". **Fix**: branches novas no helper. `speed=99` agora retorna `"Field 'speed' is out of range ≤ 4.0"`; top-level array retorna `"Request body must be a JSON object"`. Tests adicionados ao `test_speech_validation_messages_are_field_specific` (5 casos no total, era 3).
+
+**Falsos alarmes:**
+
+- "B22 — suspend bypass na Oracle" (200 OK em key suspensa). **Falso alarme**: eu estava batendo na Oracle pelo IP `129.153.94.188` em vez do `comadre-tts.duckdns.org` (DOMAIN configurado). Caddy default-block para Host-mismatch retorna 200/0-byte/Server:Caddy/sem security headers. Reproduzido com `--resolve $HOST:443:129.153.94.188` → todas as transições de status devolvem 401 corretamente.
+
+**Total final no ciclo de aceitação 2.0.0:** 19 fixes (3 críticos + 16 menores), 216 tests passando (B20.5/B20.7 cobertos via 2 novos casos parametrizados em `test_speech_validation_messages_are_field_specific`, era 3 casos, agora 5), pre-commit + mypy + ruff clean. Deploy via `update.yml` em ambos os hosts (Proxmox x86_64 + Oracle aarch64) confirmado.
+
 ---
 
 ## Strategy de execução
