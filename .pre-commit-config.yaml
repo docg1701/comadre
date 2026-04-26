@@ -18,7 +18,7 @@ repos:
     rev: v1.37.1
     hooks:
       - id: yamllint
-        exclude: ^(_bmad-output/|_bmad/|\.claude/)
+        exclude: ^\.claude/
 
   # ShellCheck — shell script linting
   - repo: https://github.com/shellcheck-py/shellcheck-py
@@ -33,7 +33,7 @@ repos:
     rev: v0.17.2
     hooks:
       - id: markdownlint-cli2
-        exclude: ^(_bmad-output/|_bmad/|\.claude/)
+        exclude: ^\.claude/
 
   # Local hooks (use project venv for full dependency access)
   - repo: local

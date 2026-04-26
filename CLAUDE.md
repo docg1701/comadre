@@ -55,7 +55,6 @@ uv run pre-commit run --all-files  # All quality checks
 - `deploy/caddy/Caddyfile` — Caddy reverse proxy config (HTTPS termination)
 - `scripts/loadtest.py` — saturation test (concurrency-based, 6 scenarios)
 - `scripts/capacity_test.py` — capacity test (rate-based, WhatsApp context, ElevenLabs comparison)
-- `_bmad-output/` — planning artifacts (PRD, architecture, epics, stories, sprint status)
 
 ## Non-Obvious Gotchas
 

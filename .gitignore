@@ -7,9 +7,6 @@ data/
 # Claude Code local settings
 .claude/
 
-# BMAD framework (vendored, not part of project source)
-_bmad/
-
 # Python
 __pycache__/
 *.py[cod]

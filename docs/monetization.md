@@ -96,14 +96,14 @@ The legal basis for processing is *"execução de contrato"* (Art. 7 V) — you 
 
 ### Controller identification (Art. 5 VI)
 
-You — the operator running Comadre — are the **data controller** under LGPD Art. 5 VI. Comadre is a tool you deploy on your infrastructure to execute that role. The PRD pins this explicitly: *"the operator is the LGPD data controller (Art. 5, VI). Comadre the software is a tool."* (`_bmad-output/planning-artifacts/prd.md:623`).
+You — the operator running Comadre — are the **data controller** under LGPD Art. 5 VI. Comadre is a tool you deploy on your infrastructure to execute that role. The PRD pins this explicitly: *"the operator is the LGPD data controller (Art. 5, VI). Comadre the software is a tool."*.
 
 Two practical consequences flow from that posture:
 
 1. **You publish your own privacy policy.** Comadre ships no privacy policy of its own. The §Privacy-policy template paragraph below is a structural starting point you adapt to your business; it is **not** a complete privacy policy and is **not** legal advice.
 2. **ANPD inquiries land on you, never on the Comadre project.** If the Autoridade Nacional de Proteção de Dados (ANPD) opens a procedure under Art. 55-A ff., the named controller is your business — your CNPJ, your responsible person, your contact email. The Comadre project is not a co-controller, not a joint processor, not a respondent.
 
-The architecture predicts this section as the canonical home for the controller declaration (`_bmad-output/planning-artifacts/architecture.md:657`). When you hand a privacy notice or compliance attestation to a customer or auditor, point them here.
+The architecture predicts this section as the canonical home for the controller declaration. When you hand a privacy notice or compliance attestation to a customer or auditor, point them here.
 
 ### Data collected and retention
 
@@ -116,11 +116,11 @@ Comadre's registry stores exactly four customer-level columns. Their purpose, at
 | `tax_id_encrypted` | CPF or CNPJ | Fernet ciphertext; key material from `KEY_REGISTRY_ENCRYPTION_KEY` | until operator-driven `delete-customer --hard`; purged to zero-length BLOB on tombstone |
 | `notes` | free-text | plaintext (operator-facing only) | commercial-relationship lifetime; purged by `delete-customer --hard` |
 
-**Explicit non-collection.** The PRD's data-minimisation clause is binding (`_bmad-output/planning-artifacts/prd.md:617`): *"Data minimization — schema stores only what is necessary…"*. The registry deliberately stores **no address, no phone number, no birthdate, no photograph, no IP, no device fingerprint, no secondary biometrics**. No 2.x story plans to add any of these columns; if a future story does, it carries a corresponding LGPD-impact section in this handbook.
+**Explicit non-collection.** The PRD's data-minimisation clause is binding: *"Data minimization — schema stores only what is necessary…"*. The registry deliberately stores **no address, no phone number, no birthdate, no photograph, no IP, no device fingerprint, no secondary biometrics**. No 2.x story plans to add any of these columns; if a future story does, it carries a corresponding LGPD-impact section in this handbook.
 
 **Encryption-key custody.** You hold `KEY_REGISTRY_ENCRYPTION_KEY` in two places: `~/comadre/.env` on the deploy host (mode `0600`, parent dir `0700`; enforced by `keys/db.py::get_connection` on every connection open and re-asserted by `bootstrap.yml`) and your password manager. **If both copies are lost, every `tax_id_encrypted` ciphertext becomes unreadable.** This is a deliberate fail-closed posture — adding a key-recovery surface would defeat the at-rest-encryption premise. Compare this with `BACKUP_PASSPHRASE`, which is accepted empty at service boot by design (consumed only by the backup/restore playbooks, never by the runtime; see `CLAUDE.md` §Non-Obvious Gotchas — `BACKUP_PASSPHRASE` row): the two secrets sit in different threat models and adopt different boot postures.
 
-**Audit-log retention.** The audit log retains event metadata (who, when, what action, structural counts) but **never** personal data. The invariant is enforced by `src/comadre/keys/audit.py::_FORBIDDEN_DETAIL_KEYS`, which raises `ValueError` if any caller attempts to write a PII-class key (today: `cpf`, `cnpj`, `tax_id`, `name`, `email`, `key_plaintext`, `authorization` — **canonical list at `src/comadre/keys/audit.py`**, the prose enumeration here is illustrative and may drift; treat the source as authoritative) into a `details_json` payload. After a `delete-customer --hard` the customer's PII is gone, but the audit row stays — this satisfies FR38 (`_bmad-output/planning-artifacts/prd.md:1176`) and your obligation to retain operator-action traceability for ANPD inquiries.
+**Audit-log retention.** The audit log retains event metadata (who, when, what action, structural counts) but **never** personal data. The invariant is enforced by `src/comadre/keys/audit.py::_FORBIDDEN_DETAIL_KEYS`, which raises `ValueError` if any caller attempts to write a PII-class key (today: `cpf`, `cnpj`, `tax_id`, `name`, `email`, `key_plaintext`, `authorization` — **canonical list at `src/comadre/keys/audit.py`**, the prose enumeration here is illustrative and may drift; treat the source as authoritative) into a `details_json` payload. After a `delete-customer --hard` the customer's PII is gone, but the audit row stays — this satisfies FR38 and your obligation to retain operator-action traceability for ANPD inquiries.
 
 ### Handling a data-subject access request (Art. 18 II and V)
 
@@ -138,7 +138,7 @@ comadre-keys export-customer cust_01HG7... --format yaml > /tmp/customer-export.
 #    The export is non-mutating — no DB rows change, no audit row is written.
 ```
 
-**Field set the export contains** (Story 4.1 AC1 — `_bmad-output/planning-artifacts/epics.md:762-769`):
+**Field set the export contains**:
 
 - Customer: `id`, `name`, `email`, decrypted `tax_id` (formatted for the kind), `tax_id_kind` (`cpf` or `cnpj`), `notes`, `registered_at`.
 - Each associated key (zero or more): `key_prefix`, `status`, `billing_mode`, `created_at`.
@@ -149,7 +149,7 @@ comadre-keys export-customer cust_01HG7... --format yaml > /tmp/customer-export.
 - The **SHA-256 hash** of any API key plaintext. Hashes never leave storage by design; this is a security boundary, not an LGPD posture.
 - Operator-internal billing data — `rate_limit_rpm`, `paid_until`, `price_monthly`. These are not subject data under LGPD. You may include them voluntarily by attaching the output of `comadre-keys show cust_... --format json`; that is a customer-relationship choice, not an LGPD-access obligation.
 
-**Statutory deadline.** LGPD Art. 18 §1 sets the response window at *"15 (quinze) dias"* (NFR34, `_bmad-output/planning-artifacts/prd.md:1250`). The `export-customer` command itself completes in well under one second regardless of registry size; the 15-day window is spent on identity-verification administrivia, not on the command.
+**Statutory deadline.** LGPD Art. 18 §1 sets the response window at *"15 (quinze) dias"*. The `export-customer` command itself completes in well under one second regardless of registry size; the 15-day window is spent on identity-verification administrivia, not on the command.
 
 The deploy-time operational reference for this command lives at `docs/deployment-guide.md:480-504`.
 
@@ -174,17 +174,17 @@ comadre-keys delete-customer cust_01HG7... --hard --yes
 comadre-keys list-customers --deleted | grep cust_01HG7...
 ```
 
-**What the command does** (Story 4.1 — `_bmad-output/planning-artifacts/epics.md:772-776`). One SQLite transaction:
+**What the command does**. One SQLite transaction:
 
 - `DELETE FROM api_key WHERE customer_id = ?` — every associated key is removed; subsequent requests bearing those plaintexts return 401.
 - The customer row is scrubbed in place: `name=""`, `email=""`, `notes=""`, `tax_id_encrypted=X''` (zero-length BLOB; the existing `NOT NULL` constraint stays satisfied). `deleted_at` is stamped UTC.
 - One audit row is written for the action — `event_type=delete_customer`, `details_json={"keys_purged": N, "tax_id_kind": "cpf"|"cnpj"}`. Zero PII in the payload (enforced by `_FORBIDDEN_DETAIL_KEYS`).
 
-**Why the audit row stays.** FR38 (`_bmad-output/planning-artifacts/prd.md:1176`) — *"System preserves audit-log metadata (who, when, what) after a customer's personal data is purged, so operator activity remains traceable without retaining personal data."* The audit log is an append-only forensic record; LGPD does not require destroying operator-action metadata, only the subject's personal data. The audit row links to a tombstoned `customer_id` that no longer resolves to a person — it carries no PII.
+**Why the audit row stays.** FR38 — *"System preserves audit-log metadata (who, when, what) after a customer's personal data is purged, so operator activity remains traceable without retaining personal data."* The audit log is an append-only forensic record; LGPD does not require destroying operator-action metadata, only the subject's personal data. The audit row links to a tombstoned `customer_id` that no longer resolves to a person — it carries no PII.
 
 **Why the tombstone stays.** The tombstone (`deleted_at IS NOT NULL`, PII scrubbed) is the **evidence of the completed deletion**. If ANPD ever asks "did you delete Marcos Silva's data within the statutory window?", the tombstone is the answer. Every read path filters `deleted_at IS NULL` by default — `list-customers --deleted` is the sole surface that surfaces tombstones (FR7). The zero-length-BLOB choice for `tax_id_encrypted` is deliberate: it satisfies the existing `NOT NULL` constraint without a v002 migration; see `CLAUDE.md` §Non-Obvious Gotchas (LGPD tombstone row) for the rationale.
 
-**Statutory deadline.** Art. 18 §1's 15-day window applies (NFR35, `_bmad-output/planning-artifacts/prd.md:1251`). The command completes in under one second; the budget is spent on identity verification and counsel sign-off, not the command itself.
+**Statutory deadline.** Art. 18 §1's 15-day window applies. The command completes in under one second; the budget is spent on identity verification and counsel sign-off, not the command itself.
 
 The deploy-time operational reference for this command lives at `docs/deployment-guide.md:494-504`.
 
@@ -222,7 +222,7 @@ LGPD Art. 18 III is the right to correct incomplete, inaccurate, or out-of-date 
       --notes "rebuilt history\n[2026-04-25] consolidated"
     ```
 
-  See [`_bmad-output/planning-artifacts/epics.md:435-458`](../_bmad-output/planning-artifacts/epics.md) (Story 1.5) for the verb's contract; the [deploy-guide §Key Registry Management](deployment-guide.md#key-registry-management) has the operational reference.
+  See the implementation history of `comadre-keys update-customer` for the verb's contract; the [deploy-guide §Key Registry Management](deployment-guide.md#key-registry-management) has the operational reference.
 
 - **Tax-ID corrections (CPF or CNPJ).** Use `comadre-keys correct-tax-id` (Story 5.1 Gap 7). The verb does an in-transaction UPDATE of `tax_id_encrypted` + `tax_id_kind` and writes one audit row carrying `{old_kind, new_kind, reason}` — **never** the value itself. `customer_id` and every `api_key.customer_id` FK are preserved (no key reissue, no orphaned billing history).
 
@@ -552,17 +552,6 @@ www.gov.br/anpd.
 
 ### References
 
-- Story 4.6 spec — `_bmad-output/implementation-artifacts/4-6-lgpd-documentation-breach-runbook.md`
-- FR39 (binding requirement: this section + breach-notification runbook + privacy-policy template) — `_bmad-output/planning-artifacts/prd.md:1177`
-- NFR36 (Art. 48 breach-notification runbook obligation) — `_bmad-output/planning-artifacts/prd.md:1252`
-- NFR34 (Art. 18 II/V access in ≤ 15 days) — `_bmad-output/planning-artifacts/prd.md:1250`
-- NFR35 (Art. 18 VI deletion in ≤ 15 days; command < 1 s) — `_bmad-output/planning-artifacts/prd.md:1251`
-- PRD §Domain-Specific Requirements > LGPD binding-requirements list — `_bmad-output/planning-artifacts/prd.md:610-623`
-- PRD §Risk Mitigations "LGPD or tax-compliance surprise" — `_bmad-output/planning-artifacts/prd.md:1106`
-- Architecture §LGPD module map (predicts `docs/monetization.md` as the handbook home) — `_bmad-output/planning-artifacts/architecture.md:657, 731`
-- Architecture §Project Structure (`docs/monetization.md` marked `[NEW] operator runbook`) — `_bmad-output/planning-artifacts/architecture.md:592`
-- Epic 4 Story 4.1 ACs (export-customer + delete-customer field set and tombstone contract) — `_bmad-output/planning-artifacts/epics.md:762-776`
-- Epic 4 Story 1.5 (update-customer verb) — `_bmad-output/planning-artifacts/epics.md:435-458`
 - Deploy-time operational reference — `docs/deployment-guide.md:480-528`
 - `_FORBIDDEN_DETAIL_KEYS` PII-hygiene guard — `src/comadre/keys/audit.py`
 - `encrypt_tax_id` / `decrypt_tax_id` single-site invariant — `src/comadre/keys/crypto.py`

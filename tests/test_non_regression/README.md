@@ -98,9 +98,10 @@ names / network aliases automatically).
 - `GET /not-a-real-path` and `POST /` don't even hit the upstream — they're
   served by Caddy's `file_server` handler directly.
 
-A full-stack CI smoke (real `tts-service`) is tracked in
-`_bmad-output/implementation-artifacts/deferred-work.md`. Add it when a
-real regression slips past the stub.
+A full-stack CI smoke (real `tts-service`) would catch regressions the
+stub misses (engine warm-up, signal handling, volume mounts) but is
+deliberately out of scope here — add it as a separate workflow file
+when a real regression slips past the stub.
 
 ### Why Strategy A over a `compose.ci.yaml` override (Strategy B)
 
