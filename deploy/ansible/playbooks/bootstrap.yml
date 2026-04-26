@@ -73,6 +73,26 @@
           Set repo_url in inventory/production.yml to your Git repository URL.
         success_msg: "Repository URL is configured: {{ repo_url }}"
 
+    - name: "[Prereq] Validate key_registry_db_path"
+      # Inventory-supplied; absolute, ends in a filename, parent dir at
+      # least one level below filesystem root (/foo/bar.db is allowed,
+      # /bar.db is rejected). The latter guards against ``chmod 700 /``
+      # via the ``| dirname`` filter that the [FS] and [Cron] tasks use.
+      ansible.builtin.assert:
+        that:
+          - key_registry_db_path is defined
+          - key_registry_db_path is string
+          - key_registry_db_path.startswith('/')
+          - (key_registry_db_path | dirname) != '/'
+          - (key_registry_db_path | basename) | length > 0
+        fail_msg: >-
+          key_registry_db_path must be an absolute path with a parent
+          directory at least one level below ``/`` and a filename basename
+          (e.g. ``/var/lib/comadre/registry.db``). Got:
+          ``{{ key_registry_db_path | default('<undefined>') }}``.
+          Set key_registry_db_path in inventory/production.yml.
+        success_msg: "Key registry DB path is configured: {{ key_registry_db_path }}"
+
     # =========================================================================
     # Docker Installation
     # =========================================================================
@@ -215,6 +235,18 @@
         force: true
         update: true
 
+    # Pre-volume-migration host artefacts: early Story 4.x bootstraps used a
+    # ``./data/keys`` host bind mount before the comadre-registry named volume
+    # took over. The directory is unreachable from inside the container today,
+    # so any markers / DB copies left behind are dead bytes that mislead a
+    # forensic reader. Removing them here is idempotent (state: absent on a
+    # missing path is a no-op) and keeps re-bootstrapped hosts physically
+    # consistent with fresh ones.
+    - name: "[Migrate] Scrub legacy host-side key registry directory"
+      ansible.builtin.file:
+        path: "~/comadre/data/keys"
+        state: absent
+
     # =========================================================================
     # Landing Page Toggle
     # =========================================================================
@@ -270,8 +302,9 @@
         dest: "~/comadre/.env"
         content: |
           KEY_REGISTRY_ENCRYPTION_KEY={{ key_registry_encryption_key }}
-          KEY_REGISTRY_DB_PATH=/var/lib/comadre/registry.db
+          KEY_REGISTRY_DB_PATH={{ key_registry_db_path }}
           BACKUP_PASSPHRASE={{ backup_passphrase }}
+          BILLING_TIMEZONE={{ billing_timezone | default('UTC') }}
           OPERATOR_CONTACT_HINT={{ operator_contact_hint | default('') }}
           DEFAULT_VOICE={{ default_voice }}
           DOMAIN={{ domain }}
@@ -287,11 +320,18 @@
     # =========================================================================
 
     - name: "[TTS] Build image and start service"
+      # recreate: always so that on a re-bootstrap, tts-service picks up any
+      # ``.env`` delta from THIS run (e.g. operator added BILLING_TIMEZONE,
+      # rotated KEY_REGISTRY_ENCRYPTION_KEY, swapped landing_enabled). With
+      # ``recreate: auto`` Compose only recreates when the config hash —
+      # image, env block, ports, volumes list — changes; ``.env`` value
+      # changes don't bump the hash because compose substitutes them into
+      # the same parsed environment block.
       community.docker.docker_compose_v2:
         project_src: "~/comadre"
         state: present
         build: always
-        recreate: auto
+        recreate: always
         remove_orphans: true
 
     # =========================================================================
@@ -314,7 +354,7 @@
       # connection; the DB file only appears AFTER that. 150 × 2 s = 300 s
       # absorbs a slow-link model pull without aborting bootstrap.
       ansible.builtin.command:
-        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service test -f /var/lib/comadre/registry.db
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service test -f {{ key_registry_db_path }}
       register: db_present
       retries: 150
       delay: 2
@@ -327,7 +367,7 @@
       # permission-denied / wrong-uid / readonly-volume errors and
       # reported green).
       ansible.builtin.command:
-        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service chmod 600 /var/lib/comadre/registry.db
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service chmod 600 {{ key_registry_db_path }}
       changed_when: false
 
     - name: "[FS] Enforce 0600 on WAL/SHM sidecars (best-effort)"
@@ -338,25 +378,18 @@
       ansible.builtin.command:
         cmd: >-
           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
-          'for f in /var/lib/comadre/registry.db-wal /var/lib/comadre/registry.db-shm; do
+          'for f in {{ key_registry_db_path }}-wal {{ key_registry_db_path }}-shm; do
           if [ -e "$f" ]; then chmod 600 "$f"; fi; done'
       changed_when: false
 
     - name: "[FS] Enforce 0700 on registry parent directory"
       ansible.builtin.command:
-        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service chmod 700 /var/lib/comadre
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service chmod 700 {{ key_registry_db_path | dirname }}
       changed_when: false
 
     # =========================================================================
     # Cron Jobs
     # =========================================================================
-
-    - name: "[Cron] Configure daily restart"
-      ansible.builtin.cron:
-        name: "comadre-daily-restart"
-        minute: "0"
-        hour: "{{ restart_hour }}"
-        job: "cd ~/comadre && docker compose up -d --no-build"
 
     - name: "[Cron] Configure audio cleanup every 6 hours"
       ansible.builtin.cron:
@@ -394,16 +427,36 @@
 
     # The in-container ``comadre-keys health`` CLI cannot read the host's
     # crontab, so we drop a marker file alongside the registry DB. The CLI
-    # stats the marker to report the cron's installed status without
-    # shelling out to ``crontab -l``. The bind-mount ``./data/keys:/keys``
-    # surfaces this file to the container at the same canonical path.
+    # stats the marker (``{KEY_REGISTRY_DB_PATH}.cron-installed``, see
+    # src/comadre/keys/cli/commands/system.py) to report the cron's
+    # installed status without shelling out to ``crontab -l``. The marker
+    # MUST live inside the comadre-registry named volume so it shares the
+    # same path the container reads from — host-side writes to
+    # ``~/comadre/data/keys/`` would be invisible because no bind mount
+    # connects that path to ``/var/lib/comadre`` (compose.yaml uses a
+    # named volume, not a bind). Write via ``docker compose exec`` so the
+    # bytes land in the volume directly.
     - name: "[Cron] Write health marker for comadre-daily-suspension"
-      ansible.builtin.copy:
-        dest: "~/comadre/data/keys/registry.db.cron-installed"
-        content: |-
+      # ``umask 077`` BEFORE ``cat >`` makes the redirect *create* the file
+      # at mode 0600 — no window where a fresh marker exists at the
+      # container's default umask (typically 0644). The trailing
+      # ``chmod 600`` is required (not just belt-and-braces): on a
+      # re-bootstrap, ``cat >`` truncates an existing file in place and
+      # preserves its prior mode, so the explicit chmod is what enforces
+      # 0600 on stale markers. ``set -e`` makes a failed ``cat`` (e.g.
+      # disk full mid-write) abort before chmod, so a half-written marker
+      # can never claim the cron is installed when it isn't.
+      ansible.builtin.shell:
+        cmd: >-
+          docker compose exec -T tts-service bash -c
+          'set -e; umask 077;
+          cat > {{ key_registry_db_path }}.cron-installed;
+          chmod 600 {{ key_registry_db_path }}.cron-installed'
+        chdir: "~/comadre"
+        stdin: |
           schedule=30 0 * * *
           cron_tz={{ billing_timezone | default('UTC') }}
-        mode: "0600"
+      changed_when: true
 
     - name: "[Cron] Configure nightly key-registry backup at 02:00 operator TZ"
       ansible.builtin.cron:
@@ -423,19 +476,26 @@
           deploy/ansible/playbooks/backup-keys.yml 2>&1 |
           logger -t comadre-keys-backup'
 
-    # Forward-compat marker for Story 4.4's ansible-layer health.yml probe
-    # that will assert "comadre-keys-backup cron is installed". Story 4.3
-    # does NOT add a new ``comadre-keys health`` row keyed on this marker —
-    # the ``Last backup`` freshness row already covers the backup-liveness
-    # signal the in-container CLI reports.
+    # Backup-cron marker — same in-container write contract as the
+    # suspension-sweep marker above. Read by ``comadre-keys health``'s
+    # Backup-cron row (Story 4.3 + 4.4). The "Last backup" freshness row
+    # is fed by the ``*.backup-*.tar.gz.enc`` glob, not by this marker.
     - name: "[Cron] Write health marker for comadre-keys-backup"
-      ansible.builtin.copy:
-        dest: "~/comadre/data/keys/registry.db.backup-cron-installed"
-        content: |-
+      # ``set -e; umask 077; cat > FILE; chmod 600 FILE`` — same 0600
+      # contract as the suspension-sweep marker above (umask handles
+      # creates, chmod handles truncate-in-place rewrites).
+      ansible.builtin.shell:
+        cmd: >-
+          docker compose exec -T tts-service bash -c
+          'set -e; umask 077;
+          cat > {{ key_registry_db_path }}.backup-cron-installed;
+          chmod 600 {{ key_registry_db_path }}.backup-cron-installed'
+        chdir: "~/comadre"
+        stdin: |
           schedule=0 {{ backup_hour | default(2) }} * * *
           cron_tz={{ billing_timezone | default('UTC') }}
           retention_days={{ backup_retention_days | default(14) }}
-        mode: "0600"
+      changed_when: true
 
     # =========================================================================
     # Health Check
@@ -477,10 +537,10 @@
             docker compose exec tts-service comadre-keys health
 
           Next steps — issue a customer API key from the host:
-            docker compose exec tts-service comadre-keys register-customer \
+            docker compose exec tts-service comadre-keys create-customer \
               --name "Acme" --tax-id "12345678000199"
             docker compose exec tts-service comadre-keys issue-key \
-              --customer <customer-id> --rpm 30
+              --customer <customer-id> --rpm 30 --price 149.00  # BRL/month
 
           Then test the returned key (shown once at issuance):
           curl -k -X POST \

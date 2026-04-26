@@ -109,7 +109,7 @@ The per-key RPM is set at issuance and mutated through the `comadre-keys` CLI:
 
 ## Bucket persistence
 
-Buckets live only in process memory. On container restart — whether via `docker compose restart tts-service`, the daily restart cron, or a crash — every key's window resets to zero. This is intentional:
+Buckets live only in process memory. On container restart — whether via `docker compose restart tts-service`, an `update.yml` rebuild, or a crash — every key's window resets to zero. This is intentional:
 
 - The customer's registry row (`rate_limit_rpm`) is unchanged, so policy is preserved.
 - The runtime counter is disposable; losing it on restart costs at most one minute of oversized burst for active keys.

@@ -132,7 +132,7 @@
 
     - name: "[FS] Stat DB file mode"
       ansible.builtin.command:
-        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service stat -c '%a' /var/lib/comadre/registry.db
+        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service stat -c '%a' {{ key_registry_db_path }}
       register: db_mode
       changed_when: false
 
@@ -141,14 +141,16 @@
         that:
           - db_mode.stdout | trim == '600'
         fail_msg: |
-          /var/lib/comadre/registry.db has mode {{ db_mode.stdout | trim }} (expected 600).
+          {{ key_registry_db_path }} has mode {{ db_mode.stdout | trim }} (expected 600).
           Fix:
-            docker compose exec tts-service chmod 600 /var/lib/comadre/registry.db
+            docker compose exec tts-service chmod 600 {{ key_registry_db_path }}
         success_msg: "DB file mode is 600."
 
     - name: "[FS] Stat DB parent directory mode"
       ansible.builtin.command:
-        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service stat -c '%a' /var/lib/comadre
+        cmd: >-
+          docker compose -f ~/comadre/compose.yaml exec -T tts-service
+          stat -c '%a' {{ key_registry_db_path | dirname }}
       register: db_parent_mode
       changed_when: false
 
@@ -157,9 +159,9 @@
         that:
           - db_parent_mode.stdout | trim == '700'
         fail_msg: |
-          /var/lib/comadre has mode {{ db_parent_mode.stdout | trim }} (expected 700).
+          {{ key_registry_db_path | dirname }} has mode {{ db_parent_mode.stdout | trim }} (expected 700).
           Fix:
-            docker compose exec tts-service chmod 700 /var/lib/comadre
+            docker compose exec tts-service chmod 700 {{ key_registry_db_path | dirname }}
         success_msg: "DB parent dir mode is 700."
 
     # =========================================================================
@@ -217,7 +219,7 @@
       ansible.builtin.command:
         cmd: >-
           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
-          'ls /var/lib/comadre/*.backup-*.tar.gz.enc 2>/dev/null | wc -l'
+          'ls {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null | wc -l'
       register: backup_count
       changed_when: false
 
@@ -226,7 +228,7 @@
         that:
           - backup_count.stdout | trim | int >= 1
         fail_msg: |
-          No backup archives found at /var/lib/comadre/*.backup-*.tar.gz.enc.
+          No backup archives found at {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc.
           Either the nightly cron has not yet fired (wait until 02:00
           operator TZ after bootstrap), or run a manual backup:
             ansible-playbook backup-keys.yml -i inventory/production.yml \
@@ -241,7 +243,7 @@
       ansible.builtin.command:
         cmd: >-
           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
-          'stat -c %s /var/lib/comadre/*.backup-*.tar.gz.enc 2>/dev/null
+          'stat -c %s {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null
            | sort -n | head -1'
       register: backup_min_size
       changed_when: false
@@ -252,7 +254,7 @@
           - (backup_min_size.stdout | trim | length) > 0
           - (backup_min_size.stdout | trim | int) >= 1024
         fail_msg: |
-          At least one backup archive at /var/lib/comadre/*.backup-*.tar.gz.enc
+          At least one backup archive at {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc
           is 0-byte or truncated (smallest = {{ backup_min_size.stdout | trim }}
           bytes; expected >= 1024). A crashed backup-keys.yml mid-``openssl enc``
           leaves an unrecoverable salt-only file that the count-based check

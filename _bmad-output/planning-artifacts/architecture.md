@@ -245,8 +245,8 @@ Not applicable — Comadre 2.0.0 has no frontend. The operator interface is CLI-
 
 **Cron: Host Crontab Calling CLI Directly**
 - New cron entry `comadre-daily-suspension` at 00:30 operator TZ: `comadre-keys suspend-sweep`.
-- Installed by `bootstrap.yml` alongside existing `comadre-daily-restart` and `comadre-audio-cleanup`.
-- Optional: `comadre-keys-backup` at 02:00: runs `backup-keys.yml` or a direct SQLite backup command.
+- Installed by `bootstrap.yml` alongside `comadre-audio-cleanup` and `comadre-keys-backup`.
+- `comadre-keys-backup` at 02:00 operator TZ runs `backup-keys.yml` (encrypted nightly snapshot, 14-day retention by default).
 - Rationale: follows existing cron pattern; CLI is installed system-wide via `uv tool install`; no Docker image changes needed; cron output captured in syslog for operator debugging.
 
 **Ansible Extensions:**

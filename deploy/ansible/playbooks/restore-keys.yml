@@ -92,6 +92,8 @@
       register: archive_readable
       changed_when: false
       failed_when: archive_readable.stdout | trim != "ok"
+      # No passphrase needed yet — this task only checks readability.
+      # restore-stage.sh below is the consumer that actually decrypts.
 
     # =========================================================================
     # Decrypt, Verify, Stage (while service is still running)
@@ -107,14 +109,25 @@
     # passed via -e so the script reads it via shell parameter expansion
     # (F4 — no raw jinja interpolation into a shell command).
     - name: "[Stage] Decrypt + untar + integrity-check"
+      # BACKUP_PASSPHRASE is passed per-invocation (mirrors backup-keys.yml's
+      # decision); it is the script's PBKDF2 input. Forwarded via the
+      # name-only ``-e BACKUP_PASSPHRASE`` form so the value stays in the
+      # docker CLI's env (set via ansible ``environment:``) rather than
+      # landing in argv / /proc/<pid>/cmdline. ``BACKUP_FILE`` is not
+      # secret, so the inline ``-e BACKUP_FILE=<path>`` form is fine.
       ansible.builtin.shell:
         cmd: >-
-          docker compose exec -T -e BACKUP_FILE={{ backup_file | quote }}
+          docker compose exec -T
+          -e BACKUP_FILE={{ backup_file | quote }}
+          -e BACKUP_PASSPHRASE
           tts-service bash -s
         chdir: "~/comadre"
         stdin: "{{ lookup('file', playbook_dir + '/../scripts/restore-stage.sh') }}"
+      environment:
+        BACKUP_PASSPHRASE: "{{ backup_passphrase }}"
       register: stage_result
       changed_when: true
+      no_log: true
 
     - name: "[Stage] Detect archived-vs-live key divergence"
       ansible.builtin.set_fact:

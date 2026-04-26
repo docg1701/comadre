@@ -46,7 +46,6 @@ all:
     default_voice: "kokoro/pm_santa"
     domain: "localhost"
     landing_enabled: true
-    restart_hour: 3
     kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
     kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
     qwen3_enabled: true
@@ -73,7 +72,6 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed). Set to a real domain for Let's Encrypt auto-cert. |
 | `landing_enabled` | No | Deploy the public landing page at the root URL (default: `true`). When false, Caddy uses `Caddyfile-no-landing` which proxies all paths to the API. The API endpoints (`/v1/*`, `/health`, etc.) are always available regardless. |
 | `qwen3_enabled` | No | Enable Qwen3 engine (default: `true`). Set `false` on hosts where the x86_64 binary cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). Maps to `QWEN3_ENABLED` env var. |
-| `restart_hour` | No | Daily restart hour, 0-23 (default: `3`) |
 | `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
 | `kokoro_model_url` | No | URL to download Kokoro ONNX model on first start (default: GitHub release URL) |
 | `kokoro_voices_url` | No | URL to download Kokoro voices binary on first start (default: GitHub release URL) |
@@ -133,11 +131,12 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 4. Adds the SSH user to the `docker` group
 5. Installs and configures UFW firewall (ports 22, 80, 443)
 6. Clones the repository to `~/comadre`
-7. Creates empty voices directory structure in Docker volume
-8. Creates `.env` with all configuration variables
-9. Builds the Docker image and starts the service (tts-service + Caddy)
-10. Configures cron jobs (daily restart, audio cleanup)
-11. Waits for the health endpoint to report `healthy`
+7. Scrubs any legacy `~/comadre/data/keys/` directory left over from pre-volume-migration bootstraps (idempotent on fresh hosts)
+8. Creates empty voices directory structure in Docker volume
+9. Creates `.env` with all configuration variables
+10. Builds the Docker image and starts the service (tts-service + Caddy)
+11. Configures cron jobs (audio cleanup, daily suspension sweep, nightly key-registry backup)
+12. Waits for the health endpoint to report `healthy`
 
 **Bootstrap does NOT deploy voice files and does NOT create customers or API keys.** Run `deploy-voices.yml` afterwards to copy voice files, and use `comadre-keys create-customer` + `comadre-keys issue-key` to populate the registry before any traffic is expected.
 
@@ -220,7 +219,7 @@ Read-only diagnostic tool for troubleshooting. Never modifies anything.
 - Container state (running or not)
 - Health endpoint response (status, voices, engines, memory, uptime)
 - Disk usage (root filesystem and audio volume)
-- Cron job status (daily restart and audio cleanup)
+- Cron job status (audio cleanup, daily suspension sweep, nightly key-registry backup)
 
 **Warnings triggered automatically:**
 
@@ -268,7 +267,7 @@ Removes all Comadre artifacts **and** system-level components from the VPS, rest
 Application artifacts:
 
 - Docker containers, images, volumes, and build cache
-- Cron jobs (daily-restart, audio-cleanup)
+- Cron jobs (`comadre-audio-cleanup`, `comadre-daily-suspension`, `comadre-keys-backup`, and the `CRON_TZ` envvar; legacy `comadre-daily-restart` is also scrubbed if present)
 - `~/comadre` directory
 
 System-level components (installed by bootstrap):
@@ -687,16 +686,16 @@ If the API is only accessed from known IPs (e.g., your n8n server), you can rest
 
 Replace the IPs with your allowed addresses. Restart Caddy after changes: `docker compose restart caddy`.
 
-## Daily Restart
+## Cron Jobs
 
-The bootstrap playbook configures a user-level crontab entry that restarts the service daily. This is a precaution against potential memory leaks in long-running TTS inference.
-
-**Default schedule:** 3:00 AM (configurable via `restart_hour` in inventory)
+The bootstrap playbook installs three user-level cron jobs and a `CRON_TZ` envvar. The container's `restart: unless-stopped` policy plus the healthcheck cover transient process failures, so no daily restart is configured.
 
 **Cron entries installed by bootstrap:**
 
-- `comadre-daily-restart` -- restarts at the configured hour
-- `comadre-audio-cleanup` -- every 6 hours, deletes audio files older than 24 hours
+- `comadre-audio-cleanup` -- every 6 hours, deletes generated audio files older than 24 hours
+- `comadre-daily-suspension` -- 00:30 in `billing_timezone`, suspends keys whose `paid_until` has elapsed
+- `comadre-keys-backup` -- 02:00 in `billing_timezone` (configurable via `backup_hour`), captures an encrypted snapshot of the key registry; archives older than `backup_retention_days` are pruned
+- `CRON_TZ` envvar -- pins the cron daemon's timezone to `billing_timezone` so the suspension sweep and backup fire at the configured local hour
 
 Verify cron is active:
 
@@ -756,6 +755,5 @@ Memory breakdown per replica: Python process with Kokoro loaded ~4.2 GB peak RSS
 - **Rate-limit buckets are per-instance.** With N replicas the effective RPM for a key is `N × rate_limit_rpm` because each replica's `limits` in-memory storage runs its own moving window. The default deploy is `replicas: 1`, so this is dormant; if you scale up, either (a) divide the intended per-key RPM by the replica count when setting `comadre-keys update-key --rpm`, or (b) accept the multiplied limit as acceptable elasticity. Shared-storage rate-limiting (Redis/SQLite) is a candidate future story. See [rate-limiting.md](rate-limiting.md).
 - **Queue depth is per-instance.** The `/health` endpoint reports the queue depth of whichever replica handles the request. For cluster-wide monitoring, check all replicas or use centralized logging.
 - **Audio cleanup cron** runs `docker compose exec` which targets one replica. Since the audio volume is shared, this is sufficient.
-- **All replicas restart simultaneously.** The daily restart cron (`docker compose up -d --no-build`) recreates all replicas at once. Each replica loads ~3.4 GB of models on startup, causing a memory spike of `N * 3.4 GB`. With 2+ replicas on a VPS with limited RAM, this can trigger OOM kills. To mitigate, restart replicas individually: `for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 120; done`.
 - **First deployment with replicas > 1** should start with `replicas: 1` to download and cache models in the shared volume. After models are cached, scale up. Concurrent downloads from multiple replicas to the same temp file can corrupt the model.
 - **Caddy blocks on all replicas healthy.** The `depends_on: condition: service_healthy` in compose.yaml means Caddy waits for every replica to pass its healthcheck before starting. If any single replica fails (e.g., OOM during concurrent model loading), Caddy never starts and the entire service is unreachable. For multi-replica deployments, consider changing to `condition: service_started`.

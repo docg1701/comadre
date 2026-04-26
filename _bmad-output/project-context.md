@@ -99,7 +99,6 @@ _Critical rules and patterns that AI agents must follow when implementing code i
 - **Ansible become password** — pass via `-e "ansible_become_password=PASSWORD"` on every playbook that uses `become: true`. Never modify inventory to store passwords.
 - **Models deploy via SSH, not git** — GGUF files (~1.6 GB) too large for git. Air-gapped: use `deploy-models.yml` (SCP + helper container into Docker volume).
 - **Ansible inventory requires manual setup** — `inventory/production.yml` ships with `CHANGE_ME` placeholders for `ansible_host`, `ansible_user`, `repo_url`.
-- **Daily restart at 3 AM** — Ansible memory-leak precaution (`restart_hour: 3`).
 - **API key rotation** — run `deploy/bin/rotate-api-key.sh` on the VPS; no redeploy needed.
 - **Horizontal scaling only** — single FIFO queue per container. Add replicas behind Caddy, never workers/threads inside one instance.
 - **Never work in `/tmp`** — all builds/artifacts stay inside the repository (see `.gitignore` for exclusions).

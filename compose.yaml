@@ -39,7 +39,8 @@ services:
       - comadre-registry:/var/lib/comadre:rw
     environment:
       KEY_REGISTRY_ENCRYPTION_KEY: ${KEY_REGISTRY_ENCRYPTION_KEY:?KEY_REGISTRY_ENCRYPTION_KEY must be set}
-      KEY_REGISTRY_DB_PATH: /var/lib/comadre/registry.db
+      KEY_REGISTRY_DB_PATH: "${KEY_REGISTRY_DB_PATH:-/var/lib/comadre/registry.db}"
+      BILLING_TIMEZONE: "${BILLING_TIMEZONE:-UTC}"
       OPERATOR_CONTACT_HINT: "${OPERATOR_CONTACT_HINT:-}"
       DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
       PORT: "8000"

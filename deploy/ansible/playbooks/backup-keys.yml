@@ -114,15 +114,32 @@
     # fragility eliminated, shellcheck can lint the script directly,
     # and the playbook surface stays a thin invocation contract.
     - name: "[Backup] Snapshot + encrypt + prune"
+      # BACKUP_PASSPHRASE is passed per-invocation rather than baked into
+      # compose.yaml's tts-service environment block — the FastAPI app and
+      # comadre-keys CLI never need it; only this script + restore-stage.sh do.
+      # Keeping it out of the persistent container env limits its surface to
+      # the running backup process tree.
+      #
+      # Forwarding pattern: ``-e BACKUP_PASSPHRASE`` (NO ``=value``) tells
+      # ``docker compose exec`` to pull the variable from the docker CLI's
+      # process env, which we set via ansible's ``environment:`` keyword.
+      # This keeps the secret out of argv (and therefore out of /proc/<pid>/cmdline
+      # during the brief exec window) — passing ``-e VAR=$value`` would inline
+      # the value into the docker CLI's argv, visible to any user with /proc
+      # access. ``no_log: true`` masks the task's stdout/stderr in ansible logs.
       ansible.builtin.shell:
         cmd: >-
           docker compose exec -T
+          -e BACKUP_PASSPHRASE
           -e BACKUP_RETENTION_DAYS={{ backup_retention_days | default(14) }}
           tts-service bash -s
         chdir: "~/comadre"
         stdin: "{{ lookup('file', playbook_dir + '/../scripts/backup-keys.sh') }}"
+      environment:
+        BACKUP_PASSPHRASE: "{{ backup_passphrase }}"
       register: backup_result
       changed_when: true
+      no_log: true
 
     # =========================================================================
     # Verification

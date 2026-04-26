@@ -63,31 +63,20 @@
         name: "comadre-audio-cleanup"
         state: absent
 
-    # Remove the marker first so that if the cron uninstall fails partway,
-    # ``comadre-keys health`` flips to "Not installed" (consistent with
-    # reality) rather than remaining "installed" (misleading).
-    - name: "[Cron] Remove health marker for comadre-daily-suspension"
-      ansible.builtin.file:
-        path: "~/comadre/data/keys/registry.db.cron-installed"
-        state: absent
-
     - name: "[Cron] Remove daily suspension sweep"
       ansible.builtin.cron:
         name: "comadre-daily-suspension"
-        state: absent
-
-    # Remove the backup cron marker before the cron itself, same ordering
-    # rule as the suspension sweep: if cron removal fails partway, the
-    # reality-consistent signal is "not installed", not "installed".
-    - name: "[Cron] Remove health marker for comadre-keys-backup"
-      ansible.builtin.file:
-        path: "~/comadre/data/keys/registry.db.backup-cron-installed"
         state: absent
 
     - name: "[Cron] Remove nightly key-registry backup"
       ansible.builtin.cron:
         name: "comadre-keys-backup"
         state: absent
+
+    # Marker files (registry.db.cron-installed, registry.db.backup-cron-installed)
+    # live inside the comadre-registry named volume, which the
+    # docker_compose_v2 task above destroyed via remove_volumes: true. The
+    # ~/comadre tree removal task below scrubs anything else.
 
     - name: "[Cron] Remove CRON_TZ envvar"
       ansible.builtin.cron:

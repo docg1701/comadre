@@ -181,7 +181,7 @@ The cost per sustainable request is **higher** with 2 replicas because the throu
 
 ### Operational caveats for multi-replica deployments
 
-- **All replicas restart simultaneously.** The daily restart cron and `docker compose up -d --no-build` recreate every replica at once. With 2+ replicas, the simultaneous model load at boot can spike memory to `N × 1500 MB` (Kokoro) or `N × 5700 MB` (Kokoro+Qwen3). Mitigation: restart replicas individually (`for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 60; done`).
+- **All replicas restart simultaneously on `update.yml`.** The update playbook's `recreate: always` step rebuilds and recreates every replica at once. With 2+ replicas, the simultaneous model load at boot can spike memory to `N × 1500 MB` (Kokoro) or `N × 5700 MB` (Kokoro+Qwen3). Mitigation: restart replicas individually (`for i in $(docker compose ps -q tts-service); do docker restart "$i"; sleep 60; done`).
 - **First deploy must use `replicas: 1`.** Concurrent model downloads from multiple replicas to the same shared volume can corrupt the model files. Always start with 1 replica, let it download and cache models, then scale up.
 - **`depends_on: condition: service_healthy` blocks Caddy on every replica passing healthcheck.** If one replica fails to start (e.g., OOM during simultaneous model load), Caddy never starts and the entire service is unreachable. For multi-replica deployments where partial availability is preferable, change to `condition: service_started`.
 - **Rate-limit buckets are per-instance.** Per-key rate limits use `limits` with in-memory storage (`MovingWindowRateLimiter`). With 2 replicas and `rate_limit_rpm=30`, a single key can effectively send 60 req/min (30 per replica) because the buckets are not shared. For strict cluster-wide per-key limits, a shared-storage backend (Redis/SQLite) would be required — this is a documented future story, not a shipped feature. See [rate-limiting.md](rate-limiting.md).
@@ -222,7 +222,7 @@ for i in $(seq 1 10); do curl -sk https://YOUR_DOMAIN/health | jq .uptime_second
 1. **Switch to `lb_policy least_conn` in the Caddyfile.** This would route new requests to whichever replica has the fewest active connections, reducing variance from long-message processing. Expected gain: throughput speedup from ~1.5x to ~1.8x at saturation.
 2. **Reduce per-replica CPU limit to 3 cores.** With `cpus: "3"`, two replicas use 6 of 8 CPUs, leaving 2 for host overhead. This may increase single-request latency (~10–15%) but reduce scheduling jitter and improve consistency at peak.
 3. **Move rate-limit storage to a shared backend (Redis or a SQLite bucket table).** Per-instance in-memory storage multiplies each key's effective RPM by the replica count. A shared backend would enforce the configured `rate_limit_rpm` cluster-wide. This is a tracked future story — the current deploy ships `replicas: 1`, so the caveat is dormant at defaults.
-4. **Implement startup staggering in the daily restart cron.** Restart one replica, wait for healthy, then restart the next. Avoids the simultaneous model-load memory spike.
+4. **Implement startup staggering in `update.yml`.** Restart one replica, wait for healthy, then restart the next. Avoids the simultaneous model-load memory spike during deployments.
 
 ### Per-VPS scaling vs multi-VPS scaling
 

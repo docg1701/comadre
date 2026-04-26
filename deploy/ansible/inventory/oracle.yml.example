@@ -30,10 +30,20 @@ all:
     backup_retention_days: 14
 
     # Hour (0-23) the nightly backup cron fires in ``billing_timezone``. Default
-    # 02:00 sits in the valley between the midnight suspension sweep (00:30)
-    # and the 03:00 daily restart — picks up the day's suspensions but runs
-    # before the restart recycles the service.
+    # 02:00 leaves a comfortable 90-minute gap after the midnight suspension
+    # sweep (00:30) so the snapshot reflects the day's suspensions and runs
+    # well clear of any peak-hour traffic.
     backup_hour: 2
+
+    # In-container path of the SQLite key registry. Single source of truth
+    # consumed by bootstrap.yml, health.yml, and ``compose.yaml`` (the latter
+    # via ``${KEY_REGISTRY_DB_PATH:-...}`` substitution). Marker files
+    # (``.cron-installed`` / ``.backup-cron-installed``) and the parent-dir
+    # chmod derive from this value via Jinja's ``| dirname`` filter, so any
+    # override must keep the path at least two components deep
+    # (``/x/y/registry.db``) — the ``[Prereq] Validate key_registry_db_path``
+    # assert in ``bootstrap.yml`` enforces this.
+    key_registry_db_path: /var/lib/comadre/registry.db
 
     # Operator contact string shown in CLI error messages (e.g. your ops email).
     operator_contact_hint: ""
@@ -54,9 +64,6 @@ all:
     # Public landing page (true is the default — Oracle hosts are public-facing
     # so the showcase page makes sense here)
     landing_enabled: true
-
-    # Daily restart hour (0-23)
-    restart_hour: 3
 
     # IANA timezone the daily suspension sweep (00:30 local) runs in. MUST match
     # the BILLING_TIMEZONE env var in .env — drift between the two silently
