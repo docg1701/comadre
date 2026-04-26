@@ -271,8 +271,47 @@ a fresh-deploy run. `update.yml` is a re-deploy aid, also out of scope.
 
 The recipes exercised in this validation are:
 - `cleanup.yml`        — destructive teardown
-- `bootstrap.yml`      — fresh deploy (now imports `backup-keys.yml` at end)
+- `bootstrap.yml`      — fresh deploy (no init-task additions; the
+                         application's freshness checks tolerate the
+                         post-bootstrap pre-cron-firing window)
 - `deploy-voices.yml`  — load custom voices into volume
-- `health.yml`         — operational invariants
-- `backup-keys.yml`    — invoked transitively via bootstrap.yml's
-                         `import_playbook` tail.
+- `health.yml`         — operational invariants (with a 48 h grace
+                         period on the backup-existence assertion that
+                         mirrors the CLI's grace period)
+
+## Round 2 outcome — zero friction validated
+
+After committing D1 + D2 + D3-v2 + D4 + D5 fixes (commits `d34f960`,
+`859eff4`, `e66fcde`), the full pipeline ran end-to-end with no manual
+intervention:
+
+| Playbook            | OK | Failed | Skipped |
+|---------------------|---:|-------:|--------:|
+| `cleanup.yml`       | 24 |      0 |       0 |
+| `bootstrap.yml`     | 41 |      0 |       1 |
+| `deploy-voices.yml` | 16 |      0 |       0 |
+| `health.yml`        | 32 |      0 |       6 |
+
+(`bootstrap`'s 1 skip = `landing_enabled=false` branch; `health`'s 6
+skips = grace-period-gated backup-archive size + filesystem mode probes
+already covered by the CLI's `is_healthy=True`.)
+
+Final smoke test:
+- `curl -sk https://10.10.10.207/health` → `status=healthy`, 62 voices
+  loaded (54 built-in Kokoro + 5 custom + 3 Qwen).
+- `comadre-keys health` → `is_healthy=True | warn_count=0 | fail_count=0`,
+  `Last suspension sweep: never (cron freshly installed)` rendered as
+  the new info-grade row.
+- 3 crons installed (`comadre-audio-cleanup`, `comadre-daily-suspension`,
+  `comadre-keys-backup`), `CRON_TZ=America/Sao_Paulo` matches the
+  registry's runtime `BILLING_TIMEZONE`, no drift.
+
+## Defect summary
+
+| ID | Surface             | Fix layer                | Commit    |
+|----|---------------------|--------------------------|-----------|
+| D1 | inventory drift     | local inventory (gitig.) | (local)   |
+| D2 | Dockerfile          | container image          | `d34f960` |
+| D3 | freshness modelling | application (`health.py`)| `859eff4` |
+| D4 | YAML folding        | `health.yml`             | `859eff4` |
+| D5 | parallel assertion  | `health.yml`             | `e66fcde` |
