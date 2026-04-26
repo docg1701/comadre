@@ -499,6 +499,33 @@ Galvani questionou se as correções tinham sido validadas em **fresh deploy** o
 
 **Total final no ciclo de aceitação 2.0.0:** 21 fixes (3 críticos + 18 menores), 216 tests passando, pre-commit + mypy + ruff clean. Validado em fresh cleanup+bootstrap + Phases 0-7 + edge cases B2/B10/B16/B19/B20/B23/B24 + ansible health.yml + restore round-trip nos 2 hosts (Proxmox x86_64 + Oracle aarch64). **Status: development+review fechado.**
 
+### Round 5 — gap closure pós-questão "ainda achou bugs?" + cobertura cold-path (2026-04-26 quinta passada)
+
+Galvani questionou: "todos os bugs encontrados saíram em rodadas anteriores ou tem coisa cold-path nunca exercitada?". Resposta honesta: cold paths não testados (CLI verbs ausentes da Round 1-4, deploy-models/voices, Qwen3, multi-replica, loadtest, HTTP methods). Plano executado: A → B → C → D → F → I.
+
+**Fixes novos (Round 5):**
+
+- **B25** 🐞 — `update_api_key` sempre escrevia audit row mesmo quando o valor não mudava. `update-key key --rpm 60` contra rpm já=60 emitia audit `{"fields": ["rpm"]}` sem `rpm_changed`, e o CLI renderizava `"rpm: 60→60"`. Mesmo padrão de B7 (que cobriu update_customer). Fix: pre-read inclui `notes`; SET clause skipa fields cujo new value == old; set_parts vazio retorna `updated_fields=()` + nenhuma UPDATE/audit row; CLI renderiza "No changes: ... — already up to date". Test `test_update_key_no_op_writes_no_audit` cobre rpm+price+notes todos no-op. Test suite: 216 → 217.
+- **B26** 🐞 — `community.docker.docker_container_copy_into` defaulta `mode_parse: legacy` que parseia string `"0644"` como **decimal** 644 = octal 1204 (sticky + `--w----r--`). Voices/models deployados via `deploy-voices.yml`/`deploy-models.yml` ficavam com mode errado (funcionalmente OK porque world-read estava ligado, mas contrato quebrado: appuser sem write, sticky bit em arquivo regular, "0644" reportado nas logs ≠ realidade). Fix: adicionar `mode_parse: modern` em todos os 4 sites de chamada. Verificado em fresh deploy: mode agora é `0644` correto.
+
+**Validação cold-path:**
+
+- **A — CLI verb coverage ✅** — todos os 21 verbos exercitados ao menos uma vez. `update-customer` (rename/email/add-note/notes), `delete-customer --hard` (com tombstone visível via `list-customers --deleted`), `revoke-key` (com `--reason` + `--yes`), `rotate-key` (cache invalidation: OLD plaintext → 401 imediatamente), `at-risk` (`--window 5d/90d/365d`), `suspend-sweep` manual, `cache-status` detalhado, `correct-tax-id` (validação NUL/CR/LF/empty/oversize de `--reason`), `update-key` no-op detection.
+- **B — deploy playbooks ✅** — `deploy-voices.yml` SCP 8 voices (5 .npy + 3 .wav) → `/voices/kokoro/` e `/voices/qwen/`; visíveis em `/health` (62 voices total). `deploy-models.yml` SCP 1.7GB GGUFs (qwen3-tts-0.6b-q8_0 + tokenizer-f16) → `/models/`; `download.py` detecta + skipa auto-download.
+- **C — Qwen3 só no local ✅** — `QWEN3_ENABLED=true` na config; `comadre-tts-service` carrega Qwen3 em startup (warmup 1.5s). `kokoro/pm_galvani` (custom .npy via deploy-voices) → 200 OGG em 0.9s; `qwen/galvani` (.wav reference, voice cloning) → 200 OGG em 43s; `qwen/galvani` com siglas (CPF/CNPJ no input) → 200 OGG em 50s. `expand_siglas()` + post-processing whatsapp-subtle ambos rodam. Não habilitado na Oracle (decisão Galvani: Qwen3 = opt-in para clientes pagando GPU futura).
+- **D — multi-replica + loadtest + capacity ✅** — `docker compose up -d --scale tts-service=2` → 2 replicas healthy. Caddy `least_conn` distribui (counter files das 2 replicas atualizam concorrentemente). `loadtest.py --scenario light` (concurrency=3, 180s): 30/30 success, p50=24s, p95=41s, p99=47s — dentro do SLA WhatsApp (10-90s). `capacity_test.py` (8 tier rates, 2-100 req/min, 690 requests total): 100% sucesso em **TODAS** as tiers; saturação medida ~15.5 req/min sustentado em 2 replicas (~7.5/min por replica). Latência cresce previsivelmente além de 10 req/min target (cresce porque single-FIFO-per-replica enfileira). Memória 1.41-1.43 GiB por replica.
+- **F — long-running stability baseline ✅** — pré-loadtest: 1.405-1.409 GiB/replica. Pós-690-req capacity: 1.415-1.425 GiB/replica. Delta +6-16 MiB consistente com fragmentação de heap, sem indício de leak. Audio dir vazio antes/depois (cleanup cron 0 */6 funciona quando fira). Disk 33% (19G livres). Caddy 33MiB. Replicas healthy 30+ min sem flake. **Baseline registrada para comparação futura**; user vai validar prolonged uptime nos próximos dias.
+- **I — HTTP method coverage ✅** — `HEAD /v1/audio/speech` → 405 + `Allow: POST` (body vazio per spec). `OPTIONS /v1/audio/speech` → 405 + envelope JSON `method_not_allowed_error` + `Use POST...`. `PATCH/PUT/DELETE/TRACE /v1/audio/speech` → 405 + envelope idêntico. `HEAD /health` → 405 + `Allow: GET`. `OPTIONS /health` → 405 + envelope `Use GET for /health`. Nenhum método extra retorna 200 silently — superfície fechada e contratualmente correta.
+
+**Não validado (decisão consciente):**
+
+- **G — browser test interativo** — Galvani vai testar manualmente como último step.
+- **H — domain rotation post-bootstrap** — Galvani decidiu fora de escopo.
+- **F prolonged uptime (> 1h)** — baseline capturada; observação contínua = trabalho de produção, não pré-deploy.
+- **Qwen3 na Oracle** — decisão deliberada (clientes voice-clone vão pra VPS GPU separada).
+
+**Total final ciclo 2.0.0:** 23 fixes (3 críticos + 20 menores), 217 tests passando, pre-commit + mypy + ruff clean, CI verde nos 2 últimos pushes. Cold-path coverage: 21/21 CLI verbos + 8/8 ansible playbooks + ambos engines (Kokoro + Qwen3) + multi-replica + saturação sob load + 7 HTTP methods. **Status: 100% pronto para produção, pendente apenas teste manual no browser.**
+
 ---
 
 ## Strategy de execução
