@@ -223,10 +223,15 @@
       # Poll the docker-internal upstream rather than the public Caddy URL.
       # This sidesteps Caddy bind quirks on hosts where 443 is not listening
       # on localhost and removes the validate_certs=false TLS shortcut.
+      #
+      # B24 — `wget` is not in the slim tts-service image (same shape as B23).
+      # Use the bundled Python interpreter (always present, used to run the
+      # FastAPI app) to avoid adding a CLI HTTP client to the container.
       ansible.builtin.command:
         cmd: >-
           docker compose exec -T tts-service
-          sh -c 'wget -qO- http://127.0.0.1:8000/health'
+          python3 -c "import sys, urllib.request;
+          sys.stdout.write(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
         chdir: "~/comadre"
       register: health_check
       changed_when: false

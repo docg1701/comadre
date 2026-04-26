@@ -474,6 +474,31 @@ Retomei após `/compact` para a re-suíte completa Phases 0-7 + edge cases focad
 
 **Total final no ciclo de aceitação 2.0.0:** 19 fixes (3 críticos + 16 menores), 216 tests passando (B20.5/B20.7 cobertos via 2 novos casos parametrizados em `test_speech_validation_messages_are_field_specific`, era 3 casos, agora 5), pre-commit + mypy + ruff clean. Deploy via `update.yml` em ambos os hosts (Proxmox x86_64 + Oracle aarch64) confirmado.
 
+### Round 4 — gap closure pós-questão "está realmente 100%?" (2026-04-26 quarta passada)
+
+Galvani questionou se as correções tinham sido validadas em **fresh deploy** ou só via update. Resposta honesta: round 3 foi update-only. Plus existiam fases não-testadas (3, 4, 7) e `restore-keys.yml` round-trip que eu tinha marcado completo só verificando o cron-line (não o playbook em si). Plano: cleanup+bootstrap fresh + `health.yml` + Phases 3/4/7 + restore round-trip nos 2 hosts.
+
+**Validado:**
+
+- **Fresh cleanup+bootstrap em 2 hosts ✅** — `cleanup.yml` (24/0/0) → `bootstrap.yml` (43/0/0) com `COMADRE_KEY_REGISTRY_ENCRYPTION_KEY` + `COMADRE_BACKUP_PASSPHRASE` exportados. Migration v3 baked, B21+B20 baked, todo o stack 2.0.0 instala green-field sem retoque.
+- **`ansible health.yml` ✅** — 33/0/0 nos 2 hosts. Todas as assertions passam (DB mode 0600, parent 0700, 2 crons instalados, UFW 6 ALLOW lines, `comadre-keys health --format json` 10 verde).
+- **Phase 3 — `revenue --as-of` audit replay ✅** — `mark-paid` 99→199→299 emite audit com `price_monthly_changed: true, old, new` ✓; `revenue --as-of <future>` exit 2 ✓; revenue MRR=299 com `as-of=today` ✓.
+- **Phase 4 — `export-customer --include-audit` envelope ✅** — opt-in default off ✓; com flag, envelope ganha `audit_events` (cronológico) + `audit_events_total` + `audit_events_truncated` ✓; nenhum dos `_FORBIDDEN_DETAIL_KEYS` (tax_id/name/email/notes) leak nos `details` ✓.
+- **Phase 7 — landing real round-trip ✅** — `GET /` serve formulário interativo (9 elementos form/input/select/textarea/audio); CSP `connect-src 'self'` permite o fetch do form; `/health` retorna 54 vozes; POST equivalente ao do form rende OGG/Opus 200 ✓ nos 2 hosts.
+
+**Achados novos (Round 4):**
+
+- **B23** 🐞 — `restore-stage.sh` usava `xxd -p` pra detectar magic header da arquive. `xxd` não está no slim Python image do tts-service. Fix: substituí por `od -An -tx1 | tr -d ' \n'` (coreutils, sempre presente).
+- **B24** 🐞 — `restore-keys.yml`'s `[Health] Wait for service to become healthy` polava com `wget -qO- http://127.0.0.1:8000/health`. `wget` também não está no image. O `until` condition nunca matchava (stdout vazio), playbook ficava preso loop infinito. Fix: trocar pela CLI Python já presente: `python3 -c "import urllib.request; ..."`.
+
+**Restore round-trip ✅** — pós-fixes B23+B24:
+1. Backup tirado via `backup-keys.yml` → archive `registry.db.backup-2026-04-26T13-34-44Z.tar.gz.enc` (2220 bytes).
+2. PostBackup customer adicionado pós-archive.
+3. `restore-keys.yml` rodou clean (18/0/0). Service healthy. Key divergence: no.
+4. Pós-restore: PostBackup foi-se, Phase7 voltou — estado idêntico ao archive ✓.
+
+**Total final no ciclo de aceitação 2.0.0:** 21 fixes (3 críticos + 18 menores), 216 tests passando, pre-commit + mypy + ruff clean. Validado em fresh cleanup+bootstrap + Phases 0-7 + edge cases B2/B10/B16/B19/B20/B23/B24 + ansible health.yml + restore round-trip nos 2 hosts (Proxmox x86_64 + Oracle aarch64). **Status: development+review fechado.**
+
 ---
 
 ## Strategy de execução
