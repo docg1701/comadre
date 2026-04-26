@@ -86,6 +86,36 @@ async def test_speech_validation_400_envelope(
         assert response.json()["error"]["type"] == "invalid_request_error"
 
 
+async def test_speech_validation_messages_are_field_specific(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    """B20 — empty input vs oversized vs missing field surface distinct
+    error messages, not the legacy generic ``Invalid request body``.
+    Operators reading the API response should see *which* field failed
+    *why* without parsing pydantic's raw error envelope."""
+    cases = [
+        (
+            {"input": "", "voice": "kokoro/pm_santa"},
+            "must not be empty",
+        ),
+        (
+            {"input": "x" * 10_000, "voice": "kokoro/pm_santa"},
+            "exceeds the allowed length",
+        ),
+        (
+            {"voice": "kokoro/pm_santa"},
+            "is required",
+        ),
+    ]
+    for body, expected_fragment in cases:
+        response = await client.post(
+            "/v1/audio/speech", json=body, headers=auth_headers
+        )
+        assert response.status_code == 400, body
+        message = response.json()["error"]["message"]
+        assert expected_fragment in message, (body, message)
+
+
 async def test_speech_unknown_voice_returns_404(
     client: AsyncClient, auth_headers: dict[str, str], mock_router: MagicMock
 ) -> None:

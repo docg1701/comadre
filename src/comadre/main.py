@@ -274,20 +274,93 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             db.close()
 
 
+_GENERIC_VALIDATION_HINT = (
+    'Expected JSON: {"input": "text to speak",'
+    ' "voice": "kokoro/pm_santa", "response_format": "ogg"}'
+)
+
+
+def _format_validation_error(exc: RequestValidationError) -> tuple[str, str]:
+    """Translate the first pydantic error into a (message, hint) pair (B20).
+
+    Operators reading the API response shouldn't need to read the raw
+    pydantic error envelope to know whether the input was empty, oversized,
+    or wrong shape. This helper inspects the first error's ``type`` (the
+    pydantic v2 stable identifier — ``string_too_short``,
+    ``string_too_long``, ``missing``, ``string_type``, etc.) and emits a
+    field-specific message.
+
+    Falls back to the legacy generic message when the error shape is
+    unfamiliar (e.g. the ``model_validator`` raises a ``ValueError`` with
+    a custom message — those already carry a useful ``msg`` we surface
+    verbatim).
+    """
+    errors = exc.errors()
+    if not errors:
+        return "Invalid request body", _GENERIC_VALIDATION_HINT
+    first = errors[0]
+    err_type = first.get("type", "")
+    loc = first.get("loc") or ()
+    field = next((str(p) for p in loc if p != "body"), "request body")
+    raw_msg = str(first.get("msg") or "").strip()
+
+    if err_type == "string_too_short":
+        return (
+            f"Field '{field}' must not be empty",
+            f"Provide a non-empty {field}.",
+        )
+    if err_type == "string_too_long":
+        ctx = first.get("ctx") or {}
+        max_len = ctx.get("max_length")
+        max_clause = f" (max {max_len} chars)" if max_len is not None else ""
+        return (
+            f"Field '{field}' exceeds the allowed length{max_clause}",
+            f"Trim {field}{max_clause} or fewer.",
+        )
+    if err_type == "missing":
+        return (
+            f"Field '{field}' is required",
+            _GENERIC_VALIDATION_HINT,
+        )
+    if err_type in {"string_type", "int_type", "float_type", "bool_type"}:
+        expected = err_type.removesuffix("_type")
+        return (
+            f"Field '{field}' must be a {expected}",
+            _GENERIC_VALIDATION_HINT,
+        )
+    if err_type == "enum":
+        ctx = first.get("ctx") or {}
+        expected = ctx.get("expected", "")
+        return (
+            f"Field '{field}' has an invalid value",
+            f"Allowed values: {expected}." if expected else _GENERIC_VALIDATION_HINT,
+        )
+    if err_type == "value_error":
+        # ``model_validator`` ValueErrors — already carry a tailored msg
+        # (e.g. the Qwen3 char-limit message). Surface verbatim.
+        return raw_msg or "Invalid request body", _GENERIC_VALIDATION_HINT
+    if err_type == "json_invalid":
+        return ("Malformed JSON body", _GENERIC_VALIDATION_HINT)
+    return "Invalid request body", _GENERIC_VALIDATION_HINT
+
+
 async def validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Convert FastAPI 422 validation errors to 400 with consistent error format."""
+    """Convert FastAPI 422 validation errors to 400 with consistent error format.
+
+    B20 — distinguishes empty input / oversized input / missing field /
+    wrong shape via ``_format_validation_error``. Falls back to the legacy
+    generic ``Invalid request body`` for unknown error types.
+    """
+    message, hint = _format_validation_error(exc)
     return JSONResponse(
         status_code=400,
         content={
             "error": {
-                "message": "Invalid request body",
+                "message": message,
                 "type": "invalid_request_error",
-                "hint": (
-                    'Expected JSON: {"input": "text to speak",'
-                    ' "voice": "kokoro/pm_santa", "response_format": "ogg"}'
-                ),
+                "hint": hint,
             }
         },
     )

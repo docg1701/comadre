@@ -720,6 +720,10 @@ def _revenue_report_to_json(report: RevenueReport) -> None:
             {
                 "key_prefix": r.key_prefix,
                 "customer_name": r.customer_name,
+                # B15 — JSON consumers need the same suspended/revoked
+                # signal the table renderer surfaces; otherwise dashboards
+                # treat all complimentary rows as live.
+                "status": r.status,
                 "notes": r.notes,
             }
             for r in report.complimentary_rows

@@ -262,6 +262,85 @@ def test_freshly_installed_cron_with_no_history_is_info_not_warn(
     assert report.is_healthy is False
 
 
+def test_full_healthy_report_has_ten_checks_when_runtime_billing_tz_passed(
+    tmp_path: Path,
+) -> None:
+    """B9 — when the CLI passes ``runtime_billing_tz``, ``collect_health_report``
+    inserts a 10th ``Timezone drift`` check between ``Backup cron`` and
+    ``Last backup``. A refactor that drops or reorders the TZ probe must
+    surface here, not silently in production. Companion to the 9-check
+    legacy-caller test above.
+    """
+    db_path = tmp_path / "registry.db"
+    conn = get_connection(db_path)
+    try:
+        _apply_migrations(conn)
+        _seed_minimum(conn)
+        with conn:
+            log_event(
+                conn,
+                actor="cron:suspension-sweep",
+                action="cron_suspend",
+                target_type="system",
+                target_id=None,
+                details={"swept_count": 0, "cutoff_date": "2026-04-18"},
+            )
+        for kind, content in (
+            ("cron", "schedule=30 0 * * *\ncron_tz=UTC"),
+            ("backup-cron", "schedule=0 2 * * *\ncron_tz=UTC\nretention_days=14\n"),
+        ):
+            marker = Path(f"{db_path}.{kind}-installed")
+            marker.write_text(content, encoding="utf-8")
+            marker.chmod(0o600)
+        (tmp_path / "registry.db.backup-2026-04-20T02-00-00Z.tar.gz.enc").write_bytes(
+            b"encrypted-stub"
+        )
+        written = datetime.now(UTC) - timedelta(seconds=3)
+        Path(f"{db_path}.counters.test-replica.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "written_at": written.strftime("%Y-%m-%dT%H:%M:%S.")
+                    + f"{written.microsecond // 1000:03d}Z",
+                    "process_uptime_seconds": 60,
+                    "auth_cache": {
+                        "entries": 42,
+                        "maxsize": 4096,
+                        "ttl_seconds": 60,
+                        "hits": 1000,
+                        "misses": 10,
+                    },
+                    "per_key": {},
+                }
+            )
+        )
+        report = collect_health_report(
+            conn=conn,
+            db_path=str(db_path),
+            schema_version_expected=_SCHEMA_VERSION,
+            cron_marker_path=str(db_path) + ".cron-installed",
+            backup_parent=str(db_path.parent),
+            runtime_billing_tz="UTC",
+        )
+    finally:
+        conn.close()
+
+    assert [c.label for c in report.checks] == [
+        "Database",
+        "Schema version",
+        "Customers",
+        "Keys",
+        "Last suspension sweep",
+        "Cron",
+        "Backup cron",
+        "Timezone drift",
+        "Last backup",
+        "Auth cache",
+    ]
+    assert report.is_healthy is True
+    assert {c.severity for c in report.checks} <= {"ok", "info"}
+
+
 def test_health_report_to_json_aggregates_warn_and_fail_counts() -> None:
     """JSON envelope is what monitoring consumes — must surface warn_count
     + fail_count + is_healthy honestly."""

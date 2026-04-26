@@ -181,7 +181,12 @@ def issue_key(
     price: float | None = typer.Option(
         None,
         "--price",
-        help="Monthly price in BRL. Required for manual billing. Example: --price 149.",
+        "--price-monthly",
+        help=(
+            "Monthly price in BRL. Required for manual billing. "
+            "Example: --price 149. ``--price-monthly`` is accepted as an "
+            "alias for symmetry with ``mark-paid --price-monthly``."
+        ),
     ),
     notes: str = typer.Option(
         "",
@@ -788,7 +793,12 @@ def update_key_cmd(
     price: float | None = typer.Option(
         None,
         "--price",
-        help="Monthly price in BRL for manual billing. Example: --price 199.",
+        "--price-monthly",
+        help=(
+            "Monthly price in BRL for manual billing. Example: --price 199. "
+            "``--price-monthly`` accepted as an alias for symmetry with "
+            "``mark-paid --price-monthly``."
+        ),
     ),
     notes: str | None = typer.Option(
         None,

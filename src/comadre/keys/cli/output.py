@@ -525,10 +525,18 @@ def render_revenue_report(report: RevenueReport) -> None:
             # ignores Rich markup; the rich-escape inside _safe_user_text
             # is a harmless no-op for this Text() path.
             notes = _safe_user_text(row.notes) if row.notes else "\u2014"
+            # B15 \u2014 surface suspended/revoked complimentary keys explicitly.
+            # ``revenue`` historically rendered them indistinguishably from
+            # active ones, hiding a "this bundled customer is currently
+            # blocked" signal that operators need before quarterly
+            # reconciliation. ``[suspended]`` / ``[revoked]`` is a literal
+            # tag (no Rich markup parse) so the panel layout stays stable.
+            status_tag = f" [{row.status}]" if row.status != "active" else ""
             children.append(
                 Text(
                     f"  {row.key_prefix} "
-                    f"({_safe_user_text(row.customer_name)}) \u2014 {notes}"
+                    f"({_safe_user_text(row.customer_name)}){status_tag} \u2014 "
+                    f"{notes}"
                 )
             )
 
