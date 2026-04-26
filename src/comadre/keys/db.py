@@ -1726,7 +1726,7 @@ def update_api_key(
     old_price: float | None = None
     with conn:
         row = conn.execute(
-            "SELECT status, billing_mode, rate_limit_rpm, price_monthly "
+            "SELECT status, billing_mode, rate_limit_rpm, price_monthly, notes "
             "FROM api_key WHERE id = ?",
             (key_id,),
         ).fetchone()
@@ -1739,32 +1739,49 @@ def update_api_key(
 
         old_rpm = int(row["rate_limit_rpm"])
         old_price = float(row["price_monthly"])
+        old_notes = row["notes"] or ""
 
         # Build the SET clause dynamically so only the touched columns are
         # rewritten. The predicate fragments are literal column-name strings
         # (``"rate_limit_rpm = ?"``) — operator input only lands in the
         # positional ``?`` bindings, never in SQL text.
+        # B25 — same-value writes are skipped at field granularity (mirrors
+        # ``update_customer``). An operator passing the existing value
+        # (e.g. ``--rpm 120`` against current 120, or ``--notes "x"`` against
+        # current "x") MUST NOT produce a misleading audit row.
         set_parts: list[str] = []
         params: list[object] = []
-        if new_rpm is not None:
+        if new_rpm is not None and int(new_rpm) != old_rpm:
             set_parts.append("rate_limit_rpm = ?")
             params.append(new_rpm)
             updated.append("rpm")
-        if new_price is not None:
+        if new_price is not None and float(new_price) != old_price:
             set_parts.append("price_monthly = ?")
             params.append(float(new_price))
             updated.append("price")
-        if new_notes is not None:
+        if new_notes is not None and new_notes != old_notes:
             set_parts.append("notes = ?")
             params.append(new_notes)
             updated.append("notes")
 
         if not set_parts:
-            # Programmer error: the CLI layer rejects neither-flag upfront.
-            # Raise ``RuntimeError`` (maps to exit 5 at the CLI) so the
-            # return value stays unambiguous — ``None`` means "row missing",
-            # never "caller forgot to pass any field".
-            raise RuntimeError(f"update_api_key: no fields to update for {key_id!r}")
+            # Either the CLI passed no fields (defense-in-depth: the layer
+            # above rejects neither-flag) OR every supplied field already
+            # matched the stored value. Either way, no UPDATE + no audit row
+            # — the helper's contract is "row exists, nothing to write" so
+            # the caller still gets the refreshed detail.
+            refreshed_noop = get_key_detail_by_id(conn, key_id, today=today)
+            if refreshed_noop is None:
+                # The row was visible in the SELECT a few lines up; only a
+                # cross-process race could land here.
+                return None
+            return UpdateKeyResult(
+                key=refreshed_noop,
+                updated_fields=(),
+                changes=KeyFieldDeltas(
+                    rpm_old=None, rpm_new=None, price_old=None, price_new=None
+                ),
+            )
 
         params.append(key_id)
         # Defense-in-depth: the SELECT filtered revoked rows, but re-applying

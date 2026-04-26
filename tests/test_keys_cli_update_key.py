@@ -67,6 +67,30 @@ def test_update_key_revoked_or_missing_exits_3(env: dict[str, str]) -> None:
     assert result.exit_code == 3
 
 
+def test_update_key_no_op_writes_no_audit(env: dict[str, str]) -> None:
+    """B25 — passing the existing rpm/price/notes as the only update target
+    must NOT produce an audit row + must render the no-op confirmation."""
+    # Default seed: rate_limit_rpm=60, price_monthly=149.0, notes="".
+    _, _, prefix = seed_by_prefix(env["db_path"])
+
+    result = runner.invoke(
+        app, ["update-key", prefix, "--rpm", "60", "--price", "149", "--notes", ""]
+    )
+    stdout, _stderr = buffers()
+    assert result.exit_code == 0
+    assert "No changes" in stdout
+    assert "already up to date" in stdout
+
+    conn = sqlite3.connect(env["db_path"])
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'update_key'"
+        ).fetchone()[0]
+        assert count == 0, f"unexpected update_key audit rows: {count}"
+    finally:
+        conn.close()
+
+
 def test_update_key_rejects_invalid_inputs(env: dict[str, str]) -> None:
     """No flags, --rpm out of range, --price negative all exit 2."""
     _, _, prefix = seed_by_prefix(env["db_path"])

@@ -955,6 +955,15 @@ def update_key_cmd(
         )
 
     # 11. ConfirmationLine with the fixed arrow-form grammar.
+    # B25 \u2014 if every supplied field already matched its stored value the
+    # helper returns ``updated_fields=()``; mirror ``update_customer``'s
+    # no-op rendering instead of "Updated: ... \u2014 " with an empty suffix.
+    if not result.updated_fields:
+        render_confirmation(
+            f"No changes: {result.key.key_prefix} ({result.key.customer_name})"
+            " \u2014 already up to date"
+        )
+        return
     clauses = _key_update_clauses(result)
     suffix = ", ".join(clauses)
     render_confirmation(
