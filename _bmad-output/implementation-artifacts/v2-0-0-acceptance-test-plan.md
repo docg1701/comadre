@@ -430,14 +430,21 @@ Validar **toda** a superfície entregue no ciclo 2.0.0 (Epics 1-5) no ambiente r
 
 ### Sem fix (decididos por escopo)
 
-- **B4** flag inconsistency `--price`/`--price-monthly` — breaking change, deferida
-- **B5** exit code 3 docs-only update (CLAUDE.md tem nota implícita; não aplicado)
-- **B9** test gap pra `Timezone drift` no 10º check — observação, não crítico
 - **B13** suspend audit details_json é NULL (não string vazia, friction log estava errado) — não-bug; consumidores Python tratam None corretamente
-- **B15** revenue mostra complimentary suspensa sem marker — UX wart; deferida
 - **B18** falso-positivo (CLAUDE.md está correto, meu plano de teste tinha typo)
-- **B19** `/docs` 404 com type=caddy_error — Caddy config; deferida
-- **B20** body validation errors genéricos — deferida
+
+### Round 2 — 6 ex-deferidos validados (2026-04-26 segunda passada)
+
+Galvani me chamou pra falar que os 7 deferidos eram "preguiça". Reanalisei e admiti: 5 eram preguiça mesmo, 2 (B13/B18) eram não-bugs legítimos. Patches aplicados, deploy via `update.yml`, retest confirmando:
+
+- **B4** ✅ `issue-key --price-monthly 199` + `update-key --price-monthly 299` aceitos como alias do `--price`. Simétrico com `mark-paid`.
+- **B5** ✅ CLAUDE.md exit-code table expandida (0/2/3/4/5/6/7 todos cobertos).
+- **B9** ✅ Test `test_full_healthy_report_has_ten_checks_when_runtime_billing_tz_passed` cobre o 10º check; um refactor que dropasse `Timezone drift` agora falha o teste.
+- **B15** ✅ Table renderiza `2Kru0AWo (Test Alpha) [suspended] — bundled package`. JSON ganha `"status": "suspended"` em cada entrada de `complimentary`.
+- **B19** ✅ `/docs` 404 retorna `{"error":{"message":"Not Found","type":"not_found_error",...}}` (era `caddy_error`). Caddyfile usa `@cerr_4xx` / `@cerr_5xx` matchers consistentes com FastAPI.
+- **B20** ✅ Mensagens field-specific: `"Field 'input' must not be empty"`, `"Field 'input' exceeds the allowed length (max 500 chars)"`, `"Field 'input' is required"`. Era tudo `"Invalid request body"`.
+
+Test suite: 214 → 216 (+2 dos novos B9/B20). Pre-commit + mypy + ruff clean. Total de patches no ciclo de aceitação: 17 fixes (3 críticos + 14 menores).
 
 ---
 
