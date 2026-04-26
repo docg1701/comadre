@@ -264,32 +264,35 @@ def create_customer(
 
     try:
         conn = get_connection(settings.key_registry_db_path)
+    except (sqlite3.Error, OSError) as exc:
+        render_error("Database error", str(exc))
+        raise typer.Exit(code=5) from None
+    try:
         try:
             _apply_migrations(conn)
             backfill_tax_id_lookup_if_needed(
                 conn, encryption_key=settings.key_registry_encryption_key
             )
-            try:
-                insert_customer(
-                    conn, record, actor=get_cli_actor(), tax_id_lookup=lookup
-                )
-            except sqlite3.IntegrityError as exc:
-                # B2: partial UNIQUE INDEX rejected the insert because an
-                # active row already holds the same tax-ID. Translate to
-                # the user-facing ``DuplicateTaxIdError`` shape — the raw
-                # value never appears in the error chain (anti-enumeration).
-                if "tax_id_lookup" not in str(exc):
-                    raise
-                from comadre.exceptions import DuplicateTaxIdError
+            insert_customer(conn, record, actor=get_cli_actor(), tax_id_lookup=lookup)
+        except sqlite3.IntegrityError as exc:
+            # B2: partial UNIQUE INDEX rejected the insert because an
+            # active row already holds the same tax-ID. Translate to
+            # the user-facing ``DuplicateTaxIdError`` shape — the raw
+            # value never appears in the error chain (anti-enumeration).
+            if "tax_id_lookup" not in str(exc):
+                render_error("Database error", str(exc))
+                raise typer.Exit(code=5) from None
+            from comadre.exceptions import DuplicateTaxIdError
 
-                err = DuplicateTaxIdError(kind)
-                render_error(err.message, err.hint)
-                raise typer.Exit(code=2) from None
-        finally:
+            err = DuplicateTaxIdError(kind)
+            render_error(err.message, err.hint)
+            raise typer.Exit(code=2) from None
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            render_error("Database error", str(exc))
+            raise typer.Exit(code=5) from None
+    finally:
+        with contextlib.suppress(sqlite3.Error):
             conn.close()
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
     _logger.info(
         "Customer created | id=%s | tax_id_kind=%s", record.id, record.tax_id_kind
@@ -1522,8 +1525,13 @@ def correct_tax_id_cmd(
                 actor=get_cli_actor(),
             )
         except sqlite3.IntegrityError as exc:
+            # B2 — partial UNIQUE INDEX rejected the UPDATE because the
+            # new tax-ID lookup is already held by another active row.
+            # Translate to ``DuplicateTaxIdError`` (exit 2). Re-raise
+            # other IntegrityErrors as a generic DB error (exit 5).
             if "tax_id_lookup" not in str(exc):
-                raise
+                render_error("Database error", str(exc))
+                raise typer.Exit(code=5) from None
             from comadre.exceptions import DuplicateTaxIdError
 
             err = DuplicateTaxIdError(new_kind)
