@@ -214,38 +214,96 @@
     # =========================================================================
     # Backup-archive existence (FR42 epic AC3 — "last backup output exists")
     # =========================================================================
+    # The presence assertion respects the same grace period
+    # ``comadre.keys.health`` applies inside the CLI: a freshly-bootstrapped
+    # host whose backup-cron marker is < 48 h old has no archive yet (next
+    # firing at 02:00 operator-TZ — up to 24 h away). Inside that window,
+    # zero archives is the legitimate post-bootstrap state, not drift.
+    # Beyond the window, missing archives ARE drift and must fail loudly.
 
-    - name: "[Backup] Count backup archives in registry volume"
+    - name: "[Backup] Marker mtime + archive count"
+      # YAML-folding gotcha: a more-indented continuation in a ``>-`` block
+      # preserves the newline literally and bash rejects pipes that begin
+      # a new line. Each line below is at the same indentation level so
+      # folding turns the inter-line breaks into spaces, and the bash -c
+      # body becomes a single physical command separated by ``;``.
       ansible.builtin.command:
         cmd: >-
           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
-          'ls {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null | wc -l'
-      register: backup_count
+          'M="{{ key_registry_db_path }}.backup-cron-installed";
+          if [ -e "$M" ];
+          then echo "marker_age=$(( $(date +%s) - $(stat -c %Y "$M") ))";
+          else echo marker_age=-1;
+          fi;
+          C=$(ls {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc 2>/dev/null | wc -l);
+          echo "archive_count=$C"'
+      register: backup_state
       changed_when: false
 
-    - name: "[Backup] Assert at least one backup archive exists"
+    - name: "[Backup] Parse marker age + archive count"
+      ansible.builtin.set_fact:
+        backup_marker_age: >-
+          {{ (backup_state.stdout_lines
+              | select('match', '^marker_age=')
+              | first
+              | regex_replace('^marker_age=', '')
+              | int) }}
+        backup_count: >-
+          {{ (backup_state.stdout_lines
+              | select('match', '^archive_count=')
+              | first
+              | regex_replace('^archive_count=', '')
+              | int) }}
+
+    - name: "[Backup] Assert archive present unless inside post-bootstrap grace window"
+      # Grace window mirrors keys.health._SWEEP_STALENESS_WARN_SECONDS
+      # (48 h). Inside the window with zero archives → the nightly cron
+      # simply hasn't fired yet, so skip the assertion (and emit a debug
+      # line so operators know we deliberately skipped). Outside the
+      # window, zero archives is genuine drift — fail loudly.
+      when: >-
+        backup_marker_age | int < 0
+        or backup_marker_age | int >= 172800
+        or backup_count | int >= 1
       ansible.builtin.assert:
         that:
-          - backup_count.stdout | trim | int >= 1
+          - backup_count | int >= 1
         fail_msg: |
-          No backup archives found at {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc.
-          Either the nightly cron has not yet fired (wait until 02:00
-          operator TZ after bootstrap), or run a manual backup:
+          No backup archives found at {{ key_registry_db_path | dirname }}/*.backup-*.tar.gz.enc
+          and the backup-cron marker is {{ backup_marker_age }} s old (≥ 48 h grace window).
+          Either the nightly cron is not firing, or run a manual backup:
             ansible-playbook backup-keys.yml -i inventory/production.yml \
               -e "ansible_become_password=YOUR_SUDO_PASS"
-        success_msg: "{{ backup_count.stdout | trim }} backup archive(s) present."
+        success_msg: "{{ backup_count }} backup archive(s) present."
+
+    - name: "[Backup] Note grace-period skip when applicable"
+      when:
+        - backup_marker_age | int >= 0
+        - backup_marker_age | int < 172800
+        - backup_count | int < 1
+      ansible.builtin.debug:
+        msg: >-
+          INFO: 0 backup archives present, but the backup-cron marker is only
+          {{ backup_marker_age }} s old (within the 48 h post-bootstrap grace
+          window). The nightly cron hasn't fired yet — this is expected.
 
     # F13 — size sanity. A crashed ``backup-keys.yml`` mid-``openssl enc``
     # leaves a 0-byte (or sub-1024-byte salt-only) tarball that passes the
     # count assertion above but is unrecoverable. Treat any archive smaller
     # than 1 KiB as truncated.
     - name: "[Backup] Smallest archive size in bytes"
+      # Only meaningful when ≥ 1 archive is present; gated below so a
+      # post-bootstrap-grace-window host with 0 archives doesn't try to
+      # stat a non-existent glob (and produce empty stdout that would
+      # spuriously fail the size assertion).
+      #
       # NOTE: keep the bash -c body on a single physical YAML line. Folding
       # via ``>-`` turns inter-line breaks into spaces ONLY when the lines
       # share the same indentation; a more-indented continuation (e.g. a
       # leading space before ``| sort``) preserves the newline literally,
       # which bash receives as a line break and rejects with
       # ``syntax error near unexpected token '|'``.
+      when: backup_count | int >= 1
       ansible.builtin.command:
         cmd: >-
           docker compose -f ~/comadre/compose.yaml exec -T tts-service bash -c
@@ -254,6 +312,7 @@
       changed_when: false
 
     - name: "[Backup] Assert no archive is 0-byte or truncated"
+      when: backup_count | int >= 1
       ansible.builtin.assert:
         that:
           - (backup_min_size.stdout | trim | length) > 0
@@ -469,7 +528,7 @@
           DB file mode:     600
           DB parent mode:   700
           Crons installed:  comadre-daily-suspension, comadre-keys-backup
-          Backup archives:  {{ backup_count.stdout | trim }} present
+          Backup archives:  {{ backup_count }} present
           UFW:              active ({{ ufw_allow_lines | length }} ALLOW lines)
           comadre-keys health: {{ health_json.checks | length }} checks, all green
           {% if has_health | bool %}

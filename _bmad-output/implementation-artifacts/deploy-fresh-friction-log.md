@@ -166,6 +166,35 @@ delay" is no longer a deployment problem.
 `tests/test_keys_health.py` (locks the new contract: within window
 → info + is_healthy=True; beyond → warn + is_healthy=False).
 
+### D5 — `health.yml`'s ansible-level `[Backup] Assert at least one backup archive exists` ignored grace period
+
+**Symptom:** even with the application-layer grace-period fix from D3 v2,
+`health.yml` still fails on a fresh-deploy at the ansible task `[Backup]
+Assert at least one backup archive exists` because the playbook had its
+own redundant filesystem assertion (FR42 epic AC3 — "last backup output
+exists").
+
+**Root cause:** the playbook's filesystem assertion was unconditional —
+it counted `*.backup-*.tar.gz.enc` files and required `>= 1` regardless
+of how recently the backup cron was installed. The CLI-layer fix from D3
+v2 made the in-container `comadre-keys health` tolerant of the
+post-bootstrap window, but the ansible playbook's PARALLEL assertion
+re-introduced the same friction one layer up.
+
+**Fix:** read the backup-cron marker's mtime via a single `bash -c` exec
+(`stat -c %Y` on the marker file → seconds-since-epoch) at the same time
+as the archive count, then gate the existence assertion behind the same
+48 h grace window as the CLI: missing archive + marker_age < 48 h
+→ skip assertion + emit a debug note explaining why; missing archive +
+marker_age ≥ 48 h → fail loudly. The companion `[Backup] Smallest
+archive size` task is now gated on `backup_count >= 1` so a
+zero-archive grace-window host doesn't try to stat a non-existent glob.
+
+**Patch:** `deploy/ansible/playbooks/health.yml` — replaces the two
+single-purpose probes (`[Backup] Count …` + `[Backup] Smallest …`) with
+a single `[Backup] Marker mtime + archive count` exec that reports both
+values, plus a parsing `set_fact`, plus the gated assert + debug note.
+
 ### D4 — `health.yml`'s `[Backup] Smallest archive size` task fails with bash syntax error
 
 **Symptom:** `[Backup] Smallest archive size in bytes` task fails with
