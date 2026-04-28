@@ -16,7 +16,9 @@ Full lifecycle management for Comadre TTS service using Ansible playbooks.
 - Ansible 2.14+ installed
 - `community.docker` Ansible collection installed
 - SSH access to the VPS
-- `KEY_REGISTRY_ENCRYPTION_KEY` environment variable set (Fernet key — see [Bootstrap](#bootstrap----first-deployment) for generation)
+- `COMADRE_KEY_REGISTRY_ENCRYPTION_KEY` environment variable set (Fernet key)
+- `COMADRE_BACKUP_PASSPHRASE` environment variable set (≥ 16 characters)
+- See [Bootstrap](#bootstrap----first-deployment) for generation commands for both
 
 Install the required Ansible collection:
 
@@ -37,7 +39,11 @@ all:
       ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
-    key_registry_encryption_key: "{{ lookup('env', 'KEY_REGISTRY_ENCRYPTION_KEY') }}"
+    key_registry_encryption_key: "{{ lookup('env', 'COMADRE_KEY_REGISTRY_ENCRYPTION_KEY') }}"
+    backup_passphrase: "{{ lookup('env', 'COMADRE_BACKUP_PASSPHRASE') }}"
+    backup_retention_days: 14
+    backup_hour: 2
+    key_registry_db_path: /var/lib/comadre/registry.db
     operator_contact_hint: "Contact ops@example.com for billing."
     billing_timezone: "UTC"
     voices_local_dir: ""
@@ -62,8 +68,8 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | Variable | Required | Description |
 | --- | --- | --- |
 | `ansible_host` | Yes | VPS IP address or hostname |
-| `ansible_user` | Yes | SSH user with key-based auth |
-| `key_registry_encryption_key` | Yes | Fernet key for encrypting tax IDs at rest (reads from `KEY_REGISTRY_ENCRYPTION_KEY` env var on the control machine). Maps to the `KEY_REGISTRY_ENCRYPTION_KEY` env var inside the container. |
+| `ansible_user` | Yes | SSH user (key-based or password auth) |
+| `key_registry_encryption_key` | Yes | Fernet key for encrypting tax IDs at rest (reads from `COMADRE_KEY_REGISTRY_ENCRYPTION_KEY` env var on the control machine). Maps to the `KEY_REGISTRY_ENCRYPTION_KEY` env var inside the container. |
 | `operator_contact_hint` | No | Customer-facing contact string echoed in 401 hints. Maps to `OPERATOR_CONTACT_HINT`. |
 | `billing_timezone` | No | IANA timezone for billing calculations and the daily suspension sweep day-boundary (default: `UTC`). Maps to `BILLING_TIMEZONE`. **This is a contractual input** — the zone you set here dictates when a customer's `paid_until` expires and their key flips to 401; communicate it formally to customers at contract time. Override to a local zone (e.g. `America/Sao_Paulo`) only when you have informed them. |
 | `repo_url` | Yes | Git repository URL |
@@ -77,34 +83,53 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `kokoro_voices_url` | No | URL to download Kokoro voices binary on first start (default: GitHub release URL) |
 | `qwen3_model_url` | No | URL to download Qwen3 GGUF model on first start (default: HuggingFace URL). Empty string skips download. |
 | `qwen3_tokenizer_url` | No | URL to download Qwen3 tokenizer GGUF on first start (default: HuggingFace URL). Empty string skips download. |
-| `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model for SCP deployment (empty to skip) |
-| `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF for SCP deployment (empty to skip) |
+| `backup_passphrase` | Yes | Passphrase for AES-256-GCM encryption of backup archives (reads from `COMADRE_BACKUP_PASSPHRASE` env var). Minimum 16 characters. Maps to `BACKUP_PASSPHRASE` inside the container. |
+| `backup_retention_days` | No | Days to retain backup archives before pruning (default: 14) |
+| `backup_hour` | No | Hour (0-23) the nightly backup cron fires in `billing_timezone` (default: 2) |
+| `key_registry_db_path` | No | In-container path of the SQLite key registry (default: `/var/lib/comadre/registry.db`). Must be an absolute path at least two levels deep. |
+| `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model for SCP deployment (empty to skip — auto-download used instead) |
+| `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF for SCP deployment (empty to skip — auto-download used instead) |
 
 ## Complete Deployment Flow
 
-A fresh deploy requires three playbooks in sequence:
+A fresh deploy requires three playbooks in sequence. Generate the two secrets
+once and export them before every run:
 
 ```bash
 cd deploy/ansible
-export KEY_REGISTRY_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 
-# 1. Bootstrap — installs everything, builds and starts services
+# Generate secrets (one-time — store both in your password manager).
+export COMADRE_KEY_REGISTRY_ENCRYPTION_KEY="$(python -c \
+  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+export COMADRE_BACKUP_PASSPHRASE="$(python -c \
+  'import secrets; print(secrets.token_urlsafe(32))')"
+
+# 1. Bootstrap — installs everything, builds and starts services.
+#    Needs ~30-45 min on first run (model downloads).
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
-  -e "ansible_become_password=YOUR_SUDO_PASS"
+  -e "ansible_password=SSH_PASSWORD" \
+  -e "ansible_become_password=SUDO_PASSWORD"
 
 # 2. Deploy voices — copies voice files from local machine to VPS
 ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
 
-# 3. Verify — read-only diagnostic check
-ansible-playbook playbooks/health.yml -i inventory/production.yml
+# 3. Verify — read-only diagnostic check. Needs become password for UFW probe.
+ansible-playbook playbooks/health.yml -i inventory/production.yml \
+  -e "ansible_password=SSH_PASSWORD" \
+  -e "ansible_become_password=SUDO_PASSWORD"
 
-# 4. Register the first customer and issue their API key
+# 4. Register the first customer and issue their API key.
+#    Use --cpf or --cnpj (NOT --tax-id). --email is required.
 ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
-  comadre-keys create-customer --name 'Acme Demo' --email ops@acme.example --cpf 11144477735"
+  comadre-keys create-customer --name 'Acme Demo' --email ops@acme.example --cpf 52998224725"
 ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose exec tts-service \
   comadre-keys issue-key --customer cust_<ulid-from-previous-step> --rpm 60 --price 149"
 # The plaintext (cmdr_live_...) is printed once; copy it to your client config now.
 ```
+
+If using SSH key auth, omit `ansible_password`. If using password auth, pass
+both `ansible_password` and `ansible_become_password` on every playbook
+invocation — some otherwise-unprivileged probes fall back to sudo.
 
 After these four steps, the service is fully operational and ready to authenticate traffic.
 
@@ -114,10 +139,15 @@ After these four steps, the service is fully operational and ready to authentica
 |----------|---------|---------------|
 | `bootstrap.yml` | First-time VPS setup (Docker, UFW, build, start) | Yes |
 | `deploy-voices.yml` | Copy voice files to VPS (Kokoro .npy, Qwen3 .wav) | No |
-| `deploy-models.yml` | Copy Qwen3 GGUF models via SCP (if not using auto-download) | No |
+| `deploy-models.yml` | Copy Qwen3 GGUF models via SCP (air-gapped only) | No |
 | `update.yml` | Pull latest code, rebuild image, restart services | No |
-| `health.yml` | Read-only diagnostic (status, memory, disk, cron) | No |
+| `health.yml` | Operational-state assertion (DB perms, cron, UFW, backups) | No¹ |
+| `backup-keys.yml` | Encrypted snapshot of the key registry | No |
+| `restore-keys.yml` | Restore key registry from a backup archive | No |
 | `cleanup.yml` | Full decommission: remove all artifacts and system components | Yes |
+
+¹ `health.yml` is read-only but its UFW probe may require sudo; pass
+`ansible_become_password` when UFW denies unprivileged reads.
 
 ## Bootstrap -- First Deployment
 
@@ -144,13 +174,24 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 
 ```bash
 cd deploy/ansible
-# Generate the registry encryption key (one-time).
-export KEY_REGISTRY_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
-# IMPORTANT: Store this value in your password manager. Losing it means losing
-# the ability to decrypt every tax ID already in the registry.
+
+# Generate secrets (one-time — store both in your password manager).
+export COMADRE_KEY_REGISTRY_ENCRYPTION_KEY="$(python -c \
+  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+export COMADRE_BACKUP_PASSPHRASE="$(python -c \
+  'import secrets; print(secrets.token_urlsafe(32))')"
+# IMPORTANT: Losing the encryption key means losing the ability to decrypt
+# every tax ID already in the registry. Losing the passphrase means losing
+# the ability to restore from any backup archive.
+
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
-  -e "ansible_become_password=YOUR_SUDO_PASS"
+  -e "ansible_password=SSH_PASSWORD" \
+  -e "ansible_become_password=SUDO_PASSWORD"
 ```
+
+If using SSH key auth, omit `ansible_password`. First-run wall-clock: expect
+30-45 minutes (Kokoro ~350 MB + Qwen3 ~1.6 GB model downloads on container
+start, then up to 30 min of health-check polling).
 
 **Expected output on success:**
 
@@ -169,12 +210,15 @@ Endpoint URL:    https://YOUR_VPS_DOMAIN
 **Test the deployment (after issuing a key):**
 
 ```bash
-curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
+curl -sk -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
   -d '{"input":"Ola mundo", "voice":"kokoro/pm_santa"}' \
   --output test.ogg
+file test.ogg   # must report: "Ogg data, Opus audio"
 ```
+
+Use `-k` (insecure) for self-signed certs; omit for Let's Encrypt deployments.
 
 The playbook is idempotent -- safe to run multiple times.
 
@@ -299,10 +343,16 @@ Qwen3 GGUF models (~1.6 GB total) are too large for git. They deploy via SCP thr
 
 **Prerequisites:**
 
-- Qwen3 models must be converted locally from HuggingFace safetensors
-- See [quantizing-qwen3-models.md](quantizing-qwen3-models.md) for the conversion procedure
-- Two files needed: `qwen3-tts-0.6b-q8_0.gguf` (~1.3 GB) and `qwen3-tts-tokenizer-f16.gguf` (~325 MB)
-- **Preferred method:** Models auto-download on first startup when `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` are set in the inventory. Pre-built GGUF files are available from `PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF` on HuggingFace. Manual deployment via this playbook is only needed for air-gapped environments.
+- This playbook is **air-gapped only**. If `qwen3_model_local` and
+  `qwen3_tokenizer_local` are empty strings in inventory (the default), the
+  playbook **fails its prerequisite check — this is intentional**. Models
+  auto-download on first container start when `QWEN3_MODEL_URL` and
+  `QWEN3_TOKENIZER_URL` are set. Do not treat the prerequisite failure as a
+  bug.
+- For air-gapped deployments: Qwen3 models must be converted locally from
+  HuggingFace safetensors. See [quantizing-qwen3-models.md](quantizing-qwen3-models.md).
+- Two files needed: `qwen3-tts-0.6b-q8_0.gguf` (~1.3 GB) and
+  `qwen3-tts-tokenizer-f16.gguf` (~325 MB).
 
 **Configure inventory:**
 
