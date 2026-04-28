@@ -89,7 +89,12 @@ def test_caddyfile_security_headers_block_present(caddyfile_name: str) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     caddyfile = repo_root / "deploy" / "caddy" / caddyfile_name
     text = caddyfile.read_text(encoding="utf-8")
-    match = _HEADER_BLOCK_RE.search(text)
+    # Strip Caddy comment lines (starting with #) so code-fenced examples
+    # like ``header {}`` in doc-comments don't cause a false empty-body match.
+    text_no_comments = "\n".join(
+        line for line in text.splitlines() if not line.strip().startswith("#")
+    )
+    match = _HEADER_BLOCK_RE.search(text_no_comments)
     if match is None:
         pytest.fail(f"No `header {{ ... }}` block found in {caddyfile}")
     block = match.group("body").strip()
