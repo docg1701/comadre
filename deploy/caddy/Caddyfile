@@ -1,14 +1,11 @@
 {
 	default_sni {$DOMAIN:localhost}
 
-	# Global server options — -Server and -Via applied to ALL sites,
-	# including the default/catch-all site handler. This prevents Server
-	# header leakage on CONNECT, unmatched Host, and Caddy internal errors
-	# (pentest F1, R2-3).
-	servers {
-		header -Server
-		header -Via
-	}
+	# Server header stripping: -Server and -Via are set in the site-level
+	# ``header {}`` block below and via ``header_down`` in the reverse_proxy
+	# handler. The ``servers { header ... }`` subdirective is NOT valid in
+	# Caddy v2 (header is a site-level directive, not a server option).
+	# See https://caddyserver.com/docs/caddyfile/options#server-options
 }
 
 {$DOMAIN:localhost} {
