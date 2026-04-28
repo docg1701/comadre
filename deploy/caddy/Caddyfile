@@ -1,5 +1,14 @@
 {
 	default_sni {$DOMAIN:localhost}
+
+	# Global server options — -Server and -Via applied to ALL sites,
+	# including the default/catch-all site handler. This prevents Server
+	# header leakage on CONNECT, unmatched Host, and Caddy internal errors
+	# (pentest F1, R2-3).
+	servers {
+		header -Server
+		header -Via
+	}
 }
 
 {$DOMAIN:localhost} {
@@ -15,6 +24,22 @@
 		-Server
 		-Via
 	}
+
+	# CONNECT method → 405 (pentest F1). Caddy's default CONNECT handler
+	# returns 200 OK even though no tunnel is established. This explicit
+	# handler short-circuits before any other routing.
+	@connect_method method CONNECT
+	handle @connect_method {
+		header Content-Type "application/json"
+		respond `{"error":{"message":"CONNECT method not allowed","type":"invalid_request_error","hint":null,"status":405}}` 405
+	}
+
+	# Host header validation (pentest R2-2, R2-3). Only the configured
+	# domain (or localhost fallback) is accepted. Unmatched Host headers
+	# receive 421 Misdirected Request, which prevents the HTTP→HTTPS
+	# redirect from reflecting attacker-supplied hostnames.
+	@valid_host host {$DOMAIN:localhost}
+	handle @valid_host {
 
 	# FR49 — bounded-payload policy for the @api surface (/v1/* and /health).
 	# Mirrors the industry-standard pattern used by AWS API Gateway,
@@ -97,7 +122,10 @@
 		respond `{"error":{"message":"Content-Length header is required","type":"invalid_request_error","hint":"Use Content-Length framing for POST/PUT/PATCH requests on /v1/* and /health."}}` 411
 	}
 
-	# 5. API paths → tts-service (reverse proxy with rate-limit-aware XFF).
+	# 5. API paths → tts-service (reverse proxy).
+	# No trusted_proxies — Caddy uses the direct client IP for X-Forwarded-For.
+	# This prevents XFF spoofing (pentest R2-1) and ensures per-IP rate-limit
+	# buckets key on real client IPs.
 	@api path /v1/* /health
 	handle @api {
 		reverse_proxy {
@@ -107,7 +135,6 @@
 				refresh 5s
 			}
 			lb_policy least_conn
-			trusted_proxies private_ranges
 			header_down -server
 			header_down -via
 		}
@@ -117,6 +144,14 @@
 	handle {
 		root * /srv/www
 		file_server
+	}
+
+	}  # close @valid_host handle block
+
+	# Unmatched Host → 421 Misdirected Request (pentest R2-2, R2-3).
+	handle {
+		header Content-Type "application/json"
+		respond `{"error":{"message":"Invalid Host header","type":"invalid_request_error","hint":null,"status":421}}` 421
 	}
 
 	# F67 — re-apply the security headers + Server/Via strip on Caddy-level

@@ -236,6 +236,22 @@ class Settings(RegistrySettings):
         ),
         description="URL to download Kokoro voices binary",
     )
+    # Per-IP rate limits — pre-auth gates on /health and /v1/audio/speech.
+    # When all legitimate clients share a small set of IPs (NAT, office proxy),
+    # raise these to avoid false 429s. Set to "999999/minute" to effectively
+    # disable a gate. The per-key limit (rate_limit_rpm per API key) is the
+    # primary enforcement for authenticated traffic.
+    per_ip_health_rate_limit: str = Field(
+        default="60/minute",
+        description="Per-IP rate limit for GET /health (unauthenticated endpoint)",
+    )
+    per_ip_speech_rate_limit: str = Field(
+        default="600/minute",
+        description=(
+            "Per-IP rate limit for POST /v1/audio/speech pre-auth gate. "
+            "Runs before verify_api_key to bound token-spray attacks."
+        ),
+    )
     qwen3_model_url: str = Field(
         default="",
         description="URL to download Qwen3 GGUF model (empty = skip auto-download)",
@@ -244,6 +260,22 @@ class Settings(RegistrySettings):
         default="",
         description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
     )
+
+    @field_validator(
+        "per_ip_health_rate_limit",
+        "per_ip_speech_rate_limit",
+    )
+    @classmethod
+    def _validate_rate_limit_format(cls, v: str) -> str:
+        """Accept any non-empty string; the limits library parses it at runtime.
+
+        Invalid formats (e.g. ``"abc"``) raise from ``limits.parse()`` inside
+        ``_check_per_ip_bucket`` and fail-closed (429) rather than failing
+        open, so the operator sees the misconfiguration immediately.
+        """
+        if not v or not v.strip():
+            raise ValueError("Per-IP rate limit must not be empty")
+        return v.strip()
 
     @field_validator(
         "kokoro_model_url",

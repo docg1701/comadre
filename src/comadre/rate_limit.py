@@ -73,15 +73,13 @@ def get_client_ip(request: Request) -> str:
     return "127.0.0.1"
 
 
-# F14 — per-IP bucket on /health to bound the shape-valid-random DoS
-# surface. Authenticated probes still use the auth path; this gate trips
-# only when one IP exceeds 60 calls/minute, regardless of bearer
-# validity. Operator-overridable via env if a noisy monitoring agent
-# legitimately exceeds it. F20 — same per-IP bucket is reused on the
-# pre-auth surface of /v1/audio/speech so denied-key spam can't bypass
-# the per-key bucket (auth runs before per-key rate-limit).
-_HEALTH_PER_IP_LIMIT = "60/minute"
-_SPEECH_PER_IP_LIMIT = "600/minute"
+# Per-IP rate-limit defaults — used as fallback when app.state.settings is
+# unavailable (e.g. during startup before lifespan attaches it). The
+# operator can override these via PER_IP_HEALTH_RATE_LIMIT and
+# PER_IP_SPEECH_RATE_LIMIT env vars. Set to "999999/minute" to effectively
+# disable a gate when all legitimate traffic shares one IP (NAT/proxy).
+_HEALTH_PER_IP_LIMIT_DEFAULT = "60/minute"
+_SPEECH_PER_IP_LIMIT_DEFAULT = "600/minute"
 
 
 async def _check_per_ip_bucket(
@@ -96,7 +94,21 @@ async def _check_per_ip_bucket(
         # framework bug, not a request-time concern.
         return
     ip = get_client_ip(request)
-    limit = parse(limit_str)
+    try:
+        limit = parse(limit_str)
+    except ValueError as exc:
+        _rate_limit_logger.error(
+            "Invalid per-IP rate limit string %r for bucket %s — "
+            "failing closed (429) to alert the operator",
+            limit_str,
+            bucket_prefix,
+        )
+        raise RateLimitError(
+            retry_after=60,
+            limit=0,
+            remaining=0,
+            reset=int(time.time()) + 60,
+        ) from exc
     bucket = f"{bucket_prefix}:{ip}"
     allowed = await limiter.strategy.hit(limit, bucket)
     if allowed:
@@ -121,14 +133,25 @@ async def _check_per_ip_bucket(
 
 
 async def check_health_per_ip_rate_limit(request: Request) -> None:
-    """F14 — per-IP rate-limit gate on /health. 60/min/IP."""
-    await _check_per_ip_bucket(
-        request, limit_str=_HEALTH_PER_IP_LIMIT, bucket_prefix="health-ip"
+    """F14 — per-IP rate-limit gate on /health.
+
+    Reads the limit from ``app.state.settings.per_ip_health_rate_limit``
+    (default 60/minute). Falls back to the hardcoded default when settings
+    are unavailable (startup window before lifespan attaches them).
+    """
+    settings = getattr(request.app.state, "settings", None)
+    limit_str = (
+        settings.per_ip_health_rate_limit if settings else _HEALTH_PER_IP_LIMIT_DEFAULT
     )
+    await _check_per_ip_bucket(request, limit_str=limit_str, bucket_prefix="health-ip")
 
 
 async def check_speech_per_ip_rate_limit(request: Request) -> None:
-    """F20 — per-IP rate-limit gate on /v1/audio/speech. 600/min/IP.
+    """F20 — per-IP rate-limit gate on /v1/audio/speech.
+
+    Reads the limit from ``app.state.settings.per_ip_speech_rate_limit``
+    (default 600/minute). Falls back to the hardcoded default when settings
+    are unavailable.
 
     Runs BEFORE ``verify_api_key`` so a denied-key spammer cannot bypass
     the per-key bucket by never authenticating. The 600/min headroom is
@@ -136,9 +159,11 @@ async def check_speech_per_ip_rate_limit(request: Request) -> None:
     default 60-rpm per-key limit) so a NAT-shared client cluster is
     unaffected; the bucket trips only on bot-shaped traffic.
     """
-    await _check_per_ip_bucket(
-        request, limit_str=_SPEECH_PER_IP_LIMIT, bucket_prefix="speech-ip"
+    settings = getattr(request.app.state, "settings", None)
+    limit_str = (
+        settings.per_ip_speech_rate_limit if settings else _SPEECH_PER_IP_LIMIT_DEFAULT
     )
+    await _check_per_ip_bucket(request, limit_str=limit_str, bucket_prefix="speech-ip")
 
 
 async def check_rate_limit(request: Request) -> None:
