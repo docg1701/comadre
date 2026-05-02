@@ -4,7 +4,6 @@ all:
       # VPS connection — set these to your server's IP and SSH user
       ansible_host: "CHANGE_ME"
       ansible_user: "CHANGE_ME"
-      ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
     # Fernet key used to encrypt tax IDs at rest in the key registry (REQUIRED).
@@ -55,6 +54,25 @@ all:
     # Git repository URL and branch to clone on the VPS
     repo_url: "CHANGE_ME"
     repo_branch: "master"
+
+    # Path to SSH deploy key generated on VPS for GitHub access
+    deploy_key_path: "/home/{{ ansible_user }}/.ssh/comadre_deploy"
+
+    # GitHub repository path as "owner/repo" — used to construct the API URL
+    # for deploy key registration (e.g. "docg1701/comadre")
+    github_repo_path: "CHANGE_ME"
+
+    # GitHub Personal Access Token (classic) with 'repo' scope.
+    # Used ONCE at bootstrap to register the deploy key via API. After
+    # registration the PAT can expire with zero impact.
+    # Encrypt with:
+    #   ansible-vault encrypt_string "ghp_YOUR_TOKEN" --name github_pat
+    # Then copy the output (!vault | ...) and replace the block below.
+    # Also create a vault password file:
+    #   echo -n "your_vault_password" > deploy/ansible/.vault_pass && chmod 600 deploy/ansible/.vault_pass
+    github_pat: !vault |
+              $ANSIBLE_VAULT;1.1;AES256
+              CHANGE_ME
 
     # Default voice for TTS when none specified (format: engine/name)
     default_voice: "kokoro/pm_santa"

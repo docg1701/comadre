@@ -30,6 +30,9 @@ env/
 deploy/ansible/inventory/production.yml
 deploy/ansible/inventory/oracle.yml
 
+# Ansible Vault password file
+deploy/ansible/.vault_pass
+
 # Docker
 .docker/
 

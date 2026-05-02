@@ -14,16 +14,17 @@ Full lifecycle management for Comadre TTS service using Ansible playbooks.
 **Control machine requirements:**
 
 - Ansible 2.14+ installed
-- `community.docker` Ansible collection installed
+- `community.docker` and `community.crypto` Ansible collections installed
 - SSH access to the VPS
 - `COMADRE_KEY_REGISTRY_ENCRYPTION_KEY` environment variable set (Fernet key)
 - `COMADRE_BACKUP_PASSPHRASE` environment variable set (≥ 16 characters)
-- See [Bootstrap](#bootstrap----first-deployment) for generation commands for both
+- `cryptography` Python package installed on the control machine (required by `community.crypto.openssh_keypair`)
+- See [Bootstrap](#bootstrap----first-deployment) for generation commands for all secrets
 
-Install the required Ansible collection:
+Install the required Ansible collections:
 
 ```bash
-ansible-galaxy collection install community.docker
+ansible-galaxy collection install -r deploy/ansible/requirements.yml
 ```
 
 ## Inventory Configuration
@@ -36,7 +37,6 @@ all:
     comadre_vps:
       ansible_host: "YOUR_VPS_IP"
       ansible_user: "YOUR_SSH_USER"
-      ansible_ssh_common_args: "-o ForwardAgent=yes"
 
   vars:
     key_registry_encryption_key: "{{ lookup('env', 'COMADRE_KEY_REGISTRY_ENCRYPTION_KEY') }}"
@@ -49,6 +49,11 @@ all:
     voices_local_dir: ""
     repo_url: "YOUR_REPO_URL"
     repo_branch: "master"
+    deploy_key_path: "/home/{{ ansible_user }}/.ssh/comadre_deploy"
+    github_repo_path: "YOUR_OWNER/YOUR_REPO"
+    github_pat: !vault |
+              $ANSIBLE_VAULT;1.1;AES256
+              CHANGE_ME
     default_voice: "kokoro/pm_santa"
     domain: "localhost"
     landing_enabled: true
@@ -72,8 +77,11 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `key_registry_encryption_key` | Yes | Fernet key for encrypting tax IDs at rest (reads from `COMADRE_KEY_REGISTRY_ENCRYPTION_KEY` env var on the control machine). Maps to the `KEY_REGISTRY_ENCRYPTION_KEY` env var inside the container. |
 | `operator_contact_hint` | No | Customer-facing contact string echoed in 401 hints. Maps to `OPERATOR_CONTACT_HINT`. |
 | `billing_timezone` | No | IANA timezone for billing calculations and the daily suspension sweep day-boundary (default: `UTC`). Maps to `BILLING_TIMEZONE`. **This is a contractual input** — the zone you set here dictates when a customer's `paid_until` expires and their key flips to 401; communicate it formally to customers at contract time. Override to a local zone (e.g. `America/Sao_Paulo`) only when you have informed them. |
-| `repo_url` | Yes | Git repository URL |
+| `repo_url` | Yes | Git repository URL (SSH form: `git@github.com:owner/repo.git`) |
 | `repo_branch` | No | Branch to deploy (default: `master`) |
+| `deploy_key_path` | Yes | Path where the VPS-local deploy keypair is stored (default: `/home/<user>/.ssh/comadre_deploy`) |
+| `github_repo_path` | Yes | GitHub repository path as `owner/repo` used for deploy key registration via API (e.g. `docg1701/comadre`) |
+| `github_pat` | Yes | GitHub Personal Access Token (classic) with `repo` scope — encrypted with Ansible Vault. Used once at bootstrap to register the deploy key. Can expire after registration with zero impact. Encrypt with `ansible-vault encrypt_string`. |
 | `default_voice` | No | Default voice for TTS when none specified (default: `kokoro/pm_santa`) |
 | `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed). Set to a real domain for Let's Encrypt auto-cert. |
 | `landing_enabled` | No | Deploy the public landing page at the root URL (default: `true`). When false, Caddy uses `Caddyfile-no-landing` which proxies all paths to the API. The API endpoints (`/v1/*`, `/health`, etc.) are always available regardless. |
@@ -92,21 +100,30 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 
 ## Complete Deployment Flow
 
-A fresh deploy requires three playbooks in sequence. Generate the two secrets
-once and export them before every run:
+A fresh deploy requires three playbooks in sequence. Generate the secrets once
+and export them before every run:
 
 ```bash
 cd deploy/ansible
 
-# Generate secrets (one-time — store both in your password manager).
+# Generate secrets (one-time — store everything in your password manager).
 export COMADRE_KEY_REGISTRY_ENCRYPTION_KEY="$(python -c \
   'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 export COMADRE_BACKUP_PASSPHRASE="$(python -c \
   'import secrets; print(secrets.token_urlsafe(32))')"
 
+# Create Vault password file (one-time):
+echo -n "your_vault_password" > .vault_pass && chmod 600 .vault_pass
+
+# Encrypt your GitHub PAT (one-time — classic token with 'repo' scope):
+# 1. Generate at https://github.com/settings/tokens
+# 2. Encrypt and paste the output into inventory/production.yml's github_pat field:
+ansible-vault encrypt_string "ghp_YOUR_TOKEN" --name github_pat --vault-password-file .vault_pass
+
 # 1. Bootstrap — installs everything, builds and starts services.
 #    Needs ~30-45 min on first run (model downloads).
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  --vault-password-file .vault_pass \
   -e "ansible_password=SSH_PASSWORD" \
   -e "ansible_become_password=SUDO_PASSWORD"
 
@@ -160,7 +177,7 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 3. Installs Docker Engine and Docker Compose v2
 4. Adds the SSH user to the `docker` group
 5. Installs and configures UFW firewall (ports 22, 80, 443)
-6. Clones the repository to `~/comadre`
+6. Generates SSH deploy key, registers it with GitHub, and clones the repository
 7. Scrubs any legacy `~/comadre/data/keys/` directory left over from pre-volume-migration bootstraps (idempotent on fresh hosts)
 8. Creates empty voices directory structure in Docker volume
 9. Creates `.env` with all configuration variables
@@ -185,6 +202,7 @@ export COMADRE_BACKUP_PASSPHRASE="$(python -c \
 # the ability to restore from any backup archive.
 
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  --vault-password-file .vault_pass \
   -e "ansible_password=SSH_PASSWORD" \
   -e "ansible_become_password=SUDO_PASSWORD"
 ```
@@ -229,7 +247,7 @@ Updates a running Comadre deployment from the latest git commit.
 **What it does:**
 
 1. Verifies `~/comadre` exists and the service is running
-2. Pulls latest changes from git
+2. Pulls latest changes from git via the VPS deploy key (no agent forwarding needed)
 3. Rebuilds the Docker image and restarts the service
 4. Waits for the health endpoint to report `healthy`
 5. Reports actionable error if health check fails
@@ -321,7 +339,7 @@ System-level components (installed by bootstrap):
 - Docker apt repository and GPG key
 - Docker group
 - UFW firewall (disabled, rules reset, package removed)
-- GitHub SSH key from `known_hosts`
+- Deploy key files (`~/.ssh/comadre_deploy` and `~/.ssh/comadre_deploy.pub`)
 
 **What it keeps:**
 
@@ -475,6 +493,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 # 3. Export it for Ansible and run bootstrap.
 export KEY_REGISTRY_ENCRYPTION_KEY="j8F4...k2Y="
 ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  --vault-password-file .vault_pass \
   -e "ansible_become_password=YOUR_SUDO_PASS"
 ```
 
@@ -807,3 +826,46 @@ Memory breakdown per replica: Python process with Kokoro loaded ~4.2 GB peak RSS
 - **Audio cleanup cron** runs `docker compose exec` which targets one replica. Since the audio volume is shared, this is sufficient.
 - **First deployment with replicas > 1** should start with `replicas: 1` to download and cache models in the shared volume. After models are cached, scale up. Concurrent downloads from multiple replicas to the same temp file can corrupt the model.
 - **Caddy blocks on all replicas healthy.** The `depends_on: condition: service_healthy` in compose.yaml means Caddy waits for every replica to pass its healthcheck before starting. If any single replica fails (e.g., OOM during concurrent model loading), Caddy never starts and the entire service is unreachable. For multi-replica deployments, consider changing to `condition: service_started`.
+
+## Troubleshooting
+
+### Deploy key registration fails
+
+If the deploy fails at the "Register deploy key with GitHub" task:
+
+```bash
+# 1. Check if the PAT is still valid (not expired):
+ansible-vault view --vault-password-file .vault_pass inventory/production.yml | grep github_pat
+
+# 2. Test the PAT manually:
+curl -H "Authorization: Bearer YOUR_PAT" https://api.github.com/repos/<owner>/<repo>/keys
+
+# 3. If the PAT expired, generate a new one at https://github.com/settings/tokens
+#    and re-encrypt:
+ansible-vault encrypt_string "ghp_NEW_TOKEN" --name github_pat --vault-password-file .vault_pass
+#    Replace the !vault block in inventory/production.yml
+
+# 4. If the key exists but is corrupted, remove it manually:
+#    Go to https://github.com/<owner>/<repo>/settings/keys
+#    Delete "comadre-vps" and re-run bootstrap.yml
+
+# 5. To regenerate the SSH key on the VPS (force):
+ssh user@VPS "rm ~/.ssh/comadre_deploy*"
+# Re-run bootstrap.yml — the openssh_keypair task recreates the key
+```
+
+### Update fails after migration (missing deploy key)
+
+If you run `update.yml` against a VPS that was bootstrapped with the old
+pattern (`ForwardAgent`) and hasn't been re-bootstrapped yet, the git pull
+fails because `{{ deploy_key_path }}` does not exist:
+
+```bash
+# Run bootstrap once to create the deploy key (idempotent):
+ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
+  --vault-password-file .vault_pass \
+  -e "ansible_password=SSH_PASSWORD" \
+  -e "ansible_become_password=SUDO_PASSWORD"
+
+# After that, update.yml works standalone
+```

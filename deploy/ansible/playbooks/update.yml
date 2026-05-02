@@ -50,13 +50,16 @@
     # Git Pull
     # =========================================================================
 
-    - name: "[Git] Pull latest changes"
+    - name: "[Git] Pull latest changes via deploy key"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "~/comadre"
         version: "{{ repo_branch }}"
+        key_file: "{{ deploy_key_path }}"
+        accept_hostkey: true
         force: true
         update: true
+      become: false
 
     # =========================================================================
     # Landing Page Toggle

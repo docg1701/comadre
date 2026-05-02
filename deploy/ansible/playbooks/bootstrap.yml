@@ -216,24 +216,50 @@
       notify: restart sshd
 
     # =========================================================================
-    # Git Clone
+    # GitHub Deploy Key Setup
     # =========================================================================
 
-    - name: "[Git] Add GitHub to known_hosts"
-      ansible.builtin.known_hosts:
-        name: github.com
-        key: >-
-          github.com ssh-ed25519
-          AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
-        state: present
+    - name: "[Git] Generate deploy key for GitHub access"
+      community.crypto.openssh_keypair:
+        path: "{{ deploy_key_path }}"
+        type: ed25519
+        comment: "comadre-deploy"
+      become: false
 
-    - name: "[Git] Clone Comadre repository"
+    - name: "[Git] Read deploy public key"
+      ansible.builtin.slurp:
+        src: "{{ deploy_key_path }}.pub"
+      register: pubkey_content
+      become: false
+
+    - name: "[Git] Register deploy key with GitHub"
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/{{ github_repo_path }}/keys"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ github_pat }}"
+          Accept: "application/vnd.github+json"
+        body:
+          title: "comadre-vps"
+          key: "{{ pubkey_content.content | b64decode }}"
+          read_only: true
+        body_format: json
+        status_code: [201, 422]
+      register: deploy_key_result
+      no_log: true
+      become: false
+      changed_when: deploy_key_result.status == 201
+
+    - name: "[Git] Clone Comadre repository via deploy key"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "~/comadre"
         version: "{{ repo_branch }}"
+        key_file: "{{ deploy_key_path }}"
+        accept_hostkey: true
         force: true
         update: true
+      become: false
 
     # Pre-volume-migration host artefacts: early Story 4.x bootstraps used a
     # ``./data/keys`` host bind mount before the comadre-registry named volume
