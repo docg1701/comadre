@@ -2,7 +2,7 @@
 
 The ABC is declared now so Story 2.1 (auth) and Story 3.3 (sweep) pick
 up a stable interface. MVP has only ``ManualBillingProvider``; real PSP
-adapters are a post-2.0.0 concern.
+adapters are a post-2.1.1 concern.
 """
 
 from __future__ import annotations
@@ -36,12 +36,12 @@ class ManualBillingProvider(BillingProvider):
         if key.billing_mode == "complimentary":
             return True
         if key.billing_mode == "automated":
-            # No PSP adapter exists in 2.0.0; an `automated` row was either
+            # No PSP adapter exists in 2.1.1; an `automated` row was either
             # planted by a future-version write or by direct SQL edit. Refuse
             # rather than silently treating as `manual` — the manual paid_until
             # field is meaningless for automated billing.
             raise ValueError(
-                "billing_mode='automated' is not supported in 2.0.0 "
+                "billing_mode='automated' is not supported in 2.1.1 "
                 "(no PSP adapter); use 'manual' or 'complimentary'."
             )
         if key.paid_until is None:

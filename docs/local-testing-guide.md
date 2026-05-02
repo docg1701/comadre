@@ -175,7 +175,7 @@ Expected response when fully ready:
     "queue_depth": 0,
     "uptime_seconds": 42,
     "memory_mb": 1024,
-    "version": "2.0.0"
+    "version": "2.1.1"
 }
 ```
 

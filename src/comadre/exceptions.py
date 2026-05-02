@@ -123,7 +123,7 @@ class ApiKeySuspendedError(ComadreError):
 
     def __init__(self, operator_contact_hint: str) -> None:
         # B11 — strip trailing space when ``operator_contact_hint`` is
-        # empty (the 2.0.0 default). The previous f-string left
+        # empty (the 2.1.1 default). The previous f-string left
         # "Your API key has been suspended. " with a dangling space that
         # made monitoring grep patterns fragile.
         suffix = f" {operator_contact_hint}" if operator_contact_hint else ""
