@@ -10,6 +10,14 @@
 # Can be run independently: initial deploy, add new voices, or replace existing ones.
 # No service restart needed — voices are discovered per-request.
 # Entirely unprivileged — no become: true.
+#
+# NOTE: This playbook reads voice files from the control node's filesystem
+# (``voices_local_dir`` with ``delegate_to: localhost``). This is the
+# design intent — voice files (.npy, .wav) are operator-owned binary assets
+# not tracked in Git, not deployment infrastructure scripts. If the control
+# node is lost, voice files must be recovered from the operator's backups.
+# For a fully machine-independent workflow, store voice files in object
+# storage (S3) and add a download task before the staging step.
 
 - name: Deploy Voice Files
   hosts: comadre_vps

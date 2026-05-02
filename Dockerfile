@@ -79,6 +79,12 @@ RUN chmod +x /usr/local/bin/qwen3-tts-cli
 COPY deploy/ansible/scripts/backup-keys.sh /usr/local/bin/comadre-keys-backup
 RUN chmod +x /usr/local/bin/comadre-keys-backup
 
+# Bake the restore-stage script into the image (B16 — same pattern as
+# backup-keys.sh above; eliminates the control-node ``lookup('file', ...)``
+# dependency from restore-keys.yml).
+COPY deploy/ansible/scripts/restore-stage.sh /usr/local/bin/comadre-keys-restore-stage
+RUN chmod +x /usr/local/bin/comadre-keys-restore-stage
+
 # Copy noise WAV files for post-processing
 COPY noise/ /app/noise/
 
