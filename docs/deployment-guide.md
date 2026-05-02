@@ -847,7 +847,10 @@ ansible-vault encrypt_string "ghp_NEW_TOKEN" --name github_pat --vault-password-
 
 # 4. If the key exists but is corrupted, remove it manually:
 #    Go to https://github.com/<owner>/<repo>/settings/keys
-#    Delete "comadre-vps" and re-run bootstrap.yml
+#    Delete the key titled "comadre-vps-<HOST>" (or the legacy "comadre-vps")
+#    and re-run bootstrap.yml. Re-bootstrap on the same VPS is a no-op for
+#    the deploy key because the playbook skips generation when the local key
+#    file already exists.
 
 # 5. To regenerate the SSH key on the VPS (force):
 ssh user@VPS "rm ~/.ssh/comadre_deploy*"

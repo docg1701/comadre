@@ -219,18 +219,26 @@
     # GitHub Deploy Key Setup
     # =========================================================================
 
+    - name: "[Git] Check if deploy key already exists"
+      ansible.builtin.stat:
+        path: "{{ deploy_key_path }}"
+      register: deploy_key_stat
+      become: false
+
     - name: "[Git] Generate deploy key for GitHub access"
       community.crypto.openssh_keypair:
         path: "{{ deploy_key_path }}"
         type: ed25519
         comment: "comadre-deploy"
       become: false
+      when: not deploy_key_stat.stat.exists
 
     - name: "[Git] Read deploy public key"
       ansible.builtin.slurp:
         src: "{{ deploy_key_path }}.pub"
       register: pubkey_content
       become: false
+      when: not deploy_key_stat.stat.exists
 
     - name: "[Git] Register deploy key with GitHub"
       ansible.builtin.uri:
@@ -240,15 +248,16 @@
           Authorization: "Bearer {{ github_pat }}"
           Accept: "application/vnd.github+json"
         body:
-          title: "comadre-vps"
+          title: "comadre-vps-{{ ansible_host }}"
           key: "{{ pubkey_content.content | b64decode }}"
           read_only: true
         body_format: json
-        status_code: [201, 422]
+        status_code: [201]
       register: deploy_key_result
       no_log: true
       become: false
       changed_when: deploy_key_result.status == 201
+      when: not deploy_key_stat.stat.exists
 
     - name: "[Git] Clone Comadre repository via deploy key"
       ansible.builtin.git:
