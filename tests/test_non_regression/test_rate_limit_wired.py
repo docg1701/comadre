@@ -5,7 +5,7 @@ Asserts the failure modes that would reintroduce the edfcb33-class bug
 
 1. Route's dependency tree includes the canonical ``check_rate_limit`` object.
 2. 3rd request at ``rate_limit_rpm=2`` returns 429 with the project envelope.
-3. ``/health`` remains UN-rate-limited (CLAUDE.md design decision).
+3. ``/health`` remains UN-rate-limited (AGENTS.md design decision).
 
 Uses the repo-level ASGI fixtures (no docker required).
 """
@@ -118,7 +118,7 @@ async def test_speech_endpoint_emits_429_after_rate_limit(
 async def test_health_endpoint_is_not_rate_limited(
     app: Any, client: AsyncClient
 ) -> None:
-    """CLAUDE.md design decision: /health is UN-rate-limited at the app
+    """AGENTS.md design decision: /health is UN-rate-limited at the app
     layer. Operators rely on un-throttled probes for liveness checks; a
     future PR adding Depends(check_rate_limit) to /health is a design
     regression."""

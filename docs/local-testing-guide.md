@@ -77,7 +77,7 @@ cp /path/to/qwen3-tts-tokenizer-f16.gguf models/
 
 ### Option B: Convert from HuggingFace (fresh machine)
 
-This is a one-time process that takes about 20 minutes and needs ~5 GB of temporary disk space. Run these commands in a separate terminal (not inside Claude Code, which has shell timeouts).
+This is a one-time process that takes about 20 minutes and needs ~5 GB of temporary disk space. Run these commands in a separate terminal (not inside the DeepSeek Harness shell, which has command timeouts).
 
 ```bash
 # 1. Create a temporary Python venv for conversion (CPU-only PyTorch)

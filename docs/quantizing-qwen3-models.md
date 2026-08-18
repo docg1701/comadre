@@ -111,7 +111,7 @@ Not yet automated. The bootstrap playbook does NOT deploy model files. A future 
 
 ## Quick Reference
 
-Run in a separate terminal from the project root (not inside Claude Code).
+Run in a separate terminal from the project root (not inside the DeepSeek Harness shell).
 
 ```bash
 uv venv tmp/convert-venv
@@ -131,7 +131,7 @@ rm -rf tmp/convert-venv tmp/Qwen3-TTS-12Hz-0.6B-Base tmp/qwen3-tts-convert
 
 2. **HuggingFace download is ~1.2 GB.** The original safetensors model is the only valid input for the conversion script.
 
-3. **Run in a separate terminal** if using Claude Code. The installs and downloads will timeout in the Claude Code shell.
+3. **Run in a separate terminal** if using the DeepSeek Harness. The installs and downloads will time out in the harness shell.
 
 4. **The F16 GGUF from Volko76/HuggingFace cannot be re-quantized.** Always convert from the original HuggingFace safetensors.
 

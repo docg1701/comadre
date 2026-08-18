@@ -5,6 +5,19 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Agent tooling migrated from Claude Code to the DeepSeek Harness.**
+  Removed `CLAUDE.md` (its content was already a strict subset of
+  `AGENTS.md`), removed `docs/claude-code-instruction-quality-guide.md`,
+  and repointed every in-repo reference (source comments, tests, docs) to
+  `AGENTS.md` / the DeepSeek Harness. Dropped the `.claude/` gitignore
+  entry and the pre-commit `.claude/` excludes. `AGENTS.md` gains a
+  "Tooling" section declaring itself the single source of truth for the
+  DeepSeek Harness and marking `CLAUDE.md` as intentionally absent.
+
 ## [2.0.0] — 2026-04-26
 
 Multi-tenant key registry, automated billing lifecycle, LGPD-compliant

@@ -4,6 +4,16 @@
 
 Comadre is a self-hosted TTS API with dual-engine architecture: Kokoro fp32 (fast built-in voices) + Qwen3-TTS C++ Q8_0 (voice cloning). Serves n8n chatbot workflows for WhatsApp/Telegram/Messenger in Brazilian Portuguese.
 
+## Tooling
+
+- **Agent harness: DeepSeek Harness (DSH).** The repository is developed with
+  the DeepSeek Harness, which loads `AGENTS.md` automatically at session
+  start. `AGENTS.md` is the single source of truth for agent instructions.
+- **`CLAUDE.md` is intentionally absent.** Its content was already covered
+  by `AGENTS.md` (a superset) and the file was removed in August 2026. Do
+  not re-add `CLAUDE.md`, a `.claude/` directory, or any other Claude Code
+  artifact — the project targets DSH, and DSH reads `AGENTS.md`.
+
 ## Language Policy
 
 - **Everything in English** — code, comments, commits, docs, configs, API responses, error messages, README.md.

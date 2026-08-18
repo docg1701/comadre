@@ -13,3 +13,7 @@ MD025: false
 
 # Allow trailing punctuation in headings
 MD026: false
+
+# Allow repeated section headings per release (Keep a Changelog)
+MD024:
+  siblings_only: true

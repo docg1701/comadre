@@ -129,7 +129,7 @@ class RegistrySettings(BaseSettings):
 
         Without this, a typo like ``America/Sao-Paulo`` or ``BRT`` silently
         desyncs the runtime BILLING_TIMEZONE from the cron's CRON_TZ — see
-        the CLAUDE.md gotcha. Failing fast at boot makes the misconfiguration
+        the AGENTS.md gotcha. Failing fast at boot makes the misconfiguration
         immediately operator-visible.
         """
         try:

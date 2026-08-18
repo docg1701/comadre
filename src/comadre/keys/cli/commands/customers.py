@@ -1010,7 +1010,7 @@ def update_customer_cmd(
 
     if not result.updated_fields:
         # B7 \u2014 same-value writes intentionally produce no UPDATE and no
-        # audit row (CLAUDE.md "no-op write" contract). Surface that
+        # audit row (AGENTS.md "no-op write" contract). Surface that
         # honestly to the operator instead of "Updated: ... \u2014 " with
         # an empty suffix that implies a mutation happened.
         _logger.info("Updated customer (no-op) | id=%s | fields=", customer_id)

@@ -440,7 +440,7 @@ def _check_billing_timezone_drift(
 ) -> HealthCheck:
     """Cross-validate marker ``cron_tz`` against runtime ``BILLING_TIMEZONE``.
 
-    The CLAUDE.md gotcha: drift between the cron's ``CRON_TZ`` (set by
+    The AGENTS.md gotcha: drift between the cron's ``CRON_TZ`` (set by
     ``bootstrap.yml`` from ``billing_timezone`` at install time) and the
     app's runtime ``BILLING_TIMEZONE`` env var silently shifts the app's
     "today" relative to the cron schedule — suspensions fire at the wrong
