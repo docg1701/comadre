@@ -28,7 +28,7 @@ _HEALTH_PATH = "/health"
 _TEST_RPM = 2
 _SPEECH_BODY = {
     "input": "olá mundo",
-    "voice": "kokoro/pm_santa",
+    "voice": "pocket/rafael",
     "response_format": "ogg",
 }
 

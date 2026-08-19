@@ -1,7 +1,7 @@
 [project]
 name = "comadre"
-version = "2.1.1"
-description = "Comadre Manda Audio Direto, Rapido e Eficiente — Dual-engine TTS API: Kokoro fp32 + Qwen3-TTS C++"
+version = "3.0.0"
+description = "Comadre Manda Áudio Direto, Rápido e Eficiente — pocket-tts TTS API with native voice cloning"
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -13,14 +13,20 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.7",
     "pydantic[email]>=2.9",
-    "kokoro-onnx>=0.5.0",
+    "pocket-tts[audio]==2.1.0",
+    "torch>=2.5.0",
+    "python-multipart>=0.0.9",
+    "huggingface-hub>=0.13",
+    "torchao>=0.16",
     "num2words>=0.5",
     "limits>=3.13",
-    "typer>=0.12",
+    "typer>=0.12,<0.25",
+    "click>=8.1,<8.4",
     "cryptography>=43.0",
     "python-ulid>=2.2",
     "validate-docbr>=2.0",
     "cachetools>=5.3,<6",
+    "python-dateutil>=2.8",
     "pyyaml>=6.0.3",
 ]
 
@@ -60,11 +66,23 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = [
-    "kokoro_onnx.*",
+    "pocket_tts.*",
     "num2words.*",
     "cachetools.*",
+    "soundfile.*",
 ]
 ignore_missing_imports = true
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

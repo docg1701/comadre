@@ -1,6 +1,10 @@
 #tmp shit
 tmp/
 
+# pocket-tts model artifacts (downloaded on first boot, not committed)
+models/pocket-tts/
+models/pocket-tts-config/
+
 # Runtime key registry (sqlite DB + WAL sidecars, created by `comadre-keys`)
 data/
 

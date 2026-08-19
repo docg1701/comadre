@@ -6,50 +6,19 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-2.1.1-blue" alt="Version 2.1.1">
+  <img src="https://img.shields.io/badge/version-3.0.0-blue" alt="Version 3.0.0">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
-  <img src="https://img.shields.io/badge/TTS-Kokoro_fp32-ff6f00" alt="Kokoro TTS">
-  <img src="https://img.shields.io/badge/TTS-Qwen3_Q8__0-8b5cf6" alt="Qwen3 TTS">
+  <img src="https://img.shields.io/badge/TTS-pocket--tts-ff6f00" alt="pocket-tts">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
 **Comadre Manda Áudio Direto, Rápido e Eficiente**
 
-Self-hosted dual-engine TTS API optimized for Brazilian Portuguese. Kokoro fp32 for fast built-in voices with perfect sigla pronunciation. Qwen3-TTS C++ Q8_0 for voice cloning. OpenAI-compatible endpoint, CPU-only, network-isolated.
-
-## Why Comadre — Cost & Performance at a Glance
-
-Comadre exists for one reason: **scaling WhatsApp audio production without paying per-minute SaaS bills**. ElevenLabs and reseller aggregators (AI33.pro, etc.) get expensive fast — Comadre's cost is the VPS, full stop, regardless of how much audio you generate.
-
-| What you get | Single replica (~$7/mo VPS) | Two replicas (~$21/mo VPS, validated 2026-04-11) |
-|---|---|---|
-| Sustainable throughput | **~13 audio messages/min** | **~20 audio messages/min** |
-| Audio production rate | ~1.7 minutes of audio per wall-clock minute | ~2.6 minutes of audio per wall-clock minute |
-| Realistic monthly capacity (8h × 22 working days) | ~295 hours of audio / ~137,000 messages | **~454 hours of audio / ~211,000 messages** |
-| Concurrent active conversations supported (WhatsApp pace) | ~26 in parallel | **~40 in parallel** |
-| Mean wait time at 20 req/min sustained | 36 s (within WhatsApp natural pace) | **8.6 s (excellent)** |
-| Audio integrity verified | 100% (610/610 requests) | **100% (1,830/1,830 requests across 3 configurations)** |
-| LGPD / data privacy | Inherent — audio never leaves your server | Same |
-| Per-minute cost at saturation | **$0.00051/min** | **$0.00077/min** |
-
-**Cost comparison at the "Large operation" tier (~211,000 audios/month, ~454 hours of audio):**
-
-| Platform | Monthly cost | Pricing model |
-|---|---|---|
-| **Comadre 2 replicas** | **~$21** | Fixed VPS — does not grow with volume |
-| AI33.pro (Edge tier) | ~$56 | Per-credit, scales linearly |
-| AI33.pro (ElevenLabs/MiniMax tier) | ~$102 | Per-credit, scales linearly |
-| ElevenLabs Scale + overage | **~$4,646** | Per-character, scales linearly |
-
-Comadre is **~5x cheaper than AI33.pro Edge tier**, **~10x cheaper than AI33.pro ElevenLabs/MiniMax tier**, and **~220x cheaper than ElevenLabs** at this volume. Above this tier the gap only widens — Comadre's marginal cost is the next VPS upgrade (~$15–25 to double capacity), while the SaaS competitors keep charging per audio minute forever.
-
-**Why this works:** Each Kokoro replica is CPU-bound and produces a roughly constant amount of audio per second of wall clock. Two replicas behind a queue-aware Caddy load balancer (`lb_policy least_conn`) extract the maximum throughput a shared 8-CPU host can deliver, with **zero audio corruption across 2,440 verified end-to-end test requests** spanning four configurations.
-
-**Want the deep numbers?**
-
-- [docs/cost-comparison-report.md](docs/cost-comparison-report.md) — Full cost breakdown vs ElevenLabs and AI33.pro at every tier, sizing rules, and the honest list of trade-offs (English).
-- [docs/relatorio-comparativo-custos.md](docs/relatorio-comparativo-custos.md) — Same report in Brazilian Portuguese, ready to share with prospects who prefer pt-BR.
-- [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — Technical deep-dive: the four-way verification matrix (1 vs 2 replicas, round-robin vs least-conn, 4 vs 3 CPUs per replica), the queue-blindness fix that closed the scaling gap, and the methodology behind every number above.
+Self-hosted TTS API for Brazilian Portuguese on the **Kyutai pocket-tts**
+engine (pinned 2.1.0) with **native voice cloning**: upload a 5-20 second
+audio sample, get a clone of that voice usable immediately in the session
+and optionally stored on your server. OpenAI-compatible endpoint, CPU-only,
+fully offline after first boot.
 
 ## Quick Start
 
@@ -61,93 +30,159 @@ cp .env.example .env
 # Generate the registry encryption key and paste it into .env as
 # KEY_REGISTRY_ENCRYPTION_KEY=<value>:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Accept the gated-model terms at https://huggingface.co/kyutai/pocket-tts
+# with your HF account, create a token, and paste it into .env as HF_TOKEN=
 
-# Build and run
+# Build and run (first boot downloads the model with HF_TOKEN)
 docker compose up --build -d
 
 # Issue the first customer + API key via the comadre-keys CLI
 docker compose exec tts-service comadre-keys create-customer \
-  --name "Acme Demo" --email ops@acme.example --tax-id 11144477735
+  --name "Acme Demo" --email ops@acme.example --cpf 11144477735
 docker compose exec tts-service comadre-keys issue-key \
   --customer <cust_id_from_previous_step> --rpm 60 --price 149
 # The issued plaintext (cmdr_live_...) is shown once — copy it now.
 
-# Test with Kokoro (fast)
+# Speak with the default catalog voice (pocket/rafael)
 curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
+  -d '{"input":"Bom dia, como posso ajudar?", "voice":"pocket/rafael"}' \
   --output test.ogg
 
-# Test with Qwen3 (cloned voice, if configured)
+# Clone a voice (ephemeral, this session only)
+curl -k -X POST https://localhost/v1/voices \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
+  -F "file=@minha-voz.wav" -F "display_name=Minha voz"
+
+# Clone and store for future use
+curl -k -X POST https://localhost/v1/voices \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
+  -F "file=@minha-voz.wav" -F "persist=true"
+
+# Speak with the clone (use the "voice" value from the previous response)
 curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
-  --output test_clone.ogg
+  -d '{"input":"Olá! Esta é a minha voz clonada.", "voice":"pocket/u_01J2K4M6N8P0Q2R4S6"}' \
+  --output clone.ogg
 ```
+
+After the first boot, unset `HF_TOKEN` and set `HF_HUB_OFFLINE=1` in `.env`
+for a fully offline runtime.
 
 ## How It Works
 
 ```text
-POST /v1/audio/speech  { "input": "...", "voice": "santa" }
+POST /v1/audio/speech  { "input": "...", "voice": "pocket/<name>" }
     |
-Route to engine by voice name
+resolve voice (filesystem state LRU or ephemeral clone)
     |
-Preprocess text (normalize, chunk, expand siglas)
+normalize_text() [+ expand_siglas()] — pocket-tts chunks internally
     |
-Generate speech (Kokoro ONNX or Qwen3 C++ binary)
+generate_audio(state, text, copy_state=True) -> 24 kHz float32
     |
-Post-process audio (EQ, compression, echo, noise mixing)
+_samples_to_wav() -> ffmpeg pipeline (EQ/compression/noise + atempo speed)
     |
-Return OGG Opus or WAV
+OGG Opus 24 kbps 16 kHz mono (or WAV 24 kHz)
+
+POST /v1/voices (multipart upload)
+    |
+auth -> per-IP gate -> per-key RPM -> FIFO lock (shared with speech)
+    |
+size/duration/format validation (3-30 s, <= 10 MB, wav/mp3)
+    |
+get_state_for_audio_prompt(tmp, truncate=True)
+    |
+[persist] export_model_state -> /voices/pocket/u_<ULID>.safetensors + .wav + .json
+    |  (else: ephemeral in-memory clone with TTLs)
+201 { voice, display_name, persisted, duration_s, sample_rate, expires_at }
 ```
 
-## Dual-Engine Architecture
+## Voices (v3)
 
-| Voice | Engine | Use Case | Latency (4 vCPU) |
-|-------|--------|----------|-------------------|
-| `kokoro/pm_santa` (M) | Kokoro fp32 | Default, fast, perfect siglas | 5-16s |
-| `kokoro/pf_dora` (F) | Kokoro fp32 | Female alternative | 5-16s |
-| `kokoro/pm_alex` (M) | Kokoro fp32 | Male alternative | 5-16s |
-| `qwen/galvani` | Qwen3-TTS C++ Q8_0 | Voice cloning (pre-configured reference) | 12-37s |
-| `qwen/female` | Qwen3-TTS C++ Q8_0 | Qwen3 default female | 12-37s |
-| `qwen/male` | Qwen3-TTS C++ Q8_0 | Qwen3 default male | 12-37s |
+| Voice | Source | Notes |
+|-------|--------|-------|
+| `pocket/rafael` | Catalog embedding | Default voice (Kyutai) |
+| `pocket/<name>` | `/voices/pocket/<name>.wav` | Operator voice — drop a WAV, available immediately (state materializes lazily) |
+| `pocket/u_<ULID>` | API upload | Your clone; ephemeral (session) or persisted on the server |
 
-Each engine has its own:
-
-- **Preprocessing**: Kokoro uses `normalize_text()` + `chunk_text()`. Qwen3 uses `expand_siglas()`.
-- **Post-processing**: Kokoro uses radio_warm (EQ, compression, saturation, loudnorm). Qwen3 uses whatsapp-subtle (EQ, compression, atempo 1.15x, echo, noise).
-- **Output**: OGG Opus 24kbps 16kHz mono (default) or WAV.
+- **One voice format**: `pocket/<name>` — no engine prefixes.
+- **Ephemeral clones**: keyed to your API key, idle TTL 1 h / absolute TTL 24 h,
+  max 5 per key, global LRU cap 50 — memory-only, gone on restart.
+- **Stored clones**: max 20 per customer, managed via `DELETE /v1/voices/<name>`
+  (own voices only) or by the operator on the filesystem.
+- **Speed** (0.25-4.0) applies to ALL voices via ffmpeg `atempo` chains.
+- **Model upgrades are safe**: the reference WAV is always stored; the clone
+  state regenerates automatically when the model hash changes.
 
 ## Key Features
 
-- **Perfect sigla pronunciation** via custom espeak-ng pt_extra dictionary (CPF, CNPJ, FGTS, SUS, LOAS... 67 entries, 34/34 verified)
-- **Voice cloning** via Qwen3-TTS with pre-configured reference audio and seed reproducibility
-- **OpenAI-compatible API** (`POST /v1/audio/speech`) -- works with any HTTP client or workflow tool
-- **Network-isolated** -- zero external API calls after deployment
-- **CPU-only** -- runs on a 4 vCPU / 8 GB RAM VPS or any PC
-- **Single FIFO queue** per instance (`asyncio.Lock`) -- scale horizontally via `deploy.replicas` in compose.yaml
-- **HTTPS via Caddy** -- auto-TLS reverse proxy with Let's Encrypt or self-signed certs
-- **Browser demo** -- public landing page at the root path for trying the API from any device (bring your own API key)
-- **Registry-backed API keys** -- issue, rotate, and revoke keys via the `comadre-keys` CLI. Keys are stored as SHA-256 hashes in an encrypted SQLite registry; tax IDs are Fernet-encrypted at rest.
-- **Billing lifecycle verbs** -- `comadre-keys mark-paid <prefix> --until YYYY-MM-DD` confirms a payment to an exact date (auto-reactivates suspended keys); `comadre-keys mark-paid <prefix> --months <1..36>` extends from `paid_until` (if today-or-later) or from today (if expired); both forms accept `--price-monthly <brl>` to update price atomically in the same transaction. `comadre-keys suspend <prefix>` / `comadre-keys reactivate <prefix>` are the manual out-of-cycle levers.
-- **Billing reports** -- `comadre-keys at-risk --window 5d` previews active manual keys expiring in the next N days (the Day-04 chase list); `comadre-keys revenue --month current` summarises paid / pending / suspended / complimentary counts, MRR and projected revenue (the Day-05 screenshot). Add `--as-of YYYY-MM-DD` to replay the audit log and reconstruct the same report as it would have looked on a past day (`BILLING_TIMEZONE`-aware day boundaries).
-- **Automated suspension sweep** -- a daily cron at 00:30 in the configured `BILLING_TIMEZONE` (default **UTC**) auto-suspends manual keys whose `paid_until` has elapsed, writing one audit row per key plus a summary row for liveness tracking. Run `comadre-keys suspend-sweep --dry-run` to preview the set without writing, or `comadre-keys suspend-sweep` to manually recover from a failed cron. The billing timezone is a contractual input — operators must communicate the chosen zone to customers, since it governs when `paid_until` expires and keys flip to 401.
-- **Per-key rate limiting** -- each API key carries its own `rate_limit_rpm`. Customers on higher tiers get higher throughput; customers on smaller tiers are bounded predictably. Buckets are keyed on the registry's `key_id` and stable across key rotation. See [docs/rate-limiting.md](docs/rate-limiting.md).
-- **Operator observability** -- per-key counters (`requests_total`, `rate_limit_429`, `peak_rpm`) snapshot every 15 s to disk. Inspect the auth cache with `comadre-keys cache-status`; inspect a specific key's last-24h activity with `comadre-keys show <key-prefix> --audit-tail N`.
-- **System health** -- `comadre-keys health` renders a single panel that covers DB integrity and `0600` permissions, schema-version parity, customer / key counts, last suspension-sweep age, cron-installed status, backup liveness (warn unless a fresh `*.backup-*.tar.gz.enc` sits next to the DB), and auth-cache replica telemetry. Pipe `comadre-keys health --format json` into a Nagios / Prometheus textfile monitor — exit 0 on healthy, exit 7 on any warning or failure.
-- **LGPD data operations** -- `comadre-keys export-customer <cust_id> --format json|yaml` emits the customer's stored data (decrypted tax ID, name, email, notes, associated key prefixes) as a machine-readable document for Art. 18 II/V access responses; add `--include-audit` to attach the chronological audit-event array (with `audit_events_total` / `audit_events_truncated` completeness signals) when counsel reads Art. 18 broadly. `comadre-keys update-customer <cust_id> --name "..." | --email "..." | --add-note "..." | --notes "..."` covers Art. 18 III corrections of name, email, or operator notes; `comadre-keys correct-tax-id <cust_id> --new-cpf "..."|--new-cnpj "..." --reason "..."` corrects a CPF/CNPJ while preserving `customer_id` and every API-key FK. `comadre-keys delete-customer <cust_id> --hard` irreversibly purges the customer's personal data and all their API keys in a single transaction, preserving the tombstone row and audit trail per Art. 18 VI.
-- **Encryption-key rotation** -- `comadre-keys rotate-encryption-key --new-key <fernet>` atomically re-encrypts every active customer's tax ID under a freshly generated Fernet key in a single transaction, audits the event, and prints the value to drop into `.env` -- the breach-response lever for a suspected key exposure without taking the registry offline (FR36).
-- **Nightly encrypted backups** -- `ansible-playbook deploy/ansible/playbooks/backup-keys.yml` produces `{registry.db}.backup-<UTC-ISO>.tar.gz.enc` at mode 0600, AES-256-CBC + PBKDF2 envelope, co-located with the DB for health-glob visibility. The companion `restore-keys.yml -e "backup_file=..."` playbook performs the idempotent rollback (DB swap via helper container, `/health` poll until healthy). 24-hour RPO, < 10-minute RTO for ≤ 10 000 customers (FR40, FR41).
-- **Operational health assertion playbook** -- `ansible-playbook deploy/ansible/playbooks/health.yml` runs a chain of `ansible.builtin.assert` probes covering DB file permissions (`0600`), parent dir mode (`0700`), both required cron entries (`comadre-daily-suspension`, `comadre-keys-backup`), backup-archive presence, UFW rules unchanged, and the in-container `comadre-keys health` aggregate. Each assertion carries a corrective hint in its `fail_msg`; the playbook exits non-zero on any deviation so operators can wire it into monitoring (cron + logger), CI, or post-incident verification (FR42, FR44, FR52).
+- **Single-engine pocket-tts** — kyutai-labs/pocket-tts 2.1.0, language
+  `portuguese` (deploy-time `portuguese_24l` variant available).
+- **Native voice cloning** — upload 5-20 s of audio and speak with that voice
+  in the same session or store it for future requests (LGPD consent required).
+- **Sigla preprocessing** — `normalize_text()` (currency/dates/times/numbers) +
+  `expand_siglas()` spaced letters (`CNPJ` → `C N P J`), toggled by
+  `POCKET_SIGLA_SPACING`.
+- **OpenAI-compatible API** (`POST /v1/audio/speech`) — works with any HTTP
+  client or workflow tool (n8n: JSON for speech, Form-Data for cloning).
+- **Network-isolated runtime** — downloads happen once on first boot with
+  `HF_TOKEN`; afterwards `HF_HUB_OFFLINE=1` makes generation fully offline.
+- **CPU-only** — 4 vCPU / 8 GB RAM VPS; torch CPU wheel via the pytorch-cpu
+  index; optional int8 quantization (`POCKET_QUANTIZE`).
+- **Single FIFO queue** per instance (`asyncio.Lock`) — clone encoding and
+  speech share the same queue. Scale horizontally via `deploy.replicas` in
+  compose.yaml (Caddy load-balances with `least_conn`).
+- **HTTPS via Caddy** — auto-TLS reverse proxy with Let's Encrypt or
+  self-signed certs.
+- **Browser demo** — public landing page with the TTS form plus a "Clonar
+  voz" section (consent checkbox, persist option, clone preview) and a
+  "Minhas vozes" list with delete buttons.
+- **Registry-backed API keys** — issue, rotate, and revoke keys via the
+  `comadre-keys` CLI. Keys are stored as SHA-256 hashes in an encrypted
+  SQLite registry; tax IDs are Fernet-encrypted at rest.
+- **Billing lifecycle verbs** — `comadre-keys mark-paid <prefix> --until
+  YYYY-MM-DD` confirms a payment to an exact date (auto-reactivates suspended
+  keys); `mark-paid <prefix> --months <1..36>` extends from `paid_until` (if
+  today-or-later) or from today (if expired); both accept `--price-monthly`.
+  `suspend` / `reactivate` are the manual out-of-cycle levers.
+- **Billing reports** — `comadre-keys at-risk --window 5d` previews keys
+  expiring soon; `comadre-keys revenue --month current` summarises MRR and
+  projected revenue; `--as-of YYYY-MM-DD` replays the audit log for
+  historical reports (`BILLING_TIMEZONE`-aware).
+- **Automated suspension sweep** — daily cron at 00:30 in the configured
+  `BILLING_TIMEZONE` (default UTC) auto-suspends expired manual keys.
+- **Per-key rate limiting** — each API key carries its own `rate_limit_rpm`;
+  voice-clone uploads consume the same bucket as speech. See
+  [docs/rate-limiting.md](docs/rate-limiting.md).
+- **Operator observability** — per-key counters snapshot every 15 s to disk;
+  `comadre-keys cache-status`, `show <prefix> --audit-tail N`.
+- **System health** — `comadre-keys health` renders DB integrity + 0600 modes,
+  cron-installed markers, backup liveness, and cache telemetry. Exit 0
+  healthy / exit 7 unhealthy JSON.
+- **LGPD data operations** — `export-customer` now includes the customer's
+  stored voice clones (biometric data) as a `voices` array;
+  `delete-customer --hard` purges the clone files alongside the registry
+  rows and records `voices_deleted` in the audit log. Uploads require
+  explicit consent (landing-page checkbox).
+- **Encryption-key rotation** — `comadre-keys rotate-encryption-key`
+  re-encrypts every active tax ID atomically.
+- **Nightly encrypted backups** — `ansible-playbook backup-keys.yml` produces
+  `{registry.db}.backup-<UTC-ISO>.tar.gz.enc`; `restore-keys.yml` rolls back.
+- **Operational health assertion playbook** — `ansible-playbook health.yml`
+  asserts DB modes, cron entries, backup presence, UFW rules, and the
+  in-container health aggregate (plus the pocket engine probe).
 
 ## Requirements
 
 - 4 vCPUs, 8 GB RAM (VPS or bare metal)
-- ~2 GB disk for models (Kokoro auto-downloads; Qwen3 requires manual setup -- see [deployment guide](docs/deployment-guide.md))
-- Docker and Docker Compose v2 (Caddy reverse proxy handles all external access on ports 80/443)
-- Optional: 5-10 second WAV recording for voice cloning (Qwen3 engine)
+- ~600 MB disk for models (model ~370 MB + tokenizer/embedding ~2 MB);
+  the container image is ~3-3.5 GB (torch CPU + pocket-tts)
+- Docker and Docker Compose v2 (Caddy handles external access on ports 80/443)
+- Optional: a HuggingFace account + token for the one-time gated-model
+  download (accept the terms at <https://huggingface.co/kyutai/pocket-tts>)
+- Optional: a 5-20 second WAV/MP3 recording to clone your own voice
 
 ## Deployment
 
@@ -161,19 +196,35 @@ ansible-playbook playbooks/health.yml -i inventory/production.yml     # Diagnose
 ansible-playbook playbooks/cleanup.yml -i inventory/production.yml -e "ansible_become_password=YOUR_SUDO_PASS"   # Remove
 ```
 
+Air-gapped model deployment: `ansible-playbook playbooks/deploy-models.yml`
+with `pocket_model_local` / `pocket_tokenizer_local` / `pocket_rafael_local`
+inventory vars (the playbook fails its prerequisite check when they are
+empty — that is intentional; the default path is auto-download).
+
 ## Documentation
 
-- [docs/api-reference.md](docs/api-reference.md) -- API endpoint spec, schemas, error codes, curl examples
-- [docs/deployment-guide.md](docs/deployment-guide.md) -- Deployment lifecycle: bootstrap, update, cleanup, HTTPS, key registry bootstrap
-- [docs/configuration-reference.md](docs/configuration-reference.md) -- Environment variables reference
-- [docs/monetization.md](docs/monetization.md) -- Customer tiers, per-key pricing, rate-limit lifecycle
-- [docs/monetization.md#lgpd-operator-obligations](docs/monetization.md#lgpd-operator-obligations) -- LGPD operator handbook: controller identification, data-subject request procedures, breach-notification runbook, privacy-policy template paragraph
-- [docs/rate-limiting.md](docs/rate-limiting.md) -- Per-key algorithm, bucket identity, 429 semantics, operator controls
-- [docs/troubleshooting.md](docs/troubleshooting.md) -- Common issues with resolution steps
-- [docs/api-architecture.md](docs/api-architecture.md) -- Internal API design, queue architecture, post-processing pipelines
-- [docs/feasibility-report-tts-engine.md](docs/feasibility-report-tts-engine.md) -- Engine evaluation (10+ configs, 400+ samples)
-- [docs/espeak-ng-custom-dictionary.md](docs/espeak-ng-custom-dictionary.md) -- pt_extra dictionary for sigla pronunciation
-- [docs/qwen3-tts-internals.md](docs/qwen3-tts-internals.md) -- Qwen3 CLI params, THINK mode, seed reproducibility
+- [docs/api-reference.md](docs/api-reference.md) — API endpoints (speech +
+  voices), schemas, error table, curl + n8n examples
+- [docs/deployment-guide.md](docs/deployment-guide.md) — Deployment lifecycle,
+  HF token step, model deployment, HTTPS
+- [docs/configuration-reference.md](docs/configuration-reference.md) —
+  Environment variables reference
+- [docs/voice-management.md](docs/voice-management.md) — Voice artifacts,
+  cloning quotas/TTLs, operator provisioning, LGPD verbs
+- [docs/monetization.md](docs/monetization.md) — Billing tiers + LGPD operator
+  handbook (incl. voice-clone biometrics)
+- [docs/rate-limiting.md](docs/rate-limiting.md) — Per-key algorithm, bucket
+  identity, 429 semantics
+- [docs/troubleshooting.md](docs/troubleshooting.md) — HF gating/401,
+  offline boot, torch/RAM, state regen, upload validation errors
+- [docs/api-architecture.md](docs/api-architecture.md) — Internal design,
+  queue architecture, VoiceRegistry/LRU, pipelines
+- [docs/pocket-tts-migration-feasibility.md](docs/pocket-tts-migration-feasibility.md) —
+  Why pocket-tts (v3 decision analysis)
+- [docs/pocket-tts-v3-migration-plan.md](docs/pocket-tts-v3-migration-plan.md) —
+  The executed migration plan (with the Phase 0 spike record)
+- [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — v2-era
+  scaling/cost numbers (a v3 addendum lands after the production cutover)
 
 ## Load Testing
 
@@ -187,17 +238,22 @@ uv run --group test python scripts/capacity_test.py \
   --url https://YOUR_VPS_DOMAIN --api-key cmdr_live_YOUR_PLAINTEXT
 ```
 
-Issue a dedicated load-test key via `comadre-keys issue-key --rpm 10000 --billing-mode complimentary`, and `comadre-keys revoke-key` it when the run is done.
+Both scripts default to `--voice pocket/rafael`. Issue a dedicated load-test
+key via `comadre-keys issue-key --rpm 10000 --billing-mode complimentary`,
+and `comadre-keys revoke-key` it when the run is done.
 
 ## Development
 
 ```bash
-uv sync                                    # Install dependencies
+uv sync                                    # Install dependencies (torch CPU index)
 uv run pytest                              # Run tests
+uv run pytest -m slow                      # Real-model integration tests
 uv run ruff check . && uv run mypy src/    # Lint + type check
 uv run pre-commit run --all-files          # All quality checks
+uv run python scripts/spike_pocket_tts.py  # Tuning harness (RTF, sigla A/B, clone timing)
 ```
 
 ## License
 
-[MIT](LICENSE)
+- Comadre: [MIT](LICENSE)
+- TTS model: Kyutai Pocket TTS — [cc-by-4.0](https://creativecommons.org/licenses/by/4.0/)

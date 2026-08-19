@@ -55,3 +55,47 @@ def test_delete_customer_not_found_exits_3(env: dict[str, str]) -> None:
     )
     assert result.exit_code == 3
     clear_buffers()
+
+
+def test_delete_customer_hard_purges_voice_clones_and_audits_count(
+    env: dict[str, str],
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """v3 LGPD: hard-delete purges the customer stored voice clones
+    (files deleted), leaves other voices intact, and records
+    voices_deleted in the audit row."""
+    from ulid import ULID
+
+    from comadre import voice_storage
+
+    cid, _kid, _ = seed_by_prefix(env["db_path"], customer_email="helena@clinica.com")
+    monkeypatch.setenv("VOICES_DIR", str(tmp_path))
+    pocket_dir = tmp_path / "pocket"
+    pocket_dir.mkdir()
+
+    for _ in range(2):
+        name = f"u_{ULID()}"
+        (pocket_dir / f"{name}.wav").write_bytes(b"x")
+        voice_storage.write_meta(pocket_dir, name, customer_id=cid)
+    other = f"u_{ULID()}"
+    (pocket_dir / f"{other}.wav").write_bytes(b"x")
+    voice_storage.write_meta(pocket_dir, other, customer_id="cust_other")
+    (pocket_dir / "operadora.wav").write_bytes(b"x")
+
+    result = runner.invoke(app, ["delete-customer", cid, "--hard", "--yes"])
+    _, stderr = buffers()
+    assert result.exit_code == 0, stderr
+    assert voice_storage.count_by_customer(pocket_dir, cid) == 0
+    assert voice_storage.count_by_customer(pocket_dir, "cust_other") == 1
+    assert (pocket_dir / "operadora.wav").is_file()
+
+    conn = sqlite3.connect(env["db_path"])
+    try:
+        audit = conn.execute(
+            "SELECT details_json FROM audit_log WHERE action = 'delete_customer'"
+        ).fetchone()
+        details = json.loads(audit[0])
+        assert details.get("voices_deleted") == 2
+    finally:
+        conn.close()

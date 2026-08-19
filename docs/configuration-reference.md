@@ -12,22 +12,29 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `OPERATOR_CONTACT_HINT` | `Contact your Comadre operator for billing.` | Operator contact string echoed in 401 hints for suspended / revoked / past-due keys. Keep it short and customer-facing. | `Contact ops@acme.example for billing.` |
 | `BILLING_TIMEZONE` | `UTC` | IANA timezone used for billing-day calculations (first-charge dates, `paid_until` comparisons, stamped note dates) and the daily suspension sweep's day-boundary. Must be a valid zone; startup fails otherwise. **MUST match the `CRON_TZ` envvar set by `deploy/ansible/playbooks/bootstrap.yml`** (sourced from the inventory's `billing_timezone` variable) — drift between the two silently shifts the daily suspension sweep's "today" computation relative to the cron schedule. **Billing-TZ is a contractual input**: whichever zone this variable holds dictates when a customer's `paid_until` expires and their API key flips to 401. Operators MUST communicate the chosen zone to customers at contract time and avoid changing it post-onboarding (a change silently shifts when existing keys go past-due). Default `UTC` is the operator-neutral, internationally predictable choice; override only when you have formally informed the customer base. See also: `comadre-keys mark-paid`, `comadre-keys suspend`, `comadre-keys reactivate` for the operator-hand billing verbs; `comadre-keys at-risk`, `comadre-keys revenue` read the reporting month / look-ahead window in this timezone; `comadre-keys suspend-sweep` is the manual/dry-run entry point for the daily auto-suspension cron. | `America/Sao_Paulo` |
 | `BILLING_DAY` | `5` | Day-of-month (1–28) for monthly billing sweeps. Kept inside 1..28 so every month has the date. | `10` |
-| `DEFAULT_VOICE` | `kokoro/pm_santa` | Voice used when the request omits `voice`. Uses `engine/name` format. | `kokoro/pf_dora` |
+| `DEFAULT_VOICE` | `pocket/rafael` | Voice used when the request omits `voice`. Format: `pocket/<name>`. | `pocket/galvani` |
 | `PORT` | `8000` | HTTP port for the FastAPI server (1..65535). Exposed only inside the Docker network — Caddy fronts 80/443. | `9000` |
-| `ESPEAK_DATA_PATH` | `None` | Override bundled espeak-ng data path for custom pt-BR pronunciation. | `/usr/local/share/espeak-ng-data` |
-| `NOISE_DIR` | `/app/noise` | Directory containing room/hiss noise WAV files used by post-processing pipelines. | `/app/noise` |
-| `VOICES_DIR` | `/voices` | Root directory for voice discovery. Must contain `kokoro/` (`.npy`) and/or `qwen/` (`.wav`) subdirectories. See [voice-management.md](voice-management.md). | `/voices` |
-| `KOKORO_MODEL_PATH` | `models/kokoro-v1.0.onnx` | Kokoro ONNX model file. | `/models/kokoro-v1.0.onnx` |
-| `KOKORO_VOICES_PATH` | `models/voices-v1.0.bin` | Kokoro voices binary file. | `/models/voices-v1.0.bin` |
-| `KOKORO_MODEL_URL` | *(GitHub release URL)* | URL fetched on first start when the Kokoro model file is missing. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx` |
-| `KOKORO_VOICES_URL` | *(GitHub release URL)* | URL fetched on first start when the Kokoro voices file is missing. | `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin` |
-| `QWEN3_ENABLED` | `true` | Enable the Qwen3 engine. Set `false` on hosts where the x86_64 binary cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). Disabling skips Qwen3 download, load, and warm-up and hides `qwen/*` voices. | `false` |
-| `QWEN3_CLI_PATH` | `/usr/local/bin/qwen3-tts-cli` | Path to the qwen3-tts-cli binary. | `/usr/local/bin/qwen3-tts-cli` |
-| `QWEN3_MODEL_PATH` | `models/qwen3-tts-0.6b-q8_0.gguf` | Qwen3 Q8_0 GGUF model file. | `/models/qwen3-tts-0.6b-q8_0.gguf` |
-| `QWEN3_TOKENIZER_PATH` | `models/qwen3-tts-tokenizer-f16.gguf` | Qwen3 tokenizer GGUF file. | `/models/qwen3-tts-tokenizer-f16.gguf` |
-| `QWEN3_THREADS` | `4` | CPU threads for Qwen3 inference. Minimum 1. Beyond 4, diminishing returns (~1.5% gain at 6 cores). | `4` |
-| `QWEN3_MODEL_URL` | *(empty)* | URL to auto-download the Qwen3 GGUF model. Empty string skips download — the file must then exist at `QWEN3_MODEL_PATH`. | `https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf` |
-| `QWEN3_TOKENIZER_URL` | *(empty)* | URL to auto-download the Qwen3 tokenizer GGUF. Empty string skips download. | `https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf` |
+| `NOISE_DIR` | `/app/noise` | Directory containing room/hiss noise WAV files used by the post-processing pipeline. | `/app/noise` |
+| `VOICES_DIR` | `/voices` | Root directory for voice discovery. Contains a `pocket/` subdirectory (reference `.wav` + optional `.safetensors`/`.json`). Also read by the LGPD CLI verbs. See [voice-management.md](voice-management.md). | `/voices` |
+| `POCKET_LANGUAGE` | `portuguese` | Language variant — `portuguese` or `portuguese_24l` (validated). One variant per replica (deploy-time choice). | `portuguese_24l` |
+| `POCKET_CONFIG_PATH` | `models/pocket-tts-config/portuguese.yaml` | pocket-tts config YAML (baked into the image with local paths). | `/app/models/pocket-tts-config/portuguese.yaml` |
+| `POCKET_MODEL_PATH` | `models/pocket-tts/portuguese/model.safetensors` | pocket-tts model weights (gated download; sha256 of this file is the registry's `model_hash`). | `/models/pocket-tts/portuguese/model.safetensors` |
+| `POCKET_TOKENIZER_PATH` | `models/pocket-tts/portuguese/tokenizer.model` | sentencepiece tokenizer. | `/models/pocket-tts/portuguese/tokenizer.model` |
+| `POCKET_DEFAULT_VOICE_PATH` | `models/pocket-tts/portuguese/embeddings/rafael.safetensors` | Catalog voice state (rafael). | `/models/pocket-tts/portuguese/embeddings/rafael.safetensors` |
+| `POCKET_THREADS` | `4` | CPU threads (≥1), applied via `torch.set_num_threads` AFTER the pocket_tts import (the library pins 1). | `4` |
+| `POCKET_QUANTIZE` | `false` | int8 quantization of attention + FFN layers (torchao). Phase 0 spike measured +26% RTF on the distilled model — opt-in per host. | `true` |
+| `POCKET_TEMPERATURE` | `0.7` | Generation temperature (≥0). | `0.7` |
+| `POCKET_SIGLA_SPACING` | `true` | Apply `expand_siglas` (spaced letters, `CNPJ` → `C N P J`) — the sigla quality lever. | `false` |
+| `VOICE_UPLOAD_MAX_MB` | `10` | Upload size cap for voice-clone audio (1-50). | `10` |
+| `VOICE_REF_MIN_SECONDS` | `3` | Minimum reference-audio duration (≥1); below → 400 `too_short`. | `3` |
+| `VOICE_REF_MAX_SECONDS` | `30` | Maximum reference-audio duration (≥ min); above → 400 `too_long`. The library truncates at 30 s. | `30` |
+| `VOICE_EPHEMERAL_IDLE_TTL_SECONDS` | `3600` | Ephemeral-clone idle TTL (swept every 60 s). | `3600` |
+| `VOICE_EPHEMERAL_ABSOLUTE_TTL_SECONDS` | `86400` | Ephemeral-clone absolute TTL. | `86400` |
+| `VOICE_EPHEMERAL_MAX_PER_KEY` | `5` | Ephemeral clones per API key. | `5` |
+| `VOICE_EPHEMERAL_GLOBAL_MAX` | `50` | Global LRU cap for ephemeral clones (cross-key eviction). | `50` |
+| `VOICE_STORED_MAX_PER_CUSTOMER` | `20` | Stored (persisted) clones per customer. | `20` |
+| `HF_TOKEN` | *(empty)* | HuggingFace token for the ONE-TIME first-boot download of the gated weights (accept the terms at <https://huggingface.co/kyutai/pocket-tts>). Unset after the first boot. | `hf_...` |
+| `HF_HUB_OFFLINE` | `0` | `1` = fully offline runtime (cache-only model lookup; missing files fail fast with the "run once with HF_TOKEN" message). Set to `1` after the first boot. | `1` |
 | `DOMAIN` | `localhost` | Domain name used by Caddy. A real domain triggers Let's Encrypt; `localhost` uses a self-signed cert from Caddy's internal CA. Compose-level variable, not consumed by the Python process. | `tts.example.com` |
 
 ## Auxiliary files
@@ -48,13 +55,15 @@ None of these files is a configuration surface — the paths are derived from `K
 
 Per-key rate limits are set at key-issuance time via `comadre-keys issue-key --rpm <n>` and changed via `comadre-keys update-key --rpm <n>` (both capped at 1..10 000). There is no environment variable that sets a global RPM floor, ceiling, or per-IP limit — the registry row is authoritative. See [rate-limiting.md](rate-limiting.md) and [monetization.md](monetization.md).
 
-## URL Validation
+## Removed in v3.0.0
 
-All URL fields (`KOKORO_MODEL_URL`, `KOKORO_VOICES_URL`, `QWEN3_MODEL_URL`, `QWEN3_TOKENIZER_URL`) are validated at config-load time:
-
-- Non-empty values must parse as valid HTTP/HTTPS URLs.
-- Empty string is allowed for the Qwen3 URLs (skips auto-download — the files must then be present at the configured paths).
-- Invalid URLs cause startup to fail with a pydantic validation message.
+All v2 engine variables were removed and are ignored: `ESPEAK_DATA_PATH`,
+`KOKORO_MODEL_PATH`, `KOKORO_VOICES_PATH`, `KOKORO_MODEL_URL`,
+`KOKORO_VOICES_URL`, `QWEN3_ENABLED`, `QWEN3_CLI_PATH`,
+`QWEN3_MODEL_PATH`, `QWEN3_TOKENIZER_PATH`, `QWEN3_THREADS`,
+`QWEN3_MODEL_URL`, `QWEN3_TOKENIZER_URL` (the old URL validators were
+deleted with them). Model downloads now go through HuggingFace with
+pinned revisions — see `docs/deployment-guide.md`.
 
 ## Docker Compose Environment
 

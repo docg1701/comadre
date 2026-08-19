@@ -34,7 +34,7 @@ services:
       - "8000"
     volumes:
       - comadre-models:/models:rw
-      - comadre-voices:/voices:ro
+      - comadre-voices:/voices:rw
       - comadre-audio:/audio:rw
       - comadre-registry:/var/lib/comadre:rw
     environment:
@@ -42,34 +42,46 @@ services:
       KEY_REGISTRY_DB_PATH: "${KEY_REGISTRY_DB_PATH:-/var/lib/comadre/registry.db}"
       BILLING_TIMEZONE: "${BILLING_TIMEZONE:-UTC}"
       OPERATOR_CONTACT_HINT: "${OPERATOR_CONTACT_HINT:-}"
-      DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
+      DEFAULT_VOICE: "${DEFAULT_VOICE:-pocket/rafael}"
       PORT: "8000"
-      ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
       NOISE_DIR: /app/noise
       VOICES_DIR: /voices
-      KOKORO_MODEL_PATH: /models/kokoro-v1.0.onnx
-      KOKORO_VOICES_PATH: /models/voices-v1.0.bin
-      QWEN3_MODEL_PATH: /models/qwen3-tts-0.6b-q8_0.gguf
-      QWEN3_TOKENIZER_PATH: /models/qwen3-tts-tokenizer-f16.gguf
-      QWEN3_CLI_PATH: /usr/local/bin/qwen3-tts-cli
-      QWEN3_THREADS: "4"
-      QWEN3_ENABLED: "${QWEN3_ENABLED:-true}"
-      QWEN3_MODEL_URL: "${QWEN3_MODEL_URL:-}"
-      QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
-      KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
-      KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
+      # pocket-tts single engine (v3). The language selects the baked
+      # config + the /models/pocket-tts/<lang>/ artifact subtree.
+      POCKET_LANGUAGE: "${POCKET_LANGUAGE:-portuguese}"
+      POCKET_CONFIG_PATH: /app/models/pocket-tts-config/${POCKET_LANGUAGE:-portuguese}.yaml
+      POCKET_MODEL_PATH: /models/pocket-tts/${POCKET_LANGUAGE:-portuguese}/model.safetensors
+      POCKET_TOKENIZER_PATH: /models/pocket-tts/${POCKET_LANGUAGE:-portuguese}/tokenizer.model
+      POCKET_DEFAULT_VOICE_PATH: /models/pocket-tts/${POCKET_LANGUAGE:-portuguese}/embeddings/rafael.safetensors
+      POCKET_THREADS: "${POCKET_THREADS:-4}"
+      POCKET_QUANTIZE: "${POCKET_QUANTIZE:-false}"
+      POCKET_TEMPERATURE: "${POCKET_TEMPERATURE:-0.7}"
+      POCKET_SIGLA_SPACING: "${POCKET_SIGLA_SPACING:-true}"
+      # Voice cloning quotas (v3)
+      VOICE_UPLOAD_MAX_MB: "${VOICE_UPLOAD_MAX_MB:-10}"
+      VOICE_REF_MIN_SECONDS: "${VOICE_REF_MIN_SECONDS:-3}"
+      VOICE_REF_MAX_SECONDS: "${VOICE_REF_MAX_SECONDS:-30}"
+      VOICE_EPHEMERAL_IDLE_TTL_SECONDS: "${VOICE_EPHEMERAL_IDLE_TTL_SECONDS:-3600}"
+      VOICE_EPHEMERAL_ABSOLUTE_TTL_SECONDS: "${VOICE_EPHEMERAL_ABSOLUTE_TTL_SECONDS:-86400}"
+      VOICE_EPHEMERAL_MAX_PER_KEY: "${VOICE_EPHEMERAL_MAX_PER_KEY:-5}"
+      VOICE_EPHEMERAL_GLOBAL_MAX: "${VOICE_EPHEMERAL_GLOBAL_MAX:-50}"
+      VOICE_STORED_MAX_PER_CUSTOMER: "${VOICE_STORED_MAX_PER_CUSTOMER:-20}"
+      # Model download: HF_TOKEN once for first boot (gated weights),
+      # then set HF_HUB_OFFLINE=1 for a fully offline runtime.
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
     deploy:
       replicas: 1
       resources:
         limits:
           cpus: "4"
-          memory: 6G
+          memory: 4G
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 300s
 
 volumes:
   comadre-models:

@@ -11,7 +11,7 @@ from comadre import __version__
 from comadre.logging import get_logger
 
 if TYPE_CHECKING:
-    from comadre.service import EngineRouter
+    from comadre.service import VoiceRegistry
 
 logger = get_logger("health")
 
@@ -37,7 +37,7 @@ def _get_uptime_seconds(start_time: float) -> int:
 
 def build_minimal_health_response(
     *,
-    router: EngineRouter,
+    router: VoiceRegistry,
     ready: bool,
 ) -> tuple[dict[str, Any], int]:
     """Build minimal health response for unauthenticated callers.
@@ -61,7 +61,7 @@ def build_minimal_health_response(
 
 def build_health_response(
     *,
-    router: EngineRouter,
+    router: VoiceRegistry,
     ready: bool,
     start_time: float,
     queue_depth: int = 0,

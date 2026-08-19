@@ -18,6 +18,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Tooling" section declaring itself the single source of truth for the
   DeepSeek Harness and marking `CLAUDE.md` as intentionally absent.
 
+## [3.0.0] — 2026-08-18
+
+Single-engine rewrite: pocket-tts replaces Kokoro + Qwen3, with native
+voice cloning, a new demo UI, and a full LGPD voice-data surface.
+
+### Added
+
+- **pocket-tts single engine** (kyutai-labs/pocket-tts 2.1.0, language
+  `portuguese`, pinned HF revisions; `portuguese_24l` selectable via
+  `POCKET_LANGUAGE`). CPU-only with torch CPU wheels (pytorch-cpu index),
+  optional int8 quantization (`POCKET_QUANTIZE`, torchao),
+  `POCKET_THREADS` re-applied after the upstream 1-thread import override,
+  `POCKET_TEMPERATURE` (0.7).
+- **Native voice cloning** — `POST/GET/DELETE /v1/voices`: upload 3-30 s
+  audio (advertised 5-20 s, ≤10 MB, wav/mp3), get `pocket/u_<ULID>` clones
+  usable immediately (ephemeral: idle TTL 3600 s, absolute TTL 86400 s,
+  max 5 per key, global LRU cap 50, memory-only) or persisted (≤20 per
+  customer, `.wav` + `.safetensors` + `.json` trio in `/voices/pocket/`).
+- **VoiceRegistry** — filesystem scan, loaded-state LRU (16), lazy state
+  materialization, `model_hash`-based state regeneration from the
+  reference WAV, 60 s ephemeral sweeper.
+- **LGPD voice coverage** — stored clones treated as biometric personal
+  data: `export-customer` emits a `voices` array; `delete-customer --hard`
+  purges voice files (audit row gains `voices_deleted`); uploads require
+  consent (landing-page checkbox).
+- **Landing page** — clone section (file input, display name, persist,
+  LGPD consent, preview) + "Minhas vozes" list with delete; voice picker
+  renders `pocket/*` voices from `/health`.
+- **New errors** — `voice_upload_error` (400/413/422), `voice_limit_error`
+  (429), `voice_delete_error` (403).
+- **`scripts/spike_pocket_tts.py`** — permanent tuning harness (34 sigla
+  phrases + WhatsApp corpus, RTF sweep, sigla-spacing A/B, clone timing).
+- **`deploy/pocket-tts/{portuguese,portuguese_24l}.yaml`** — baked config
+  YAMLs with local paths (no silent no-cloning fallback).
+- **`deploy-models.yml` air-gapped path** — SCP `pocket_model_local` /
+  `pocket_tokenizer_local` / `pocket_rafael_local` into
+  `/models/pocket-tts/<lang>/`.
+
+### Changed
+
+- **Breaking voice names** — `kokoro/<name>` / `qwen/<name>` →
+  `pocket/<name>`; `DEFAULT_VOICE` is now `pocket/rafael`.
+- **Single char limit 1000** (was 500 kokoro / 300 qwen); library chunks
+  internally — `chunk_text()` deleted.
+- **`speed` honored for ALL voices** via ffmpeg `atempo` chains (0.25-4.0);
+  single post-processing pipeline (ex radio_warm).
+- **Health shape** — `engines: {pocket: {...}}`; ephemeral clones never
+  appear in `/health`.
+- **Auth/rate-limit unchanged** — uploads share the per-key RPM bucket;
+  the per-IP speech gate covers the voices endpoints.
+- **Compose** — voices mount `rw`, memory limit 4G, healthcheck
+  `start_period: 300s`; `.env.example`/inventory rewritten for the
+  pocket surface + `HF_TOKEN`/`HF_HUB_OFFLINE`.
+- **Docker image** — espeak-ng build, qwen3-tts-cli, kokoro toolchain
+  removed; ≈3-3.5 GB (torch CPU).
+
+### Removed
+
+- Kokoro (kokoro-onnx), Qwen3-TTS (qwen3-tts-cli / GGUF), the espeak-ng
+  source build + pt_extra dictionary, misaki/espeakng_loader copies,
+  onnxruntime, `chunk_text`, `_apply_whatsapp_subtle`, EngineRouter, and
+  every v2 engine artifact (code, lockfile, image, deploy assets, docs).
+
 ## [2.0.0] — 2026-04-26
 
 Multi-tenant key registry, automated billing lifecycle, LGPD-compliant

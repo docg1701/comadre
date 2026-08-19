@@ -307,7 +307,7 @@
           community.docker.docker_container:
             name: comadre-volume-helper
             image: alpine:3.21
-            command: "sh -c 'mkdir -p /voices/kokoro /voices/qwen'"
+            command: "sh -c 'mkdir -p /voices/pocket'"
             volumes:
               - "comadre-voices:/voices"
             state: started
@@ -341,13 +341,16 @@
           BACKUP_PASSPHRASE={{ backup_passphrase }}
           BILLING_TIMEZONE={{ billing_timezone | default('UTC') }}
           OPERATOR_CONTACT_HINT={{ operator_contact_hint | default('') }}
-          DEFAULT_VOICE={{ default_voice }}
+          DEFAULT_VOICE={{ default_voice | default('pocket/rafael') }}
           DOMAIN={{ domain }}
-          QWEN3_ENABLED={{ qwen3_enabled | default(true) | string | lower }}
-          QWEN3_MODEL_URL={{ qwen3_model_url }}
-          QWEN3_TOKENIZER_URL={{ qwen3_tokenizer_url }}
-          KOKORO_MODEL_URL={{ kokoro_model_url }}
-          KOKORO_VOICES_URL={{ kokoro_voices_url }}
+          POCKET_LANGUAGE={{ pocket_language | default('portuguese') }}
+          POCKET_THREADS={{ pocket_threads | default(4) }}
+          POCKET_QUANTIZE={{ pocket_quantize | default(false) | string | lower }}
+          POCKET_TEMPERATURE={{ pocket_temperature | default(0.7) }}
+          POCKET_SIGLA_SPACING={{ pocket_sigla_spacing | default(true) | string | lower }}
+          VOICE_UPLOAD_MAX_MB={{ voice_upload_max_mb | default(10) }}
+          VOICE_STORED_MAX_PER_CUSTOMER={{ voice_stored_max_per_customer | default(20) }}
+          HF_TOKEN={{ pocket_hf_token | default('') }}
         mode: "0600"
 
     # =========================================================================
@@ -384,7 +387,7 @@
     # internals.
 
     - name: "[FS] Wait for service lifespan to materialise registry.db"
-      # First-boot runs of the service download the Kokoro + Qwen3 models
+      # First-boot runs of the service download the pocket-tts artifacts
       # from HuggingFace before the FastAPI lifespan opens the first
       # connection; the DB file only appears AFTER that. 150 × 2 s = 300 s
       # absorbs a slow-link model pull without aborting bootstrap.
@@ -616,7 +619,7 @@
             -H "Authorization: Bearer <issued-key>" \
             -H "Content-Type: application/json" \
             https://{{ ansible_host }}/v1/audio/speech \
-            -d '{"input":"Olá mundo","voice":"kokoro/pm_santa"}' \
+            -d '{"input":"Olá mundo","voice":"pocket/rafael"}' \
             --output test.ogg
 
           ============================================

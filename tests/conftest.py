@@ -81,24 +81,26 @@ def mock_settings(fernet_key: str) -> Settings:
 
 @pytest.fixture()
 def mock_router() -> MagicMock:
-    """Mock EngineRouter with the canonical voice list + engine_status shape."""
+    """Mock engine (speech facade) with the canonical pocket voice list.
+
+    Serves as both app.state.router (generate_speech) and, via
+    available_voices/engine_status, the health surface.
+    """
     router = MagicMock()
     router.generate_speech.return_value = b"fake-audio-bytes"
     router.available_voices.return_value = [
-        "kokoro/pm_alex",
-        "kokoro/pf_dora",
-        "kokoro/pm_santa",
-        "qwen/female-reference",
-        "qwen/male-reference",
+        "pocket/rafael",
+        "pocket/galvani",
+        "pocket/u_01J2K4M6N8P0Q2R4S6",
     ]
     router.engine_status.return_value = {
-        "kokoro": {
+        "pocket": {
             "loaded": True,
-            "voices": ["kokoro/pm_alex", "kokoro/pf_dora", "kokoro/pm_santa"],
-        },
-        "qwen3": {
-            "loaded": True,
-            "voices": ["qwen/female-reference", "qwen/male-reference"],
+            "voices": [
+                "pocket/rafael",
+                "pocket/galvani",
+                "pocket/u_01J2K4M6N8P0Q2R4S6",
+            ],
         },
     }
     return router
@@ -141,6 +143,7 @@ def app(
     application = create_app()
     application.state.settings = get_settings()
     application.state.router = mock_router
+    application.state.registry = mock_router
     application.state.ready = True
     application.state.queue_lock = asyncio.Lock()
     application.state.queue_depth = 0

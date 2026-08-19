@@ -37,6 +37,7 @@ Consequences of this choice:
 - **Buckets are per key, not per customer.** A customer with two active keys (same `customer_id`, different `key_id`) gets two independent buckets. This is intentional: operationally two keys often represent two distinct integrations and should be sized independently.
 - **No PII in the bucket key.** `key_id` is an opaque ULID — the bucket key is safe to log at debug level if needed.
 - **IP is not part of the bucket.** Two clients sharing a plaintext share the bucket.
+- **Voice-clone uploads share the bucket (v3).** `POST /v1/voices` consumes the same per-key moving window as `POST /v1/audio/speech` — no new bucket, no separate budget. A customer cloning voices at the same time as generating speech spends one budget; a 429 on either endpoint reflects the combined rate. (The per-IP speech gate also covers the voices endpoints, 600/min.)
 
 ## Multi-replica behaviour
 

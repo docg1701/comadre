@@ -537,6 +537,33 @@ exceptions.)
   `POCKET_QUANTIZE`, `POCKET_TEMPERATURE`, variant choice.
 - EXIT: all outputs recorded; spike script committed.
 
+### Phase 0 execution record (2026-08-18, host galvani 12 cores / 27 GB)
+
+- **Baselines captured** (v2 stack, pre-teardown): 34 sigla phrases + 10
+  WhatsApp messages via KokoroEngine (pm_santa, radio_warm pipeline),
+  operator clone via QwenEngine (voices/qwen/female.wav), customer clone via
+  kokoro pm_galvani.npy → `tmp/v2-baseline/{siglas,whatsapp,clones}/*.{wav,ogg}`
+  (gitignored).
+- **Spike** (real pocket-tts, HF cache, no-cloning distilled weights — the
+  gated cloning model 401s without HF_TOKEN; clone-encode timing therefore
+  deferred to the operator's first HF_TOKEN boot): 51-utterance corpus
+  (34 siglas + 10 WhatsApp + 7 edge) at 24 kHz.
+- **RTF** (3-utterance sweep, distilled 6-layer model): threads=1 → 0.30,
+  threads=2 → 0.33, threads=4 → 0.34; threads=4+int8 → 0.43; sigla
+  spacing on/off → no measurable RTF delta (preprocessing is negligible).
+  Full-corpus run at threads=4: mean 0.34, median 0.33, max 0.43
+  (≈3x faster than real-time; v2 comparison: kokoro ≈0.3–0.5, qwen 2.4–3.6x).
+- **Baked constants**: pipeline = radio_warm chain carried over (listening
+  A/B: `tmp/spike` + `tmp/spike-nospace` vs `tmp/v2-baseline` — human
+  ear check pending); `POCKET_SIGLA_SPACING=true` (spacing kept as the only
+  sigla lever; on/off audio pairs in tmp/spike*/siglas);
+  `POCKET_THREADS=4` (1 was marginally faster on the small distilled model,
+  but 4 is the documented sweet spot for the larger gated model and matches
+  D15); `POCKET_QUANTIZE=false` (int8 cost +26% RTF on this host with no
+  memory pressure; remains an env opt-in); `POCKET_TEMPERATURE=0.7`;
+  variant `portuguese` (base; `portuguese_24l` remains the deploy-time
+  quality lever per D1).
+
 ### Phase 1 — Core code (3–5 days)
 
 §7.1–7.6, 7.8–7.9, 7.11–7.12 + unit tests §8.

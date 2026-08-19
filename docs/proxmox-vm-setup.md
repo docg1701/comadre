@@ -78,7 +78,7 @@ Click **Create VM** in the top-right. Check **Advanced** at the bottom of the wi
 | Field | Value | Why |
 | --- | --- | --- |
 | Sockets | 1 | |
-| Cores | 4 | Qwen3 sweet spot (diminishing returns beyond 4) |
+| Cores | 4 | pocket-tts default thread count (v3) |
 | Type | host | Exposes AVX/AVX2/FMA to guest. 3-10% faster than kvm64 for CPU-bound inference. Only use kvm64 if you need live migration across different CPUs. |
 
 ### Memory
@@ -226,8 +226,8 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml
 
 - **Nested virtualization is NOT needed.** Docker uses namespaces/cgroups, not hardware virtualization.
 - **VM is the right choice** (not LXC). Docker in LXC requires privileged containers and kernel-sharing hacks. Proxmox documentation recommends VMs for Docker workloads.
-- **CPU type `host`** passes through all CPU instruction sets including AVX/AVX2 and FMA, which benefits GGML-based Qwen3 inference.
-- **ARM is not supported.** The `qwen3-tts-cli` binary is compiled for x86-64. ARM hosts (Oracle free tier, Raspberry Pi) require recompilation.
+- **CPU type `host`** passes through all CPU instruction sets including AVX/AVX2 and FMA, which benefits torch/pocket-tts inference.
+- **ARM works (v3).** pocket-tts is pure Python + torch CPU — the v2 x86-64-only binary is gone. ARM hosts (Oracle free tier, Raspberry Pi) are supported.
 
 ## VM config summary
 

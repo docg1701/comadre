@@ -27,42 +27,51 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 3. IMPORTANT: store the key in your password manager. Losing it makes every encrypted tax ID in the registry unrecoverable.
 4. Restart: `docker compose up -d`.
 
-### Model download fails
+### Model download fails (HF 401 / gating)
 
-**Symptom:** Container starts but health endpoint returns 503 indefinitely. Logs show download errors.
+**Symptom:** Container starts but the health endpoint returns 503
+indefinitely. Logs show `401 Client Error` / "Cannot access gated repo" for
+`kyutai/pocket-tts`.
 
-**Cause:** Network issue, SSL certificate problem, or invalid download URL.
-
-**Resolution:**
-
-1. Check logs: `docker compose logs --tail=50`
-2. Look for SSL or connection errors in the download output
-3. Verify the download URLs are accessible from the VPS: `curl -I <model-url>`
-4. Alternative: pre-deploy models via `deploy-models.yml` playbook and clear download URLs
-
-### espeak-ng pt_extra not found
-
-**Symptom:** Kokoro engine loads but sigla pronunciation is incorrect (spells letters instead of pronouncing as words).
-
-**Cause:** The custom pt_extra dictionary was not compiled into espeak-ng data.
+**Cause:** The model weights live in a gated HuggingFace repo and the
+operator has not accepted the terms / provided a token.
 
 **Resolution:**
 
-1. Verify the Dockerfile copies pt_extra data during build
-2. Rebuild the image: `docker compose up -d --build`
-3. Check that `ESPEAK_DATA_PATH` points to the correct directory
+1. Accept the terms at <https://huggingface.co/kyutai/pocket-tts> with the
+   operator's HF account.
+2. Create a HF token and set `HF_TOKEN` in `.env` (or export it for
+   `bootstrap.yml` — the `pocket_hf_token` inventory var).
+3. Restart once: `docker compose up -d` (first boot downloads the model).
+4. Air-gapped alternative: pre-deploy via `deploy-models.yml` with
+   `pocket_model_local` / `pocket_tokenizer_local` / `pocket_rafael_local`.
 
-### qwen3-tts-cli binary missing
+### Offline boot with missing files
 
-**Symptom:** Qwen3 engine fails to load. Health endpoint shows `qwen3.loaded: false`.
+**Symptom:** Startup fails with `Model file missing and HF_HUB_OFFLINE=1: ...`.
 
-**Cause:** The `qwen3-tts-cli` binary is not present at `QWEN3_CLI_PATH`.
+**Cause:** `HF_HUB_OFFLINE=1` is set but the artifacts are not in the
+destination paths (or the HF cache).
 
 **Resolution:**
 
-1. Verify the binary exists inside the container: `docker compose exec tts-service ls -la /usr/local/bin/qwen3-tts-cli`
-2. Check the Dockerfile copies the binary from `deploy/bin/qwen3-tts-cli`
-3. If rebuilding the binary is needed, see [building-qwen3-tts-cli.md](building-qwen3-tts-cli.md)
+1. Run once with `HF_TOKEN` set and `HF_HUB_OFFLINE` unset to download the
+   pinned artifacts, then re-enable offline mode.
+2. Or stage the files via `deploy-models.yml`.
+
+### torch import / RAM issues
+
+**Symptom:** Startup crashes with an OOM kill, or torch import errors.
+
+**Resolution:**
+
+1. The image is ~3-3.5 GB and pocket-tts RSS is ~1.5-2 GB — the compose
+   memory limit is 4G; verify the host has headroom.
+2. Verify torch is the CPU build inside the container:
+   `docker compose exec tts-service python -c 'import torch; print(torch.__version__)'`
+   — it must end in `+cpu`. A `+cu130` string means the pytorch-cpu index
+   config in pyproject regressed.
+3. Try `POCKET_QUANTIZE=true` (int8) to cut memory ~48%.
 
 ## Runtime Issues
 
@@ -142,48 +151,73 @@ Common issues with symptoms, causes, and resolution steps for both engines.
 
 **Resolution:**
 
-1. Reduce text length (max 500 chars for Kokoro, 300 chars for Qwen3)
+1. Reduce text length (max 1000 chars)
 2. Check queue depth: `curl -k https://localhost/health | jq .queue_depth`
 3. If queue is consistently backed up, consider scaling horizontally
 
 ## Engine-Specific Issues
 
-### Kokoro sigla mispronunciation
+### Sigla mispronunciation
 
-**Symptom:** Siglas like CPF, CNPJ, or FGTS are spelled letter-by-letter instead of pronounced correctly.
+**Symptom:** Siglas like CPF, CNPJ, or FGTS are spelled letter-by-letter
+instead of pronounced correctly.
 
-**Cause:** The espeak-ng pt_extra dictionary is not loaded. The bundled `espeakng_loader` data takes precedence over `ESPEAK_DATA_PATH`.
-
-**Resolution:**
-
-1. Verify pt_extra was compiled: check Dockerfile for the espeak-ng dictionary build step
-2. The compiled pt_extra data must be copied to BOTH the system path AND the espeakng_loader bundled path inside the container
-3. Rebuild the image: `docker compose up -d --build`
-
-### Qwen3 random accent
-
-**Symptom:** Qwen3 output has inconsistent or random accent (sometimes sounds like Mandarin or English instead of Brazilian Portuguese).
-
-**Cause:** The `-l pt` flag is missing from the qwen3-tts-cli invocation. Without it, the language mode is undefined.
+**Cause:** pocket-tts tokenizes text literally — there is no phoneme
+control. `expand_siglas` (spaced letters) is the only lever.
 
 **Resolution:**
 
-1. Check service.py to verify the `-l pt` flag is passed to the CLI command
-2. This should be handled automatically by the application code
-3. If the issue persists, check the qwen3-tts-cli binary version: `docker compose exec tts-service qwen3-tts-cli --version`
+1. Verify `POCKET_SIGLA_SPACING=true` (default).
+2. A/B the on/off outputs with the tuning harness:
+   `uv run python scripts/spike_pocket_tts.py --sigla-spacing on|off`.
+3. Quality regressions beyond the accepted floor → try the 24-layer
+   variant (`POCKET_LANGUAGE=portuguese_24l`).
+
+### State regenerating on every request
+
+**Symptom:** First request per voice is slow after every restart, and the
+`.safetensors` is rewritten constantly.
+
+**Cause:** The meta `model_hash` does not match the current model —
+correct behavior after a model swap, but a symptom of `POCKET_MODEL_PATH`
+pointing at a changing file.
+
+**Resolution:**
+
+1. Verify `POCKET_MODEL_PATH` is stable.
+2. If the model was upgraded, the re-encode is expected: the state is
+   regenerated once per voice from the reference WAV, then cached.
+
+### Upload validation errors
+
+**Symptom:** `POST /v1/voices` returns 400/413/422 `voice_upload_error` or
+429 `voice_limit_error`.
+
+**Resolution:**
+
+1. 400 `too_short` / `too_long` — keep the reference between 3 and 30 s
+   (5-20 s recommended).
+2. 400 `unsupported_format` / `empty_file` — send wav/mp3 with audio
+   content.
+3. 413 — reduce the file below `VOICE_UPLOAD_MAX_MB` (10 MB).
+4. 422 `unreadable_audio` — the file is corrupt; re-export it.
+5. 429 `voice_limit_error` — delete clones (`DELETE /v1/voices/<name>`)
+   or contact the operator to raise the quota env vars.
 
 ### Clone voice sounds different
 
-**Symptom:** The cloned voice does not match the reference audio closely, or sounds different between runs.
+**Symptom:** The cloned voice does not match the reference audio closely.
 
-**Cause:** Reference WAV quality issues, or seed value not producing consistent results.
+**Cause:** Reference quality, or the gated cloning model is not in use
+(the app refuses to silently fall back to the no-cloning weights).
 
 **Resolution:**
 
-1. Verify reference WAV quality: 3-10 seconds, mono, 16kHz+, clear speech, minimal background noise
-2. Check the reference file exists: `docker compose exec tts-service ls -la /voices/`
-3. Seed reproducibility gives similar (not identical) results across runs -- some variation is expected
-4. Try a different reference recording with clearer audio
+1. Reference quality: 5-20 s, mono, clear speech, minimal background
+   noise (the UI hints "grave 5-20 segundos").
+2. Verify the gated model is deployed at `POCKET_MODEL_PATH` and the
+   startup logs show no fallback warning.
+3. Some variation between runs is expected (temperature sampling).
 
 ## HTTPS / Caddy Issues
 

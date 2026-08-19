@@ -1,5 +1,13 @@
 # Comadre vs Cloud TTS: Cost & Performance Comparison
 
+**v2-era document (2026-04).** The numbers below reflect the v2
+dual-engine deployment (Kokoro fp32 + Qwen3-TTS). Comadre 3.0.0 replaced
+both engines with kyutai-labs/pocket-tts (single engine + native voice
+cloning) in August 2026. A v3 addendum with fresh capacity/cost numbers
+will be appended after the production cutover and the loadtest/capacity
+re-run (migration plan Phase 4). Until then, treat the figures as
+historical.
+
 ## Executive Summary
 
 Comadre delivers unlimited TTS audio for a **fixed monthly VPS cost** (from ~$7/mo for a single replica to ~$21/mo for the validated two-replica configuration), with **100% audio integrity across 2,440 verified test requests** spanning four configurations and a randomized realistic chatbot workload. Sustainable throughput is **~13 requests per minute on a single 4-CPU replica** and **~20 requests per minute on a two-replica deployment** (8-CPU host, queue-aware load balancing) — enough to power **27,000 to 42,000 complete WhatsApp customer-service conversations per month** under realistic working-day patterns. Voice quality is very good — comparable to MiniMax, better than Microsoft Edge TTS, and only slightly below ElevenLabs' best models. The companion kokoro-cloner project enables custom brand voices from a 10-second sample.

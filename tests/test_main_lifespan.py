@@ -1,7 +1,8 @@
 """Tests for the monetization-gated Phase 2a lifespan bootstrap.
 
 The legacy lifespan is covered indirectly by every other test_api / test_health
-case; this module only validates the branch Story 2.1 adds.
+case; this module only validates the branch Story 2.1 adds. v3 keeps the
+registry phase untouched and stubs the pocket-tts engine/registry phases.
 """
 
 from __future__ import annotations
@@ -19,32 +20,41 @@ from comadre.main import lifespan
 
 
 def _stub_engine_init(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bypass heavy startup phases: KokoroEngine/QwenEngine instantiation,
-    ``ensure_*_models`` downloads, and engine warm-up."""
+    """Bypass heavy startup phases: PocketEngine load/warm-up,
+    ensure_pocket_models downloads, and VoiceRegistry build/sweeper."""
     import comadre.main as main_module
 
     class _StubEngine:
         def load_model(self, **_: object) -> None:
             pass
 
-        def warm_up(self, **_: object) -> None:
+        def warm_up(self, *_: object) -> None:
             pass
 
-    class _StubRouter:
+        def attach_registry(self, *_: object) -> None:
+            pass
+
+    class _StubSweeperTask:
+        def done(self) -> bool:
+            return True
+
+    class _StubRegistry:
         def __init__(self, **_: object) -> None:
             pass
 
         def available_voices(self) -> list[str]:
-            return ["kokoro/pm_santa"]
+            return ["pocket/rafael"]
 
-        def _parse_voice(self, _voice: str) -> None:
-            return None
+        def start_sweeper(self, _loop: object) -> _StubSweeperTask:
+            return _StubSweeperTask()
 
-    monkeypatch.setattr(main_module, "KokoroEngine", _StubEngine)
-    monkeypatch.setattr(main_module, "QwenEngine", _StubEngine)
-    monkeypatch.setattr(main_module, "ensure_kokoro_models", lambda **_: None)
-    monkeypatch.setattr(main_module, "ensure_qwen3_models", lambda **_: None)
-    monkeypatch.setattr(main_module, "EngineRouter", _StubRouter)
+        async def stop_sweeper(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_module, "PocketEngine", _StubEngine)
+    monkeypatch.setattr(main_module, "VoiceRegistry", _StubRegistry)
+    monkeypatch.setattr(main_module, "ensure_pocket_models", lambda **_: None)
+    monkeypatch.setattr(main_module, "set_active_registry", lambda _r: None)
 
 
 @pytest.fixture()
@@ -53,7 +63,6 @@ def registry_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     db_path = tmp_path / "registry.db"
     monkeypatch.setenv("KEY_REGISTRY_DB_PATH", str(db_path))
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    monkeypatch.setenv("QWEN3_ENABLED", "false")
     monkeypatch.setenv("VOICES_DIR", str(tmp_path))
     monkeypatch.setenv("NOISE_DIR", str(tmp_path))
     get_settings.cache_clear()
@@ -64,7 +73,8 @@ async def test_registry_bootstrap_migrates_caches_and_closes_db(
     monkeypatch: pytest.MonkeyPatch, registry_env: Path
 ) -> None:
     """Single integration cover: lifespan opens the registry, applies
-    migrations, attaches the auth-cache, and closes the connection on
+    migrations, attaches the auth-cache, loads the (stubbed) pocket engine,
+    builds the (stubbed) voice registry, and closes the connection on
     shutdown."""
     _stub_engine_init(monkeypatch)
 
@@ -88,6 +98,10 @@ async def test_registry_bootstrap_migrates_caches_and_closes_db(
         snapshot = app.state.auth_cache.snapshot()
         assert snapshot["maxsize"] == 4096
         assert snapshot["ttl_seconds"] == 60
+        # v3 engine + registry surfaces wired.
+        assert app.state.ready is True
+        assert app.state.router is not None
+        assert app.state.registry is not None
     finally:
         await cm.__aexit__(None, None, None)
 

@@ -696,7 +696,7 @@ def load_settings_and_tz() -> tuple[RegistrySettings, ZoneInfo] | None:
     paths.
 
     F33 — switched from ``Settings`` to ``RegistrySettings`` so the CLI
-    no longer drags TTS-runtime fields (Kokoro/Qwen3 paths, voices/noise
+    no longer drags TTS-runtime fields (engine paths, voices/noise
     dirs, model URLs) through pydantic validation. Hosts that have not
     yet deployed the FastAPI app can still operate the registry.
 

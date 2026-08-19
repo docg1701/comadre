@@ -1,310 +1,184 @@
-# API Reference
+# Comadre API Reference (v3.0.0)
 
-Comadre exposes an OpenAI-compatible TTS endpoint and a health endpoint.
+Normative contract: `docs/pocket-tts-v3-api-spec.md`. Engine: kyutai-labs
+pocket-tts 2.1.0, language `portuguese` (sole engine).
 
-## Authentication
+## 1. Breaking changes vs v2
 
-All requests to `/v1/audio/speech` require a Bearer token in the `Authorization` header. The token must be an active, non-expired API key issued via the `comadre-keys` CLI and stored in the encrypted registry.
+| v2 | v3 |
+|---|---|
+| `kokoro/<name>`, `qwen/<name>` voices | `pocket/<name>` only |
+| `DEFAULT_VOICE=kokoro/pm_santa` | `DEFAULT_VOICE=pocket/rafael` |
+| `input` max 500 (kokoro) / 300 (qwen) chars | single limit: **1000 chars** |
+| `speed` native only on kokoro | honored for ALL voices via ffmpeg `atempo` post-processing (0.25-4.0) |
+| no voice upload | `POST/GET/DELETE /v1/voices` (voice cloning) |
+| `/health` `engines: {kokoro, qwen3}` | `engines: {pocket}` |
+| `__version__ == "2.1.1"` | `__version__ == "3.0.0"` |
 
-```text
-Authorization: Bearer cmdr_live_<plaintext-issued-once>
-```
+## 2. Authentication
 
-Keys are issued with `comadre-keys issue-key`. The plaintext is displayed once at issuance and never again — the registry stores only a SHA-256 hash and an 8-character display prefix. See [monetization.md](monetization.md) for the full lifecycle.
+All `/v1/*` endpoints require `Authorization: Bearer cmdr_live_<43 chars>`
+(API key issued via `comadre-keys issue-key`). Denials return the standard
+envelope with `authentication_error` (401). Suspended/revoked/expired keys
+carry the operator-contact hint.
 
-The `/health` endpoint does not require authentication. When called without a valid bearer, it returns a minimal payload (`status` and `voices`). Passing a valid bearer unlocks the full payload (engines, queue depth, uptime, memory, version).
+## 3. Endpoints
 
-## POST /v1/audio/speech
+### 3.1 `POST /v1/audio/speech`
 
-Generate speech audio from text input.
-
-### Request
-
-**Headers:**
-
-| Header | Required | Value |
-| --- | --- | --- |
-| `Authorization` | Yes | `Bearer cmdr_live_<plaintext>` |
-| `Content-Type` | Yes | `application/json` |
-
-**Body:**
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `input` | string | Yes | -- | Text to synthesize (1-500 chars for Kokoro, 1-300 chars for Qwen3) |
-| `voice` | string | No | per `DEFAULT_VOICE` env var (default: `kokoro/pm_santa`) | Voice name in `engine/name` format (see voice routing table below and [voice-management.md](voice-management.md)) |
-| `response_format` | string | No | `ogg` | Output format: `ogg` or `wav` |
-| `speed` | float | No | `1.0` | Speed multiplier: 0.25 to 4.0. Applied by Kokoro (adjusts phoneme duration during synthesis). Accepted but ignored by Qwen3 (the C++ binary has no speed flag; the whatsapp-subtle pipeline applies a fixed 1.15x atempo independently). |
-| `raw` | boolean | No | `false` | Skip audio post-processing (vibrato, EQ, compression, echo, noise mixing). Returns the raw TTS engine output encoded to the requested format. Useful for testing or custom downstream processing. |
-
-### Voice Routing
-
-The `voice` parameter determines which TTS engine processes the request:
-
-| Voice | Engine | Character Limit | Typical Latency (4 vCPU) |
-| --- | --- | --- | --- |
-| `kokoro/pm_santa` (M) | Kokoro fp32 | 500 | 5-16s |
-| `kokoro/pf_dora` (F) | Kokoro fp32 | 500 | 5-16s |
-| `kokoro/pm_alex` (M) | Kokoro fp32 | 500 | 5-16s |
-| `kokoro/<name>` | Kokoro fp32 | 500 | 5-16s |
-| `qwen/<name>` | Qwen3-TTS C++ Q8_0 | 300 | 12-37s |
-
-Voices are discovered from the filesystem. See [voice-management.md](voice-management.md) for how to add or list voices.
-
-### Engine-Specific Preprocessing
-
-Each engine applies different text preprocessing before synthesis:
-
-**Kokoro:**
-
-- `normalize_text()` -- normalizes Unicode, expands abbreviations
-- `chunk_text()` -- splits long text into chunks for sequential synthesis
-- espeak-ng pt_extra dictionary -- handles sigla pronunciation (CPF, CNPJ, FGTS, etc.) via 67 custom dictionary entries
-
-**Qwen3:**
-
-- `expand_siglas()` -- converts siglas to spaced letter format (e.g., `CNPJ` becomes `C N P J`) for correct pronunciation
-
-### Post-Processing Pipelines
-
-Each engine has a dedicated audio post-processing pipeline applied before output:
-
-**radio_warm (Kokoro):** EQ shaping (bass boost, mid-scoop, presence), dynamic compression, saturation, loudnorm, room/hiss noise layer.
-
-**whatsapp-subtle (Qwen3):** EQ shaping, dynamic compression, atempo 1.15x speed adjustment, echo, room/hiss noise layer.
-
-Both pipelines produce the final audio optimized for messaging platform voice notes.
-
-### Success Response
-
-**Status:** 200 OK
-
-**Headers:**
-
-- `Content-Type: audio/ogg` (for OGG Opus) or `Content-Type: audio/wav` (for WAV)
-
-**Body:** Binary audio data.
-
-### Error Responses
-
-All errors return JSON with this structure:
+JSON body:
 
 ```json
-{
-  "error": {
-    "message": "description of what went wrong",
-    "type": "error_type_identifier",
-    "hint": "actionable recovery instructions"
-  }
-}
+{"input": "Bom dia!", "voice": "pocket/rafael",
+ "response_format": "ogg", "speed": 1.0, "raw": false}
 ```
 
-**400 -- Invalid Request:**
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `input` | string | yes | 1-1000 chars |
+| `voice` | string | no | `pocket/<name>`; default `pocket/rafael` |
+| `response_format` | string | no | `ogg` (Opus 24 kbps, 16 kHz mono) or `wav` (24 kHz mono) |
+| `speed` | float | no | 0.25-4.0, applied as an ffmpeg `atempo` chain (factors in [0.5, 2.0]) |
+| `raw` | bool | no | skip EQ/compression/noise/tempo (still encodes to the format) |
+
+Response: audio bytes with `Content-Disposition: attachment;
+filename="speech.<fmt>"` and `audio/ogg` or `audio/wav` content type.
+
+Unknown voice → 404 `not_found_error` with the available list.
+
+### 3.2 `POST /v1/voices` — create a voice clone
+
+Multipart form upload. Creates a clone of the uploaded voice; with
+`persist=true` it is also stored on the server for future requests.
+Dependencies run in order: `verify_ready` → per-IP gate (600/min, shared
+with speech) → `verify_api_key` → per-key rate-limit bucket (same bucket
+as speech). Clone encoding runs under the same FIFO queue lock as speech
+(120 s timeout).
+
+Form fields:
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `file` | file | yes | wav or mp3 (anything libsndfile reads); ≤ `VOICE_UPLOAD_MAX_MB` (10 MB) |
+| `display_name` | string | no | ≤ 64 chars; alphanumeric, spaces, `-` `_` and apostrophe |
+| `persist` | bool | no | default `false`; values `true/false/1/0` |
+
+Duration rules: minimum **3 s** (reject below), recommended **5-20 s**,
+hard maximum **30 s** (server truncates at 30 s — the library's
+`truncate=True` behavior).
+
+201 response:
 
 ```json
-{
-  "error": {
-    "message": "Input exceeds 300 character limit for Qwen3 engine (voice 'qwen/galvani')",
-    "type": "invalid_request_error",
-    "hint": "Reduce text length or switch to a Kokoro voice (kokoro/pm_santa, kokoro/pf_dora, kokoro/pm_alex) which supports up to 500 characters."
-  }
-}
+{"voice": "pocket/u_01J2K4M6N8P0Q2R4S6", "display_name": "Minha voz",
+ "persisted": true, "duration_s": 8.4, "sample_rate": 24000,
+ "expires_at": null}
 ```
 
-**401 -- Authentication Error:**
+`expires_at` is RFC 3339 UTC for ephemeral clones, `null` when persisted.
 
-Missing or malformed `Authorization` header:
+Errors:
+
+| HTTP | `error.type` | Condition |
+|---|---|---|
+| 400 | `voice_upload_error` | missing/empty file, unsupported format, < 3 s, > 30 s |
+| 413 | `voice_upload_error` | file larger than `VOICE_UPLOAD_MAX_MB` |
+| 422 | `voice_upload_error` | audio decodes but is unreadable/corrupt |
+| 429 | `voice_limit_error` | stored quota (20/customer) or ephemeral quota (5/key) |
+| 429 | `rate_limit_error` | per-key RPM bucket (shared with speech) |
+| 401 | `authentication_error` | invalid/suspended key |
+| 503 | `service_unavailable` | warming up |
+| 500 | `server_error` | state encoding failed |
+
+### 3.3 `GET /v1/voices` — list voices visible to this key
+
+Returns operator-provisioned voices (filesystem `/voices/pocket/*` with no
+customer ownership) + the caller's stored clones + the caller's ephemeral
+clones. Other customers' clones are never listed.
 
 ```json
-{
-  "error": {
-    "message": "Missing or malformed Authorization header",
-    "type": "authentication_error",
-    "hint": "Send 'Authorization: Bearer <plaintext>' using a key issued via comadre-keys issue-key."
-  }
-}
+{"voices": [
+  {"voice": "pocket/rafael", "display_name": "Rafael", "persisted": true,
+   "created_at": null, "expires_at": null},
+  {"voice": "pocket/u_01J2K4M6N8P0Q2R4S6", "display_name": "Minha voz",
+   "persisted": true, "created_at": "2026-08-18T10:00:00Z", "expires_at": null}
+]}
 ```
 
-Unknown API key (not present in the registry, or a token that never existed):
+### 3.4 `DELETE /v1/voices/{name}` — remove a clone
+
+`{name}` is the full voice id, e.g. `/v1/voices/pocket/u_01J2K...`. A key
+may delete only voices it created (stored clones are customer-owned,
+ephemeral clones are key-owned). Operator voices are managed on the
+filesystem.
+
+- **204** No Content on success.
+- **404** `not_found_error` — unknown voice.
+- **403** `voice_delete_error` — not the caller's voice.
+
+### 3.5 `GET /health`
 
 ```json
-{
-  "error": {
-    "message": "Invalid API key",
-    "type": "authentication_error",
-    "hint": "The key was not found in the registry. Contact your Comadre operator for a fresh key."
-  }
-}
+{"status": "healthy",
+ "voices": ["pocket/rafael", "pocket/u_01J2K4M6N8P0Q2R4S6"],
+ "engines": {"pocket": {"loaded": true, "voices": ["pocket/rafael", "..."]}},
+ "queue_depth": 0, "uptime_seconds": 1234, "memory_mb": 1520,
+ "version": "3.0.0"}
 ```
 
-A 401 is also returned when a key is suspended, revoked, or past `paid_until`. The `hint` field echoes the operator-contact string configured via `OPERATOR_CONTACT_HINT`.
+Unauthenticated callers get only `{status, voices}`. Ephemeral voices are
+never listed in `/health` (they are per-key; use `GET /v1/voices`).
 
-**404 -- Voice Not Found:**
+## 4. Error envelope
 
 ```json
-{
-  "error": {
-    "message": "Voice 'unknown' not found",
-    "type": "not_found_error",
-    "hint": "Available voices: ['kokoro/pf_dora', 'kokoro/pm_alex', 'kokoro/pm_santa', 'qwen/female', 'qwen/galvani']. Use engine/name format. See /health for the current list."
-  }
-}
+{"error": {"type": "<error_type>", "message": "<human message>",
+ "hint": "<remediation>"}}
 ```
 
-**405 -- Method Not Allowed:**
+Error types: `not_found_error`, `invalid_request_error`,
+`authentication_error`, `rate_limit_error`, `service_unavailable`,
+`server_error`, `method_not_allowed_error`, and (v3) `voice_upload_error`,
+`voice_limit_error`, `voice_delete_error`.
 
-```json
-{
-  "error": {
-    "message": "Method not allowed",
-    "type": "method_not_allowed_error",
-    "hint": "Use POST for /v1/audio/speech and GET for /health."
-  }
-}
-```
+## 5. Voice naming rules
 
-**429 -- Rate Limit Exceeded:**
+- Operator-provisioned: `pocket/<name>`, `<name>` matches
+  `^[a-zA-Z0-9_-]+$`, sourced from `/voices/pocket/<name>.wav` (reference)
+  with optional precomputed `<name>.safetensors` + `<name>.json`.
+- API uploads: `pocket/u_<ULID>` — the `u_` prefix is reserved; operators
+  must not create `u_*` files.
+- State files are model-variant-specific; a persisted clone stores its
+  reference WAV so the state regenerates automatically when the model
+  signature changes (`model_hash` in the metadata JSON).
 
-```json
-{
-  "error": {
-    "message": "Rate limit exceeded",
-    "type": "rate_limit_error",
-    "hint": "Too many requests. Try again in 37 seconds."
-  }
-}
-```
-
-The 429 response carries a `Retry-After: <N>` header and matching `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers. `Retry-After` (and the matching hint) are derived from `X-RateLimit-Reset - now`, so clients can back off accurately. The same three `X-RateLimit-*` headers are also emitted on allowed responses. Rate-limiting is per API key, not per IP: each key's `rate_limit_rpm` (set at `comadre-keys issue-key --rpm <n>` and adjustable via `update-key --rpm <n>`) determines the budget. The bucket is keyed on the registry's `key_id`, so it survives `comadre-keys rotate-key` and is independent across two keys issued to the same customer. The TTS engine is never invoked when a request hits the rate limit. See [rate-limiting.md](rate-limiting.md) for the algorithm and multi-replica caveat. `/health` has no application-layer rate limit.
-
-**500 -- Server Error:**
-
-```json
-{
-  "error": {
-    "message": "An internal server error occurred",
-    "type": "server_error",
-    "hint": "Check server logs for the full traceback. The TTS model may need restarting."
-  }
-}
-```
-
-**503 -- Service Unavailable:**
-
-```json
-{
-  "error": {
-    "message": "Service is warming up",
-    "type": "service_unavailable",
-    "hint": "The service is still loading models. Retry in 30 seconds."
-  }
-}
-```
-
-The 503 response includes a `Retry-After` header with the recommended wait time in seconds.
-
-## GET /health
-
-Returns service health status. No authentication required.
-
-### Success Response (200)
-
-```json
-{
-  "status": "healthy",
-  "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female", "qwen/galvani"],
-  "engines": {
-    "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
-    "qwen3": {"loaded": true, "voices": ["qwen/female", "qwen/galvani"]}
-  },
-  "queue_depth": 0,
-  "uptime_seconds": 3600,
-  "memory_mb": 4200,
-  "version": "2.1.1"
-}
-```
-
-### Warming Up Response (503)
-
-Returned while models are still loading after startup:
-
-```json
-{
-  "status": "warming_up",
-  "voices": [],
-  "engines": {},
-  "queue_depth": 0,
-  "uptime_seconds": 15,
-  "memory_mb": 800,
-  "version": "2.1.1"
-}
-```
-
-### Status Values
-
-| Status | HTTP Code | Meaning |
-| --- | --- | --- |
-| `healthy` | 200 | All engines loaded, service ready |
-| `warming_up` | 503 | Models still downloading or loading |
-
-## Voice Cloning
-
-Qwen3-TTS voices use reference WAV files for voice cloning. Voices are discovered from the `/voices/qwen/` directory -- no environment variable configuration needed. For detailed setup instructions, see [voice-management.md](voice-management.md).
-
-**How it works:**
-
-1. Place a reference WAV (3-10s of clear speech) in `/voices/qwen/`
-2. The voice is immediately available as `qwen/<filename-without-extension>`
-3. No restart needed -- voices are discovered at request time
-
-**Seed reproducibility:** Qwen3-TTS uses a fixed seed for consistent voice characteristics. The same text + reference WAV + seed produces similar results across runs.
-
-**No Qwen3 voices:** If no WAV files are present in `/voices/qwen/`, no Qwen3 voices will appear in the `/health` endpoint. Requests for missing voices return a 404 error.
-
-## Examples
-
-**Kokoro request (fast, built-in voice):**
+## 6. Examples
 
 ```bash
-curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
+# 1. Clone a voice (ephemeral, this session only)
+curl -k -X POST https://localhost/v1/voices \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
+  -F "file=@minha-voz.wav" -F "display_name=Minha voz"
+
+# 2. Clone and store for future use
+curl -k -X POST https://localhost/v1/voices \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
+  -F "file=@minha-voz.wav" -F "persist=true"
+
+# 3. Speak with the clone (use the returned voice)
+curl -k -X POST https://localhost/v1/audio/speech \
   -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
-  --output test.ogg
+  -d '{"input":"Olá! Esta é a minha voz clonada.","voice":"pocket/u_01J2K4M6N8P0Q2R4S6"}' \
+  --output clone.ogg
+
+# 4. List + delete
+curl -k https://localhost/v1/voices -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT"
+curl -k -X DELETE https://localhost/v1/voices/pocket/u_01J2K4M6N8P0Q2R4S6 \
+  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT"
 ```
 
-**Qwen3 request (cloned voice):**
-
-```bash
-curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"qwen/galvani"}' \
-  --output test_clone.ogg
-```
-
-**Missing authentication (error example):**
-
-```bash
-curl -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Teste sem autenticacao."}'
-```
-
-Response (401):
-
-```json
-{
-  "error": {
-    "message": "Missing or malformed Authorization header",
-    "type": "authentication_error",
-    "hint": "Send 'Authorization: Bearer <plaintext>' using a key issued via comadre-keys issue-key."
-  }
-}
-```
-
-**Health check:**
-
-```bash
-curl https://YOUR_VPS_DOMAIN/health
-```
+**n8n HTTP Request nodes:** speech — JSON body as v2 (change `voice` to
+`pocket/...`). Clone — `Method: POST`, `Send Body → Form-Data`, fields
+`file` (binary data item) + `persist` (`true`), then use the response's
+`voice` in the next speech node's `voice` field.

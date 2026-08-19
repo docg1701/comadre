@@ -22,7 +22,7 @@ from tests._keys_fixtures import seed_customer_and_key
 
 _SPEECH_BODY: dict[str, str] = {
     "input": "olá mundo",
-    "voice": "kokoro/pm_santa",
+    "voice": "pocket/rafael",
     "response_format": "ogg",
 }
 
@@ -44,7 +44,7 @@ async def test_speech_happy_path_ogg_and_wav(
     for fmt, ctype in (("ogg", "audio/ogg"), ("wav", "audio/wav")):
         response = await client.post(
             "/v1/audio/speech",
-            json={"input": "Hello", "voice": "kokoro/pm_santa", "response_format": fmt},
+            json={"input": "Hello", "voice": "pocket/rafael", "response_format": fmt},
             headers=auth_headers,
         )
         assert response.status_code == 200
@@ -76,8 +76,8 @@ async def test_speech_validation_400_envelope(
 ) -> None:
     """Pydantic validation failures (missing/empty input) → 400, not 422."""
     for bad_body in (
-        {"voice": "kokoro/pm_santa"},
-        {"input": "", "voice": "kokoro/pm_santa"},
+        {"voice": "pocket/rafael"},
+        {"input": "", "voice": "pocket/rafael"},
     ):
         response = await client.post(
             "/v1/audio/speech", json=bad_body, headers=auth_headers
@@ -95,23 +95,23 @@ async def test_speech_validation_messages_are_field_specific(
     *why* without parsing pydantic's raw error envelope."""
     cases = [
         (
-            {"input": "", "voice": "kokoro/pm_santa"},
+            {"input": "", "voice": "pocket/rafael"},
             "must not be empty",
         ),
         (
-            {"input": "x" * 10_000, "voice": "kokoro/pm_santa"},
+            {"input": "x" * 10_000, "voice": "pocket/rafael"},
             "exceeds the allowed length",
         ),
         (
-            {"voice": "kokoro/pm_santa"},
+            {"voice": "pocket/rafael"},
             "is required",
         ),
         (
-            {"input": "hi", "voice": "kokoro/pm_santa", "speed": 99.0},
+            {"input": "hi", "voice": "pocket/rafael", "speed": 99.0},
             "out of range",
         ),
         (
-            {"input": "hi", "voice": "kokoro/pm_santa", "response_format": "mp3"},
+            {"input": "hi", "voice": "pocket/rafael", "response_format": "mp3"},
             "invalid value",
         ),
     ]
@@ -128,7 +128,7 @@ async def test_speech_unknown_voice_returns_404(
     client: AsyncClient, auth_headers: dict[str, str], mock_router: MagicMock
 ) -> None:
     mock_router.generate_speech.side_effect = VoiceNotFoundError(
-        "nonexistent", available=["kokoro/pm_santa"]
+        "nonexistent", available=["pocket/rafael"]
     )
     response = await client.post(
         "/v1/audio/speech",
@@ -246,6 +246,23 @@ async def test_no_audit_log_writes_on_any_speech_outcome(
         await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers)
     after = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
     assert after == before
+
+
+async def test_speed_is_forwarded_to_engine(
+    client: AsyncClient, auth_headers: dict[str, str], mock_router: MagicMock
+) -> None:
+    """speed reaches the engine for ALL voices (v3 atempo semantics)."""
+    mock_router.generate_speech.reset_mock()
+    response = await client.post(
+        "/v1/audio/speech",
+        json={"input": "oi", "voice": "pocket/rafael", "speed": 1.5},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert mock_router.generate_speech.call_count == 1
+    kwargs = mock_router.generate_speech.call_args.kwargs
+    assert kwargs["speed"] == 1.5
+    assert kwargs["voice_name"] == "pocket/rafael"
 
 
 async def test_rate_limit_429_envelope_and_independent_per_key(

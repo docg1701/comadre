@@ -469,16 +469,22 @@
       register: health_check
       ignore_errors: true
 
-    - name: "[Diag] Explain Qwen3 voice is missing"
+    # v3 — the trustworthy engine probe: /health must report healthy
+    # (ready flips only after the pocket engine loads) with >= 1 pocket/*
+    # voice on the filesystem. Replaces the v2 engine-absence diagnostic.
+    - name: "[Assert] pocket engine loaded with at least one voice"
       when:
-        - health_check is defined
         - health_check.json is defined
-        - not (health_check.json.voices | default([]) | select('match', '^qwen/') | list | length)
-      ansible.builtin.debug:
-        msg: >-
-          INFO: No qwen/* voices are reported.
-          Either QWEN3_ENABLED is false for this host, or the qwen3-tts-cli
-          binary / model / tokenizer are not deployed correctly.
+      ansible.builtin.assert:
+        that:
+          - health_check.json.status | default('') == 'healthy'
+          - health_check.json.voices | default([]) | select('match', '^pocket/') | list | length >= 1
+        fail_msg: >-
+          /health is not reporting a healthy pocket engine:
+          status={{ health_check.json.status | default('unknown') }},
+          voices={{ health_check.json.voices | default([]) }}.
+          Check tts-service logs: cd ~/comadre && docker compose logs tts-service
+        success_msg: "pocket engine healthy with pocket/* voices"
 
     - name: "[Diag] Check root filesystem usage"
       ansible.builtin.command:

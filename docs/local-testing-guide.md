@@ -1,341 +1,111 @@
-# Local Testing Guide
+# Local Testing Guide (v3.0.0)
 
 How to run Comadre end-to-end on your machine with all features working.
 
 ## Prerequisites
 
-- Docker and Docker Compose v2
-- 4 vCPU, 8 GB RAM minimum
-- ~4 GB free disk (models + Docker image)
-- No GPU required (CPU-only inference)
+- Python 3.12 + `uv`
+- Docker and Docker Compose v2 (optional, for the container path)
+- 4 vCPU, 12+ GB RAM (pocket-tts RSS ~1.5-2 GB; 8 GB works but is tight
+  with a browser + dev tools)
+- ~5 GB free disk (model ~370 MB, torch ~1.5-2 GB, HF cache)
+- A HuggingFace account that accepted the gated-model terms at
+  <https://huggingface.co/kyutai/pocket-tts> + a HF token (one-time
+  download only)
 
 ## What is already in the repo
 
-These files are tracked in git and require no action:
-
 | Item | Location | Purpose |
 | --- | --- | --- |
-| `qwen3-tts-cli` binary | `deploy/bin/` | Qwen3 C++ inference CLI |
-| Voice reference WAVs | `voices/` | 3 files: female, male, galvani |
-| Noise WAVs | `noise/` | 2 files: hiss + room tone for post-processing |
-| espeak-ng pt_extra dictionary | `deploy/espeak-ng/pt_extra` | Custom sigla pronunciation (CPF, CNPJ, etc.) |
+| Noise WAVs | `noise/` | hiss + room tone for post-processing |
+| pocket config YAMLs | `deploy/pocket-tts/` | baked image configs (production paths) |
+| Spike harness | `scripts/spike_pocket_tts.py` | tuning corpus + RTF sweep |
+| Operator voice | `voices/pocket/female.wav` | reference WAV (ex v2) |
 
 ## What must be obtained separately
 
-These files are gitignored because of their size:
+gitignored model artifacts (auto-download on first boot, or staged by
+`deploy-models.yml` for air-gapped hosts):
 
-| Item | Size | How to get |
+| Item | Size | Source |
 | --- | --- | --- |
-| `kokoro-v1.0.onnx` | 325 MB | Auto-downloads on first startup |
-| `voices-v1.0.bin` | 27 MB | Auto-downloads on first startup |
-| `qwen3-tts-0.6b-q8_0.gguf` | 1.3 GB | Manual conversion from HuggingFace |
-| `qwen3-tts-tokenizer-f16.gguf` | 326 MB | Manual conversion from HuggingFace |
+| `model.safetensors` | ~370 MB | gated `kyutai/pocket-tts` (pinned revision) |
+| `tokenizer.model` | ~1 MB | public `kyutai/pocket-tts-without-voice-cloning` |
+| `embeddings/rafael.safetensors` | ~1 MB | public repo (pinned revision) |
 
-Kokoro models download automatically. Qwen3 models must be converted or copied manually (see below).
-
-## Step 1: Create .env
+## Step 1: Dependencies
 
 ```bash
-cp .env.example .env
+uv sync   # installs torch (CPU index), pocket-tts, and the dev tools
 ```
 
-Edit `.env` and set `KEY_REGISTRY_ENCRYPTION_KEY` — the only required variable. Generate a Fernet key:
+## Step 2: Model files
+
+Set `HF_TOKEN` in the environment (one time), then let the app download:
 
 ```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+export HF_TOKEN=hf_your_token
+.venv/bin/python -c \
+  "from comadre.download import ensure_pocket_models; \
+   ensure_pocket_models('portuguese', 'models/pocket-tts/portuguese/model.safetensors', \
+   'models/pocket-tts/portuguese/tokenizer.model', \
+   'models/pocket-tts/portuguese/embeddings/rafael.safetensors')"
 ```
 
-Paste the output into `.env`:
+Or boot the server once with `HF_TOKEN` set and `HF_HUB_OFFLINE` unset —
+the lifespan downloads on startup. Afterwards, `export HF_HUB_OFFLINE=1`
+makes everything cache-only.
+
+## Step 3: Seed a registry + boot the dev server
 
 ```bash
-KEY_REGISTRY_ENCRYPTION_KEY=<paste-the-generated-key-here>
+# One-off registry seed (temp DB + customer + key with known plaintext)
+.venv/bin/python tmp/smoke_setup.py   # writes tmp/smoke/env.sh + plaintext.txt
+
+. tmp/smoke/env.sh
+VOICES_DIR=tmp/smoke/voices NOISE_DIR=noise \
+POCKET_MODEL_PATH=models/pocket-tts/portuguese/model.safetensors \
+.venv/bin/python -m uvicorn comadre.main:create_app --factory \
+  --host 127.0.0.1 --port 8391
 ```
 
-All other variables have sensible defaults. After `docker compose up -d`, seed a customer and issue a test key:
+Then run the curl smoke sequence from `docs/api-reference.md` §6 against
+`http://127.0.0.1:8391` (speech, clone upload, list, delete).
+
+## Docker path (optional)
 
 ```bash
+cp .env.example .env            # set KEY_REGISTRY_ENCRYPTION_KEY + HF_TOKEN
+docker compose up --build -d    # first boot downloads the gated model
 docker compose exec tts-service comadre-keys create-customer \
-  --name "Local Dev" --email dev@localhost --tax-id 11144477735
+  --name "Local Dev" --email dev@localhost --cpf 11144477735
 docker compose exec tts-service comadre-keys issue-key \
-  --customer <cust_id-from-previous-step> --rpm 1000 --billing-mode complimentary
-# The printed cmdr_live_... plaintext is what you pass in curl.
+  --customer <cust_id> --rpm 1000 --billing-mode complimentary
 ```
 
-## Step 2: Obtain Qwen3 models
-
-Skip this step if you only want to test Kokoro voices (`kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`). Qwen3 voices (`qwen/<name>`) require the GGUF models.
-
-### Option A: Copy existing models (if you already have them)
-
-If you previously converted the models or have them from another machine:
+## Tuning harness (spike)
 
 ```bash
-# Place them in the models/ directory
-cp /path/to/qwen3-tts-0.6b-q8_0.gguf models/
-cp /path/to/qwen3-tts-tokenizer-f16.gguf models/
+uv run python scripts/spike_pocket_tts.py \
+  --config models/pocket-tts-config/portuguese.yaml \
+  --output-dir tmp/spike --threads 4 --sigla-spacing on
+
+# variant sweep + clone-encode timing
+uv run python scripts/spike_pocket_tts.py --config ... --quantize
+uv run python scripts/spike_pocket_tts.py --config ... --clone-timing
+uv run python scripts/spike_pocket_tts.py --config ... --baseline-dir tmp/v2-baseline
 ```
 
-### Option B: Convert from HuggingFace (fresh machine)
+Note: a local config YAML with local paths lives at
+`models/pocket-tts-config/portuguese.yaml` (gitignored); generate it from
+`deploy/pocket-tts/portuguese.yaml` by replacing the `/models/...` paths
+with relative local ones. The deploy YAMLs use container paths.
 
-This is a one-time process that takes about 20 minutes and needs ~5 GB of temporary disk space. Run these commands in a separate terminal (not inside the DeepSeek Harness shell, which has command timeouts).
+## Tests
 
 ```bash
-# 1. Create a temporary Python venv for conversion (CPU-only PyTorch)
-uv venv tmp/convert-venv
-
-# 2. Install conversion dependencies
-uv pip install --python tmp/convert-venv/bin/python \
-  torch --index-url https://download.pytorch.org/whl/cpu
-uv pip install --python tmp/convert-venv/bin/python \
-  numpy safetensors tqdm gguf huggingface_hub
-
-# 3. Download the HuggingFace model (~1.2 GB)
-tmp/convert-venv/bin/hf download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
-  --local-dir tmp/Qwen3-TTS-12Hz-0.6B-Base
-
-# 4. Clone the conversion scripts
-git clone --depth 1 https://github.com/predict-woo/qwen3-tts.cpp.git tmp/qwen3-tts-convert
-
-# 5. Convert TTS model to Q8_0
-mkdir -p models
-tmp/convert-venv/bin/python tmp/qwen3-tts-convert/scripts/convert_tts_to_gguf.py \
-  --input tmp/Qwen3-TTS-12Hz-0.6B-Base \
-  --output models/qwen3-tts-0.6b-q8_0.gguf \
-  --type q8_0
-
-# 6. Convert tokenizer to F16
-tmp/convert-venv/bin/python tmp/qwen3-tts-convert/scripts/convert_tokenizer_to_gguf.py \
-  --input tmp/Qwen3-TTS-12Hz-0.6B-Base \
-  --output models/qwen3-tts-tokenizer-f16.gguf \
-  --type f16
-
-# 7. Verify the files
-ls -lh models/qwen3-tts-0.6b-q8_0.gguf     # ~1.3 GB
-ls -lh models/qwen3-tts-tokenizer-f16.gguf  # ~326 MB
-
-# 8. Clean up temporary files (~5 GB freed)
-rm -rf tmp/convert-venv tmp/Qwen3-TTS-12Hz-0.6B-Base tmp/qwen3-tts-convert
+uv run pytest                    # mocked suite (no model needed)
+uv run pytest -m slow            # real model: generation + clone roundtrip
+uv run ruff check . && uv run mypy src/
+uv run pre-commit run --all-files
 ```
-
-For the full conversion reference, see [quantizing-qwen3-models.md](quantizing-qwen3-models.md).
-
-## Step 3: Load Qwen3 models into Docker volume
-
-The `models/` directory is not bind-mounted. Docker Compose uses a named volume (`comadre-models`). Copy the models into it:
-
-```bash
-docker volume create comadre-models
-docker run --rm \
-  -v comadre-models:/models \
-  -v "$(pwd)/models":/src:ro \
-  alpine sh -c 'cp /src/qwen3-tts-0.6b-q8_0.gguf /src/qwen3-tts-tokenizer-f16.gguf /models/'
-```
-
-Kokoro models do not need this step -- they auto-download into the volume on first startup.
-
-## Step 4: Build and start
-
-```bash
-docker compose up --build -d
-```
-
-First build takes 3-5 minutes (espeak-ng compilation, Python dependencies). Subsequent builds use Docker cache.
-
-## Step 5: Wait for startup
-
-Watch the logs until you see the service is ready:
-
-```bash
-docker compose logs -f
-```
-
-Startup phases:
-
-1. Kokoro models download (if not cached) -- 1-2 minutes
-2. Qwen3 model loading -- 10-20 seconds
-3. Engine warm-up (dummy inference) -- 10-30 seconds
-4. `startup | Service ready` appears in logs
-
-Check the health endpoint:
-
-```bash
-curl -sk https://localhost/health | python3 -m json.tool
-```
-
-Expected response when fully ready:
-
-```json
-{
-    "status": "healthy",
-    "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa", "qwen/female", "qwen/galvani"],
-    "engines": {
-        "kokoro": {"loaded": true, "voices": ["kokoro/pf_dora", "kokoro/pm_alex", "kokoro/pm_santa"]},
-        "qwen3": {"loaded": true, "voices": ["qwen/female", "qwen/galvani"]}
-    },
-    "queue_depth": 0,
-    "uptime_seconds": 42,
-    "memory_mb": 1024,
-    "version": "2.1.1"
-}
-```
-
-If you skipped Qwen3 models, `qwen3.loaded` will be `false` and only Kokoro voices will appear.
-
-## Step 6: Test each voice
-
-### Kokoro voices (5-16 seconds latency)
-
-```bash
-# kokoro/pm_santa (male, default)
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Bom dia, como posso ajudar?", "voice":"kokoro/pm_santa"}' \
-  --output test-santa.ogg
-
-# kokoro/pf_dora (female)
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.", "voice":"kokoro/pf_dora"}' \
-  --output test-dora.ogg
-
-# kokoro/pm_alex (male)
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"O FGTS foi depositado na sua conta.", "voice":"kokoro/pm_alex"}' \
-  --output test-alex.ogg
-```
-
-### Qwen3 voices (12-37 seconds latency)
-
-```bash
-# qwen/female
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Obrigada por entrar em contato.", "voice":"qwen/female"}' \
-  --output test-qwen-female.ogg
-
-# qwen/male
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Seu atendimento foi registrado.", "voice":"qwen/male"}' \
-  --output test-qwen-male.ogg
-
-# qwen/galvani (uses galvani.wav reference)
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Esta e a voz clonada falando.", "voice":"qwen/galvani"}' \
-  --output test-galvani.ogg
-```
-
-### WAV output (instead of OGG Opus)
-
-```bash
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Teste em formato WAV.", "voice":"kokoro/pm_santa", "response_format":"wav"}' \
-  --output test.wav
-```
-
-### Live playback (pipe to ffplay)
-
-Stream audio directly to speakers without saving a file. Requires WAV format for pipe compatibility:
-
-```bash
-# Kokoro female voice
-curl -s -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.","voice":"kokoro/pf_dora","response_format":"wav"}' \
-  | ffplay -nodisp -autoexit -
-
-# Qwen3 cloned voice
-curl -s -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
-  -H "Authorization: Bearer cmdr_live_YOUR_LOCAL_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Seu CPF foi validado com sucesso.","voice":"qwen/female","response_format":"wav"}' \
-  | ffplay -nodisp -autoexit -
-```
-
-OGG Opus does not support pipe streaming. Use `response_format: wav` when piping to ffplay.
-
-### Error example (missing auth)
-
-```bash
-curl -k -X POST https://localhost/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Teste sem autenticacao."}'
-```
-
-Expected 401 response:
-
-```json
-{
-  "error": {
-    "message": "Missing or malformed Authorization header",
-    "type": "authentication_error",
-    "hint": "Send 'Authorization: Bearer <plaintext>' using a key issued via comadre-keys issue-key."
-  }
-}
-```
-
-## Stopping and restarting
-
-```bash
-# Stop
-docker compose down
-
-# Restart (models persist in Docker volumes)
-docker compose up -d
-
-# Full reset (removes all volumes, models must be re-downloaded/copied)
-docker compose down -v
-```
-
-## Troubleshooting
-
-### Health returns 503 warming_up indefinitely
-
-Check logs for download or loading errors:
-
-```bash
-docker compose logs --tail=50
-```
-
-Common causes: network issue during Kokoro download, missing Qwen3 GGUF files, insufficient RAM.
-
-### Qwen3 voices not available
-
-Verify models are in the volume:
-
-```bash
-docker run --rm -v comadre-models:/models alpine ls -lh /models/
-```
-
-Expected: `qwen3-tts-0.6b-q8_0.gguf` (~1.3 GB) and `qwen3-tts-tokenizer-f16.gguf` (~326 MB).
-
-### Siglas pronounced incorrectly
-
-Rebuild the image to recompile espeak-ng pt_extra:
-
-```bash
-docker compose up -d --build --force-recreate
-```
-
-### Port already in use
-
-Change the port in `.env`:
-
-```bash
-PORT=9000
-```
-
-Then restart: `docker compose up -d`
-
-For more issues, see [troubleshooting.md](troubleshooting.md).

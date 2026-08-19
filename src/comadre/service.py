@@ -1,21 +1,48 @@
-"""TTS engine service — Kokoro fp32 + Qwen3 C++ Q8_0 integration."""
+"""TTS engine service — pocket-tts single-engine integration with native voice cloning.
+
+v3: pocket-tts is the ONLY engine. Voice format is pocket/<name>:
+operator voices live on the filesystem as /voices/pocket/<name>.wav
+(state materialized lazily), API uploads live as /voices/pocket/u_<ULID>
+(persisted) or in the in-memory ephemeral registry.
+
+All model work (state encode + speech generation) runs under the
+per-replica FIFO asyncio.Lock owned by the API layer (api.py /
+voices_api.py); this module never acquires it.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import hashlib
 import io
-import os
 import re
+import shutil
 import subprocess
-import tempfile
 import wave
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import torch
+import ulid
+from pocket_tts import TTSModel, export_model_state
 
-from comadre.exceptions import GenerationError, InvalidRequestError, VoiceNotFoundError
+from comadre import voice_storage
+from comadre.config import Settings
+from comadre.exceptions import (
+    GenerationError,
+    InvalidRequestError,
+    VoiceDeleteError,
+    VoiceLimitError,
+    VoiceNotFoundError,
+    VoiceUploadError,
+)
 from comadre.logging import get_logger
-from comadre.preprocessing import chunk_text, expand_siglas, normalize_text
+from comadre.preprocessing import expand_siglas, normalize_text
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -23,104 +50,180 @@ if TYPE_CHECKING:
 logger = get_logger("request")
 startup_logger = get_logger("startup")
 
-# Voice name must be safe for filesystem paths: alphanumeric, hyphens, underscores.
+# Voice name must be safe for filesystem paths: alphanumeric, hyphens,
+# underscores. API uploads additionally match u_<ULID> (26 Crockford chars).
 _VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_UPLOAD_VOICE_RE = re.compile(r"^u_[0-9A-HJKMNP-TV-Z]{26}$")
+_VOICE_PREFIX = "pocket/"
 
 
-class KokoroEngine:
-    """Wraps kokoro-onnx for TTS generation with built-in voices."""
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
 
-    CHAR_LIMIT = 500
+
+def _iso_utc(dt: datetime) -> str:
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso_utc(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _audio_duration_seconds(path: Path) -> float:
+    """Duration of an audio file in seconds via soundfile."""
+    import soundfile as sf
+
+    info = sf.info(str(path))
+    if info.samplerate <= 0:
+        raise ValueError("audio file has no valid sample rate")
+    return float(info.frames / info.samplerate)
+
+
+@dataclass(slots=True)
+class VoiceInfo:
+    """Public-facing description of a voice (listing / create responses)."""
+
+    voice: str
+    display_name: str | None
+    persisted: bool
+    created_at: datetime | None
+    expires_at: datetime | None
+
+
+@dataclass(slots=True)
+class EphemeralVoice:
+    """In-memory ephemeral clone (per-key, never on disk)."""
+
+    key_id: str
+    customer_id: str
+    display_name: str | None
+    state: dict[str, Any]
+    created_at: datetime
+    last_used_at: datetime
+    expires_at: datetime
+
+
+class PocketEngine:
+    """Wraps pocket-tts TTSModel for speech generation."""
+
+    CHAR_LIMIT = 1000
 
     def __init__(self) -> None:
-        self._kokoro: Any = None
+        self._model: TTSModel | None = None
+        self._registry: VoiceRegistry | None = None
+        self._sigla_spacing = True
 
     @property
     def is_loaded(self) -> bool:
-        """Return True if the Kokoro model is loaded."""
-        return self._kokoro is not None
+        """Return True if the pocket-tts model is loaded."""
+        return self._model is not None
+
+    @property
+    def sample_rate(self) -> int:
+        """Model output sample rate (24000 for pocket-tts)."""
+        if self._model is None:
+            raise GenerationError("Model not loaded — call load_model() first")
+        return int(self._model.sample_rate)
+
+    def attach_registry(self, registry: VoiceRegistry) -> None:
+        """Bind the voice registry used to resolve voice names."""
+        self._registry = registry
 
     def load_model(
         self,
-        model_path: str,
-        voices_path: str,
-        espeak_data_path: str | None = None,
+        config_path: str | Path,
+        threads: int,
+        quantize: bool,
+        temperature: float,
+        *,
+        sigla_spacing: bool = True,
     ) -> None:
-        """Load the Kokoro ONNX model."""
-        import kokoro_onnx
+        """Load the pocket-tts model from a local config YAML.
 
-        espeak_config = None
-        if espeak_data_path is not None:
-            espeak_config = kokoro_onnx.EspeakConfig(  # type: ignore[attr-defined]
-                data_path=espeak_data_path
-            )
-            startup_logger.info("espeak-ng data path overridden: %s", espeak_data_path)
-
-        startup_logger.info("Loading Kokoro model...")
-        self._kokoro = kokoro_onnx.Kokoro(
-            model_path=model_path,
-            voices_path=voices_path,
-            espeak_config=espeak_config,
+        The upstream pocket_tts import calls torch.set_num_threads(1);
+        we override with the operator-configured thread count AFTER the
+        import, per decision D15.
+        """
+        self._sigla_spacing = sigla_spacing
+        torch.set_num_threads(threads)
+        startup_logger.info(
+            "Loading pocket-tts model (config=%s, threads=%d, quantize=%s, "
+            "temperature=%.2f)...",
+            config_path,
+            threads,
+            quantize,
+            temperature,
         )
-        startup_logger.info("Kokoro model loaded")
+        self._model = TTSModel.load_model(
+            config=config_path, quantize=quantize, temp=temperature
+        )
+        startup_logger.info(
+            "pocket-tts model loaded (sample_rate=%d)", self._model.sample_rate
+        )
 
-    def warm_up(self) -> None:
+    def warm_up(self, default_state_path: Path) -> None:
         """Run dummy inference to preload model internals."""
-        if self._kokoro is None:
+        if self._model is None:
             raise GenerationError("Model not loaded — call load_model() first")
         startup_logger.info("Running warm-up inference...")
-        self._kokoro.create(
-            text="Teste de aquecimento.",
-            voice="pm_santa",
-            speed=1.0,
-            lang="pt-br",
-        )
+        state = self._model.get_state_for_audio_prompt(default_state_path)
+        self._model.generate_audio(state, "Teste de aquecimento.", copy_state=True)
         startup_logger.info("Warm-up complete")
 
-    def get_builtin_voices(self) -> list[str]:
-        """Return sorted list of built-in voice names from the .npz archive."""
-        if self._kokoro is None:
-            return []
-        result: list[str] = self._kokoro.get_voices()
-        return result
-
-    def get_voice_style(self, name: str) -> NDArray[np.float32]:
-        """Return the voice style vector for a built-in voice name."""
-        style: NDArray[np.float32] = self._kokoro.get_voice_style(name)
-        return style
+    def get_state_for_audio_prompt(
+        self, audio_path: Path, *, truncate: bool = False
+    ) -> dict[str, Any]:
+        """Encode a reference audio into a model state (voice cloning)."""
+        if self._model is None:
+            raise GenerationError("Model not loaded — call load_model() first")
+        return self._model.get_state_for_audio_prompt(  # type: ignore[no-any-return]
+            audio_path, truncate=truncate
+        )
 
     def generate_speech(
         self,
         text: str,
-        voice: str | NDArray[np.float32],
+        voice_name: str,
         response_format: str,
         noise_dir: Path | None = None,
         speed: float = 1.0,
         *,
         raw: bool = False,
+        key_id: str | None = None,
     ) -> bytes:
-        """Generate speech via Kokoro fp32 engine.
+        """Generate speech via pocket-tts.
 
         Args:
             text: Input text to synthesize.
-            voice: Built-in voice name (str) or custom voice style vector (NDArray).
-            response_format: Output format — "wav" or "ogg".
+            voice_name: Voice identifier as pocket/<name>.
+            response_format: Output format — wav or ogg.
             noise_dir: Directory containing room/hiss noise WAV files.
-            speed: Playback speed multiplier (1.0 = normal). Forwarded natively
-                to ``kokoro_onnx.create(speed=...)``, which adjusts phoneme
-                duration during synthesis. Range 0.25-4.0 enforced upstream.
+            speed: Playback speed multiplier (1.0 = normal). Applied for
+                ALL voices as an ffmpeg atempo chain in post-processing
+                (0.25-4.0 enforced upstream in schemas.py).
+            raw: Skip the post-processing pipeline (no EQ/compression/
+                noise/tempo) — still encodes to the requested format.
+            key_id: Registry key id, used to resolve the callers
+                ephemeral clones.
 
         Returns:
             Audio bytes in the requested format.
 
         Raises:
-            InvalidRequestError: If text exceeds the character limit.
-            GenerationError: If TTS generation or encoding fails.
+            InvalidRequestError: malformed voice / format / empty text /
+                text over the character limit.
+            VoiceNotFoundError: unknown voice name.
+            GenerationError: model failure.
         """
         if response_format not in ("wav", "ogg"):
             raise InvalidRequestError(
-                message=f"Unsupported response format: '{response_format}'",
-                hint="Supported formats: 'wav', 'ogg'.",
+                message=f"Unsupported response format: {response_format!r}",
+                hint="Supported formats: wav, ogg.",
             )
 
         if not text.strip():
@@ -138,37 +241,61 @@ class KokoroEngine:
                 hint=f"Shorten your text to {self.CHAR_LIMIT} characters or fewer.",
             )
 
-        if self._kokoro is None:
+        name = _parse_voice(voice_name)
+        if self._model is None:
             raise GenerationError("Model not loaded — call load_model() first")
+        if self._registry is None:
+            raise GenerationError(
+                "Voice registry not attached — call attach_registry()"
+            )
 
         normalized = normalize_text(text)
-        chunks = chunk_text(normalized)
-        logger.info("Generating %d chunk(s) for %d characters", len(chunks), len(text))
+        if self._sigla_spacing:
+            normalized = expand_siglas(normalized)
+
+        state = self._registry.resolve(name, key_id=key_id)
+        logger.info(
+            "Generating speech for %d characters (voice=%s)", len(text), voice_name
+        )
 
         try:
-            wav_parts: list[bytes] = []
-            for chunk in chunks:
-                samples, sample_rate = self._kokoro.create(
-                    text=chunk,
-                    voice=voice,
-                    speed=speed,
-                    lang="pt-br",
-                )
-                wav_parts.append(_samples_to_wav(samples, sample_rate))
-
-            wav_bytes = _concatenate_wavs(wav_parts)
-            if raw:
-                return _encode_final(wav_bytes, response_format)
-            return _apply_radio_warm(wav_bytes, response_format, noise_dir)
+            audio = self._model.generate_audio(state, normalized, copy_state=True)
+            samples = audio.detach().cpu().numpy()
+            wav_bytes = _samples_to_wav(samples, self.sample_rate)
         except (InvalidRequestError, GenerationError):
             raise
         except Exception as exc:
             logger.error("TTS generation failed: %s", exc, exc_info=True)
             raise GenerationError(f"TTS generation failed: {exc}") from exc
 
+        if raw:
+            return _encode_final(wav_bytes, response_format)
+        return _apply_pipeline(wav_bytes, response_format, noise_dir, speed)
+
+
+def _parse_voice(voice_name: str) -> str:
+    """Parse pocket/<name> and validate the name; returns the bare name."""
+    parts = voice_name.split("/", 1)
+    if len(parts) != 2 or parts[0] != "pocket" or not parts[1]:
+        raise InvalidRequestError(
+            message=f"Invalid voice format: {voice_name!r}",
+            hint="Voice must be pocket/<name>.",
+        )
+    name = parts[1]
+    if not voice_storage.is_valid_voice_name(name):
+        raise InvalidRequestError(
+            message=f"Invalid voice name: {name!r}",
+            hint=(
+                "Voice name may only contain letters, digits, hyphens, and underscores."
+            ),
+        )
+    return name
+
 
 def _samples_to_wav(samples: NDArray[np.float32], sample_rate: int) -> bytes:
-    """Convert float32 audio samples to WAV bytes."""
+    """Convert float32 audio samples to WAV bytes (mono, 16-bit)."""
+    if samples.ndim > 1:
+        samples = samples.reshape(-1)  # mono model: flatten [1, N]
     int16_samples = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -179,40 +306,41 @@ def _samples_to_wav(samples: NDArray[np.float32], sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-def _concatenate_wavs(wav_bytes_list: list[bytes]) -> bytes:
-    """Concatenate multiple WAV byte sequences into one."""
-    if len(wav_bytes_list) == 1:
-        return wav_bytes_list[0]
+def _atempo_chain(speed: float) -> str:
+    """Decompose speed into ffmpeg atempo factors in [0.5, 2.0].
 
-    output = io.BytesIO()
-    params: wave._wave_params | None = None
-    with wave.open(output, "wb") as out_wf:
-        for i, wav_bytes in enumerate(wav_bytes_list):
-            with wave.open(io.BytesIO(wav_bytes), "rb") as in_wf:
-                if i == 0:
-                    params = in_wf.getparams()
-                    out_wf.setparams(params)
-                else:
-                    chunk_params = in_wf.getparams()
-                    if chunk_params[:3] != params[:3]:  # type: ignore[index]
-                        msg = (
-                            f"WAV params mismatch: chunk 0={params},"
-                            f" chunk {i}={chunk_params}"
-                        )
-                        raise GenerationError(msg)
-                out_wf.writeframes(in_wf.readframes(in_wf.getnframes()))
-    return output.getvalue()
+    atempo only accepts factors in [0.5, 2.0]; chain factors whose
+    product equals speed (e.g. 0.25 -> 0.5,0.5; 4.0 -> 2.0,2.0;
+    1.0 -> no filter).
+    """
+    if speed == 1.0:
+        return ""
+    factors: list[float] = []
+    remaining = speed
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    if abs(remaining - 1.0) > 1e-6:
+        factors.append(round(remaining, 6))
+    return ",".join(f"atempo={f}" for f in factors)
 
 
-def _apply_radio_warm(
+def _apply_pipeline(
     wav_bytes: bytes,
     response_format: str,
     noise_dir: Path | None = None,
+    speed: float = 1.0,
 ) -> bytes:
-    """Apply radio_warm post-processing pipeline via ffmpeg.
+    """Apply the single post-processing pipeline via ffmpeg.
 
-    Stage 1: Audio effects (EQ, compression, saturation, loudnorm)
-    Stage 2: Noise mixing + final encoding (OGG Opus or WAV)
+    Stage 1: Audio effects (EQ, compression, saturation, loudnorm) plus
+    the optional atempo speed chain. Stage 2: noise mixing + final
+    encoding (OGG Opus or WAV). Constants carried over from the v2
+    radio_warm chain (Phase 0 starting point; re-tune via
+    scripts/spike_pocket_tts.py against the v2 baselines).
     """
     # Stage 1: Audio effects
     stage1_filter = (
@@ -226,6 +354,9 @@ def _apply_radio_warm(
         "lowpass=f=7000,"
         "loudnorm=I=-16:TP=-1:LRA=4"
     )
+    atempo = _atempo_chain(speed)
+    if atempo:
+        stage1_filter += "," + atempo
 
     stage1_cmd = [
         "ffmpeg",
@@ -425,461 +556,370 @@ def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
     return result.stdout
 
 
-# --- Qwen3 TTS Engine ---
+class VoiceRegistry:
+    """Filesystem scan + state LRU + ephemeral clone registry.
 
+    Threading discipline: model-heavy methods (resolve, create_from_upload)
+    run inside worker threads UNDER the API layer FIFO lock. The
+    sweeper runs in the event loop. All dict mutations use snapshot
+    iteration (list(...)) and single-key atomic ops so the two never
+    corrupt each other; the GIL makes individual dict operations atomic.
+    """
 
-class QwenEngine:
-    """Wraps qwen3-tts-cli C++ binary for TTS generation with voice cloning."""
-
-    CHAR_LIMIT = 300
-
-    def __init__(self) -> None:
-        self._cli_path: str | None = None
-        self._model_path: str | None = None
-        self._tokenizer_path: str | None = None
-        self._threads: int = 4
-        self._loaded: bool = False
-
-    @property
-    def is_loaded(self) -> bool:
-        """Return True if the Qwen3 engine is loaded."""
-        return self._loaded
-
-    def load_model(
-        self,
-        cli_path: str,
-        model_path: str,
-        tokenizer_path: str,
-        threads: int = 4,
-    ) -> None:
-        """Verify Qwen3 binary, model files exist."""
-        if not Path(cli_path).is_file():
-            msg = f"qwen3-tts-cli binary not found: {cli_path}"
-            raise FileNotFoundError(msg)
-        if not os.access(cli_path, os.X_OK):
-            msg = f"qwen3-tts-cli binary is not executable: {cli_path}"
-            raise PermissionError(msg)
-        if not Path(model_path).is_file():
-            msg = f"Qwen3 model file not found: {model_path}"
-            raise FileNotFoundError(msg)
-        if not Path(tokenizer_path).is_file():
-            msg = f"Qwen3 tokenizer file not found: {tokenizer_path}"
-            raise FileNotFoundError(msg)
-
-        self._cli_path = cli_path
-        self._model_path = model_path
-        self._tokenizer_path = tokenizer_path
-        self._threads = threads
-        self._loaded = True
-        startup_logger.info("Qwen3 engine loaded (threads=%d)", threads)
-
-    def warm_up(self, reference_path: Path | None = None) -> None:
-        """Run a dummy subprocess invocation to verify binary works."""
-        if not self._loaded:
-            raise GenerationError("Engine not loaded — call load_model() first")
-        if reference_path is None:
-            startup_logger.info("No Qwen3 reference WAV available, skipping warm-up")
-            return
-        startup_logger.info("Running Qwen3 warm-up...")
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            cmd = self._build_command("Teste.", reference_path, tmp_path, seed=42)
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                check=True,
-                timeout=60,
-            )
-            startup_logger.info("Qwen3 warm-up complete")
-        except (
-            subprocess.TimeoutExpired,
-            subprocess.CalledProcessError,
-            OSError,
-        ) as exc:
-            startup_logger.warning("Qwen3 warm-up failed: %s", exc)
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def generate_speech(
-        self,
-        text: str,
-        reference_path: Path,
-        response_format: str,
-        noise_dir: Path | None = None,
-        seed: int = -1,
-        speed: float = 1.0,
-        *,
-        raw: bool = False,
-    ) -> bytes:
-        """Generate speech via Qwen3 C++ engine.
-
-        Args:
-            text: Input text to synthesize.
-            reference_path: Path to the reference WAV file for voice cloning.
-            response_format: Output format — "wav" or "ogg".
-            noise_dir: Directory containing room/hiss noise WAV files.
-            seed: Random seed (-1 = random, N = deterministic).
-            speed: Accepted for API parity with Kokoro but currently ignored —
-                the qwen3-tts-cli binary does not expose a speed flag, and the
-                whatsapp-subtle post-processing pipeline already applies a
-                fixed atempo 1.15x step. Plumbing user-controlled speed into
-                that pipeline would require compounding the two factors.
-
-        Returns:
-            Audio bytes in the requested format.
-
-        Raises:
-            InvalidRequestError: If text exceeds the character limit.
-            GenerationError: If TTS generation fails.
-        """
-        if response_format not in ("wav", "ogg"):
-            raise InvalidRequestError(
-                message=f"Unsupported response format: '{response_format}'",
-                hint="Supported formats: 'wav', 'ogg'.",
-            )
-
-        if not text.strip():
-            raise InvalidRequestError(
-                message="Text must not be empty",
-                hint="Provide non-empty text for speech synthesis.",
-            )
-
-        if len(text) > self.CHAR_LIMIT:
-            raise InvalidRequestError(
-                message=(
-                    f"Text exceeds {self.CHAR_LIMIT} character limit"
-                    f" ({len(text)} chars)"
-                ),
-                hint=f"Shorten your text to {self.CHAR_LIMIT} characters or fewer.",
-            )
-
-        if not self._loaded:
-            raise GenerationError("Engine not loaded — call load_model() first")
-
-        preprocessed = expand_siglas(text)
-        max_tokens = min(4096, max(100, len(text) * 8))
-        logger.info("Generating Qwen3 speech for %d characters", len(text))
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            cmd = self._build_command(
-                preprocessed, reference_path, tmp_path, seed, max_tokens
-            )
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                check=True,
-                timeout=60,
-            )
-            wav_bytes = Path(tmp_path).read_bytes()
-            if raw:
-                return _encode_final(wav_bytes, response_format)
-            return _apply_whatsapp_subtle(wav_bytes, response_format, noise_dir)
-        except (InvalidRequestError, GenerationError):
-            raise
-        except subprocess.TimeoutExpired as exc:
-            logger.error("qwen3-tts-cli timed out after 60s")
-            raise GenerationError("Qwen3 TTS generation timed out") from exc
-        except subprocess.CalledProcessError as exc:
-            logger.error(
-                "qwen3-tts-cli failed: %s", exc.stderr.decode(errors="replace")
-            )
-            raise GenerationError("Qwen3 TTS generation failed") from exc
-        except Exception as exc:
-            logger.error("Qwen3 TTS generation failed: %s", exc, exc_info=True)
-            raise GenerationError(f"Qwen3 TTS generation failed: {exc}") from exc
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
-    def _build_command(
-        self,
-        text: str,
-        reference_path: Path,
-        output_path: str,
-        seed: int,
-        max_tokens: int = 100,
-    ) -> list[str]:
-        """Build the qwen3-tts-cli command arguments."""
-        if self._model_path is None:
-            raise GenerationError("Model path not set — call load_model() first")
-        model_dir = str(Path(self._model_path).parent)
-        cmd = [
-            str(self._cli_path),
-            "-m",
-            model_dir,
-            "-t",
-            text,
-            "-l",
-            "pt",
-            "--temperature",
-            "0.7",
-            "--top-p",
-            "0.95",
-            "--repetition-penalty",
-            "1.05",
-            "--max-tokens",
-            str(max_tokens),
-            "--seed",
-            str(seed),
-            "-j",
-            str(self._threads),
-            "-r",
-            str(reference_path),
-            "-o",
-            output_path,
-        ]
-        return cmd
-
-
-class EngineRouter:
-    """Routes voice requests to the correct TTS engine via filesystem discovery."""
+    LRU_MAXSIZE = 16
+    SWEEP_INTERVAL_SECONDS = 60
 
     def __init__(
-        self, kokoro: KokoroEngine, qwen: QwenEngine, voices_dir: Path
+        self, engine: PocketEngine, voices_dir: Path, settings: Settings
     ) -> None:
-        self._kokoro = kokoro
-        self._qwen = qwen
-        self._voices_dir = voices_dir
-
-    def _parse_voice(self, voice_name: str) -> tuple[str, str]:
-        """Parse 'engine/name' voice string into (engine_prefix, voice_name).
-
-        Raises InvalidRequestError for malformed voice strings or path traversal.
-        """
-        parts = voice_name.split("/", 1)
-        if len(parts) != 2 or not parts[1]:
-            raise InvalidRequestError(
-                message=f"Invalid voice format: '{voice_name}'",
-                hint=(
-                    "Voice must be 'kokoro/<name>' or 'qwen/<name>'."
-                    " Example: 'kokoro/pm_santa', 'qwen/galvani'."
+        self._engine = engine
+        self._settings = settings
+        self._pocket_dir = voices_dir / "pocket"
+        self._files: dict[str, voice_storage.VoiceFileEntry] = {}
+        for entry in voice_storage.scan_entries(self._pocket_dir):
+            self._files[entry.name] = entry
+        self._loaded: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._ephemeral: dict[str, dict[str, EphemeralVoice]] = {}
+        self._model_hash = self._hash_model_file()
+        self._sweeper_task: asyncio.Task[None] | None = None
+        # The catalog default voice (pocket/rafael) is a model-level
+        # embedding, not a filesystem entry: register it virtually so
+        # it resolves and appears in available_voices() / /health.
+        self._rafael_path = Path(settings.pocket_default_voice_path)
+        if self._rafael_path.is_file():
+            self._files.setdefault(
+                "rafael",
+                voice_storage.VoiceFileEntry(
+                    name="rafael",
+                    ref_path=self._rafael_path,
+                    state_path=self._rafael_path,
+                    meta={
+                        "display_name": "Rafael",
+                        "model_hash": self._model_hash,
+                    },
                 ),
             )
-        engine, name = parts
-        if engine not in ("kokoro", "qwen"):
-            raise InvalidRequestError(
-                message=f"Unknown engine prefix: '{engine}'",
-                hint="Voice must start with 'kokoro/' or 'qwen/'.",
+        else:
+            startup_logger.warning(
+                "Default voice state not found: %s — pocket/rafael will not resolve",
+                self._rafael_path,
             )
-        if not _VOICE_NAME_RE.match(name):
-            raise InvalidRequestError(
-                message=f"Invalid voice name: '{name}'",
-                hint=(
-                    "Voice name may only contain letters, digits,"
-                    " hyphens, and underscores."
-                ),
-            )
-        return engine, name
+        startup_logger.info(
+            "Voice registry built: %d filesystem voice(s), model_hash=%s...",
+            len(self._files),
+            self._model_hash[:12],
+        )
 
-    def _resolve_kokoro_voice(self, name: str) -> str | NDArray[np.float32]:
-        """Resolve a Kokoro voice by name.
+    @property
+    def model_hash(self) -> str:
+        """SHA-256 of POCKET_MODEL_PATH, computed once at startup."""
+        return self._model_hash
 
-        Checks for a custom .npy file first, then falls back to built-in voices.
+    def _hash_model_file(self) -> str:
+        path = Path(self._settings.pocket_model_path)
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _state_matches_model(self, entry: voice_storage.VoiceFileEntry) -> bool:
+        return entry.meta.get("model_hash") == self._model_hash
+
+    def _load_state(self, entry: voice_storage.VoiceFileEntry) -> dict[str, Any]:
+        """Load (or lazily materialize) the model state for an entry.
+
+        Loads a precomputed .safetensors when its meta model_hash matches
+        the current model; otherwise encodes the reference .wav, persists
+        the state + metadata, and returns the fresh state. Callers must
+        hold the FIFO queue lock (model work).
         """
-        npy_path = self._voices_dir / "kokoro" / f"{name}.npy"
-        if npy_path.is_file():
-            voice_data: NDArray[np.float32] = np.load(npy_path, allow_pickle=False)
-            return voice_data
-        # Fall back to built-in voice from .npz archive
-        if self._kokoro.is_loaded and name in self._kokoro.get_builtin_voices():
-            return self._kokoro.get_voice_style(name)
-        raise VoiceNotFoundError(
-            voice=f"kokoro/{name}", available=self.available_voices()
+        if entry.state_path.is_file() and self._state_matches_model(entry):
+            state = self._engine.get_state_for_audio_prompt(entry.state_path)
+            return state
+        startup_logger.info(
+            "Materializing voice state for %r from %s",
+            entry.name,
+            entry.ref_path,
         )
-
-    def _resolve_qwen_voice(self, name: str) -> Path:
-        """Resolve a Qwen3 voice by name. The .wav file must exist."""
-        wav_path = self._voices_dir / "qwen" / f"{name}.wav"
-        if wav_path.is_file():
-            return wav_path
-        raise VoiceNotFoundError(
-            voice=f"qwen/{name}", available=self.available_voices()
+        state = self._engine.get_state_for_audio_prompt(entry.ref_path, truncate=True)
+        export_model_state(state, entry.state_path)
+        try:
+            duration = _audio_duration_seconds(entry.ref_path)
+        except (OSError, ValueError, RuntimeError):
+            duration = 0.0
+        voice_storage.write_meta(
+            self._pocket_dir,
+            entry.name,
+            model_hash=self._model_hash,
+            ref_duration_s=duration,
         )
+        refreshed = voice_storage.scan_entries(self._pocket_dir)
+        for refreshed_entry in refreshed:
+            if refreshed_entry.name == entry.name:
+                self._files[entry.name] = refreshed_entry
+                break
+        return state
 
-    def generate_speech(
+    def resolve(self, name: str, *, key_id: str | None = None) -> dict[str, Any]:
+        """Resolve a bare voice name to a model state (LRU-cached)."""
+        if key_id is not None:
+            ephemeral = self._ephemeral.get(key_id, {}).get(name)
+            if ephemeral is not None:
+                ephemeral.last_used_at = _now_utc()
+                return ephemeral.state
+
+        entry = self._files.get(name)
+        if entry is None:
+            raise VoiceNotFoundError(
+                voice=f"{_VOICE_PREFIX}{name}", available=self.available_voices()
+            )
+        state = self._loaded.pop(name, None)
+        if state is None:
+            state = self._load_state(entry)
+        self._loaded[name] = state  # refresh LRU order
+        while len(self._loaded) > self.LRU_MAXSIZE:
+            self._loaded.popitem(last=False)
+        return state
+
+    def create_from_upload(
         self,
-        text: str,
-        voice_name: str,
-        response_format: str = "ogg",
-        noise_dir: Path | None = None,
-        seed: int = -1,
-        speed: float = 1.0,
+        path: Path,
         *,
-        raw: bool = False,
-    ) -> bytes:
-        """Generate speech by dispatching to the correct engine.
+        key_id: str,
+        customer_id: str,
+        display_name: str | None,
+        persist: bool,
+    ) -> VoiceInfo:
+        """Encode a clone from an uploaded audio file.
 
-        Args:
-            text: Input text to synthesize.
-            voice_name: Voice identifier as 'engine/name' (e.g. 'kokoro/pm_santa').
-            response_format: Output format — "wav" or "ogg".
-            noise_dir: Directory containing room/hiss noise WAV files.
-            seed: Random seed (forwarded to Qwen3 only).
-            speed: Playback speed multiplier (1.0 = normal). Honored natively
-                by Kokoro; accepted but currently ignored by Qwen3 (see
-                ``QwenEngine.generate_speech`` for the rationale).
-            raw: Skip audio post-processing.
-
-        Returns:
-            Audio bytes in the requested format.
+        Runs under the API layer FIFO lock (model work). Duration was
+        validated upstream by the API layer; re-checked defensively here.
         """
-        engine, name = self._parse_voice(voice_name)
+        settings = self._settings
+        stored_count = voice_storage.count_by_customer(self._pocket_dir, customer_id)
+        if persist and stored_count >= settings.voice_stored_max_per_customer:
+            raise VoiceLimitError(
+                f"Stored voice quota reached: {settings.voice_stored_max_per_customer}"
+                " stored clones per customer",
+            )
+        ephemeral_count = len(self._ephemeral.get(key_id, {}))
+        if not persist and ephemeral_count >= settings.voice_ephemeral_max_per_key:
+            raise VoiceLimitError(
+                f"Ephemeral voice quota reached: {settings.voice_ephemeral_max_per_key}"
+                " ephemeral clones per API key",
+            )
 
-        if engine == "kokoro":
-            voice = self._resolve_kokoro_voice(name)
-            return self._kokoro.generate_speech(
-                text, voice, response_format, noise_dir, speed, raw=raw
+        try:
+            duration = _audio_duration_seconds(path)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise VoiceUploadError("unreadable_audio") from exc
+        if duration < settings.voice_ref_min_seconds:
+            raise VoiceUploadError("too_short")
+        if duration > settings.voice_ref_max_seconds:
+            raise VoiceUploadError("too_long")
+
+        state = self._engine.get_state_for_audio_prompt(path, truncate=True)
+        now = _now_utc()
+        name = f"u_{ulid.ULID()}"
+
+        if persist:
+            ref_path = self._pocket_dir / f"{name}.wav"
+            self._pocket_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, ref_path)
+            export_model_state(state, self._pocket_dir / f"{name}.safetensors")
+            voice_storage.write_meta(
+                self._pocket_dir,
+                name,
+                display_name=display_name,
+                customer_id=customer_id,
+                key_id=key_id,
+                created_at=_iso_utc(now),
+                ref_duration_s=duration,
+                model_hash=self._model_hash,
             )
-        # engine == "qwen"
-        if not self._qwen.is_loaded:
-            raise InvalidRequestError(
-                message="Qwen3 engine is disabled on this host",
-                hint=(
-                    "Use a kokoro/* voice. Qwen3 is unavailable when"
-                    " QWEN3_ENABLED=false (e.g. on aarch64 hosts where the"
-                    " x86_64 binary cannot run)."
-                ),
+            self._files[name] = voice_storage.VoiceFileEntry(
+                name=name,
+                ref_path=ref_path,
+                state_path=self._pocket_dir / f"{name}.safetensors",
+                meta=voice_storage.read_meta(self._pocket_dir, name),
             )
-        ref_path = self._resolve_qwen_voice(name)
-        return self._qwen.generate_speech(
-            text, ref_path, response_format, noise_dir, seed, speed, raw=raw
+            self._loaded[name] = state
+            while len(self._loaded) > self.LRU_MAXSIZE:
+                self._loaded.popitem(last=False)
+            return VoiceInfo(
+                voice=f"{_VOICE_PREFIX}{name}",
+                display_name=display_name,
+                persisted=True,
+                created_at=now,
+                expires_at=None,
+            )
+
+        # Ephemeral: register in memory + enforce the global LRU cap.
+        expires_at = now + timedelta(
+            seconds=settings.voice_ephemeral_absolute_ttl_seconds
         )
+        self._enforce_ephemeral_global_cap()
+        self._ephemeral.setdefault(key_id, {})[name] = EphemeralVoice(
+            key_id=key_id,
+            customer_id=customer_id,
+            display_name=display_name,
+            state=state,
+            created_at=now,
+            last_used_at=now,
+            expires_at=expires_at,
+        )
+        return VoiceInfo(
+            voice=f"{_VOICE_PREFIX}{name}",
+            display_name=display_name,
+            persisted=False,
+            created_at=now,
+            expires_at=expires_at,
+        )
+
+    def _enforce_ephemeral_global_cap(self) -> None:
+        """Evict least-recently-used ephemeral clones beyond the global cap."""
+        max_voices = self._settings.voice_ephemeral_global_max
+        all_voices = [
+            (voice, key_id, name)
+            for key_id, voices in list(self._ephemeral.items())
+            for name, voice in list(voices.items())
+        ]
+        if len(all_voices) < max_voices:
+            return
+        all_voices.sort(key=lambda item: item[0].last_used_at)
+        for _voice, key_id, name in all_voices[: len(all_voices) - max_voices + 1]:
+            voices = self._ephemeral.get(key_id)
+            if voices is not None:
+                voices.pop(name, None)
+                if not voices:
+                    self._ephemeral.pop(key_id, None)
+
+    def delete(self, name: str, *, key_id: str, customer_id: str) -> None:
+        """Remove a stored or ephemeral clone owned by the caller.
+
+        Stored clones are customer-owned (any key of the customer may
+        delete them); ephemeral clones are key-owned. Operator voices
+        (no customer_id meta) cannot be deleted via the API.
+        """
+        entry = self._files.get(name)
+        if entry is not None:
+            if entry.meta.get("customer_id") != customer_id:
+                raise VoiceDeleteError(f"{_VOICE_PREFIX}{name}")
+            voice_storage.delete_entries(self._pocket_dir, name)
+            self._files.pop(name, None)
+            self._loaded.pop(name, None)
+            return
+        ephemeral = self._ephemeral.get(key_id, {}).pop(name, None)
+        if ephemeral is None:
+            raise VoiceNotFoundError(
+                voice=f"{_VOICE_PREFIX}{name}", available=self.available_voices()
+            )
+
+    def list_for(self, *, key_id: str, customer_id: str) -> list[VoiceInfo]:
+        """Operator voices + the callers stored and ephemeral clones.
+
+        Other customer clones are never listed (API spec section 2.2).
+        """
+        result: list[VoiceInfo] = []
+        for name, entry in sorted(self._files.items()):
+            owner = entry.meta.get("customer_id")
+            if owner is not None and owner != customer_id:
+                continue
+            result.append(
+                VoiceInfo(
+                    voice=f"{_VOICE_PREFIX}{name}",
+                    display_name=_meta_str(entry.meta.get("display_name")),
+                    persisted=True,
+                    created_at=_parse_iso_utc(entry.meta.get("created_at")),
+                    expires_at=None,
+                )
+            )
+        for name, voice in sorted((self._ephemeral.get(key_id) or {}).items()):
+            result.append(
+                VoiceInfo(
+                    voice=f"{_VOICE_PREFIX}{name}",
+                    display_name=voice.display_name,
+                    persisted=False,
+                    created_at=voice.created_at,
+                    expires_at=voice.expires_at,
+                )
+            )
+        return result
 
     def available_voices(self) -> list[str]:
-        """Return sorted list of all available voices from filesystem + builtins."""
-        voices: set[str] = set()
-
-        # Kokoro built-in voices from .npz archive
-        if self._kokoro.is_loaded:
-            for name in self._kokoro.get_builtin_voices():
-                voices.add(f"kokoro/{name}")
-
-        # Kokoro custom voices from .npy files
-        kokoro_dir = self._voices_dir / "kokoro"
-        if kokoro_dir.is_dir():
-            for f in kokoro_dir.iterdir():
-                if f.suffix == ".npy" and f.is_file():
-                    voices.add(f"kokoro/{f.stem}")
-
-        # Qwen3 voices from .wav files (only if engine is loaded)
-        if self._qwen.is_loaded:
-            qwen_dir = self._voices_dir / "qwen"
-            if qwen_dir.is_dir():
-                for f in qwen_dir.iterdir():
-                    if f.suffix == ".wav" and f.is_file():
-                        voices.add(f"qwen/{f.stem}")
-
-        return sorted(voices)
+        """Filesystem pocket voices only (names only — no PII in /health)."""
+        return [f"{_VOICE_PREFIX}{name}" for name in sorted(self._files)]
 
     def engine_status(self) -> dict[str, dict[str, object]]:
-        """Return per-engine status for health endpoint."""
-        all_voices = self.available_voices()
+        """Per-engine status for the health endpoint (single engine)."""
         return {
-            "kokoro": {
-                "loaded": self._kokoro.is_loaded,
-                "voices": [v for v in all_voices if v.startswith("kokoro/")],
-            },
-            "qwen3": {
-                "loaded": self._qwen.is_loaded,
-                "voices": [v for v in all_voices if v.startswith("qwen/")],
+            "pocket": {
+                "loaded": self._engine.is_loaded,
+                "voices": self.available_voices(),
             },
         }
 
+    def start_sweeper(self, loop: asyncio.AbstractEventLoop) -> asyncio.Task[None]:
+        """Start the periodic ephemeral-voice sweeper task."""
+        if self._sweeper_task is not None and not self._sweeper_task.done():
+            return self._sweeper_task
+        self._sweeper_task = loop.create_task(self._sweep_loop())
+        return self._sweeper_task
 
-def _apply_whatsapp_subtle(
-    wav_bytes: bytes,
-    response_format: str,
-    noise_dir: Path | None = None,
-) -> bytes:
-    """Apply whatsapp-subtle post-processing pipeline via ffmpeg.
+    async def stop_sweeper(self) -> None:
+        """Cancel the sweeper task (lifespan shutdown)."""
+        if self._sweeper_task is not None:
+            self._sweeper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sweeper_task
+            self._sweeper_task = None
 
-    Stage 1: Audio effects (EQ, compression, echo, atempo, loudnorm)
-    Stage 2: Noise mixing + final encoding (OGG Opus or WAV)
-    """
-    # Stage 1: Audio effects
-    stage1_filter = (
-        "highpass=f=100,"
-        "equalizer=f=200:width_type=o:width=1.5:g=1.5,"
-        "equalizer=f=700:width_type=o:width=1.5:g=-2,"
-        "equalizer=f=3000:width_type=o:width=1.5:g=3,"
-        "equalizer=f=7000:width_type=o:width=1.5:g=-4,"
-        "acompressor=threshold=0.15:ratio=6:attack=15:release=200:makeup=5,"
-        "lowpass=f=8000,"
-        "aecho=0.8:0.85:40:0.12,"
-        "atempo=1.15,"
-        "loudnorm=I=-18:TP=-2:LRA=7"
-    )
+    async def _sweep_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.SWEEP_INTERVAL_SECONDS)
+            self._sweep_ephemerals()
 
-    stage1_cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "wav",
-        "-i",
-        "pipe:0",
-        "-af",
-        stage1_filter,
-        "-ar",
-        "24000",
-        "-f",
-        "wav",
-        "pipe:1",
-    ]
+    def _sweep_ephemerals(self) -> None:
+        """Evict expired ephemerals (idle + absolute TTL) and enforce cap."""
+        settings = self._settings
+        now = _now_utc()
+        for key_id, voices in list(self._ephemeral.items()):
+            for name, voice in list(voices.items()):
+                idle_s = (now - voice.last_used_at).total_seconds()
+                absolute_s = (now - voice.created_at).total_seconds()
+                if (
+                    idle_s > settings.voice_ephemeral_idle_ttl_seconds
+                    or absolute_s > settings.voice_ephemeral_absolute_ttl_seconds
+                ):
+                    voices.pop(name, None)
+            if not voices:
+                self._ephemeral.pop(key_id, None)
+        self._enforce_ephemeral_global_cap()
 
-    try:
-        stage1 = subprocess.run(
-            stage1_cmd,
-            input=wav_bytes,
-            capture_output=True,
-            check=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        logger.error("ffmpeg whatsapp-subtle stage 1 timed out after 30s")
-        raise GenerationError(
-            "Audio post-processing timed out (whatsapp-subtle stage 1)"
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        logger.error(
-            "ffmpeg whatsapp-subtle stage 1 failed: %s",
-            exc.stderr.decode(errors="replace"),
-        )
-        raise GenerationError(
-            "Audio post-processing failed (whatsapp-subtle stage 1)"
-        ) from exc
 
-    processed_wav = stage1.stdout
-    if not processed_wav:
-        raise GenerationError("ffmpeg whatsapp-subtle stage 1 produced empty output")
+def _meta_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
-    # Stage 2: Noise mixing + final encoding
-    room_noise = _find_noise_file(noise_dir, "room")
-    hiss_noise = _find_noise_file(noise_dir, "hiss")
 
-    if room_noise is not None and hiss_noise is not None:
-        return _apply_noise_and_encode(
-            processed_wav,
-            room_noise,
-            hiss_noise,
-            response_format,
-            room_volume=0.15,
-            hiss_volume=0.08,
-        )
+_active_registry: VoiceRegistry | None = None
 
-    if noise_dir is not None:
-        missing = []
-        if room_noise is None:
-            missing.append("room")
-        if hiss_noise is None:
-            missing.append("hiss")
-        logger.warning(
-            "Missing noise file(s) in %s: %s — skipping noise mixing",
-            noise_dir,
-            missing,
-        )
 
-    # No noise mixing — just encode to final format
-    return _encode_final(processed_wav, response_format)
+def set_active_registry(registry: VoiceRegistry) -> None:
+    """Register the live VoiceRegistry for module-level health helpers."""
+    global _active_registry
+    _active_registry = registry
+
+
+def available_voices() -> list[str]:
+    """Module-level wrapper kept for health.py compatibility."""
+    if _active_registry is None:
+        return []
+    return _active_registry.available_voices()
+
+
+def engine_status() -> dict[str, dict[str, object]]:
+    """Module-level wrapper kept for health.py compatibility."""
+    if _active_registry is None:
+        return {}
+    return _active_registry.engine_status()

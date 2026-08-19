@@ -43,12 +43,92 @@ class VoiceNotFoundError(ComadreError):
             error_type="not_found_error",
             hint=(
                 f"Available voices: {available}."
-                " Use 'kokoro/<name>' for Kokoro voices (.npy files or built-ins)"
-                " or 'qwen/<name>' for Qwen3 voices (.wav files in /voices/)."
+                " Use 'pocket/<name>' — operator voices are .wav files in"
+                " /voices/pocket/ and clones are 'pocket/u_<ULID>'."
             ),
         )
         self.voice = voice
         self.available = available
+
+
+class VoiceUploadError(ComadreError):
+    """Raised when a voice-clone upload fails validation.
+
+    The reason argument names the cause per the API contract: empty_file /
+    unsupported_format / too_short / too_long / unreadable_audio.
+    """
+
+    def __init__(self, reason: str) -> None:
+        messages: dict[str, str] = {
+            "empty_file": "Uploaded file is empty",
+            "unsupported_format": "Unsupported audio format",
+            "too_short": "Reference audio is shorter than the minimum duration",
+            "too_long": "Reference audio exceeds the maximum duration",
+            "unreadable_audio": "Uploaded audio is unreadable or corrupt",
+        }
+        message = messages.get(reason, f"Invalid voice upload ({reason})")
+        super().__init__(
+            message=message,
+            status_code=400,
+            error_type="voice_upload_error",
+            hint=(
+                "Upload a WAV or MP3 reference audio of 3-30 seconds"
+                " (5-20 seconds recommended for best results)."
+            ),
+        )
+        self.reason = reason
+
+
+class VoiceUploadTooLargeError(ComadreError):
+    """Raised when a voice-clone upload exceeds VOICE_UPLOAD_MAX_MB."""
+
+    def __init__(self, max_mb: int) -> None:
+        super().__init__(
+            message=f"Uploaded file exceeds the {max_mb} MB limit",
+            status_code=413,
+            error_type="voice_upload_error",
+            hint=f"Keep the reference audio under {max_mb} MB.",
+        )
+        self.max_mb = max_mb
+
+
+class VoiceUnreadableError(VoiceUploadError):
+    """Raised when the uploaded audio decodes but is corrupt/unreadable."""
+
+    def __init__(self) -> None:
+        super().__init__("unreadable_audio")
+        self.status_code = 422
+
+
+class VoiceLimitError(ComadreError):
+    """Raised when a stored or ephemeral voice quota is reached."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message=message,
+            status_code=429,
+            error_type="voice_limit_error",
+            hint=(
+                "Delete existing clones with DELETE /v1/voices/<name> to"
+                " make room, or contact your operator."
+            ),
+        )
+
+
+class VoiceDeleteError(ComadreError):
+    """Raised when a key tries to delete a voice it does not own."""
+
+    def __init__(self, voice: str) -> None:
+        super().__init__(
+            message=f"Voice '{voice}' does not belong to this API key",
+            status_code=403,
+            error_type="voice_delete_error",
+            hint=(
+                "A key may only delete clones it created. Operator voices"
+                " are managed on the filesystem by the operator."
+            ),
+        )
+        self.voice = voice
 
 
 class InvalidRequestError(ComadreError):

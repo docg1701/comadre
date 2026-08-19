@@ -3,7 +3,8 @@
 Lean by design (test-suite review 2026-04-25): per-field default + env-var
 read tests collapsed away — those are pydantic-settings framework
 guarantees. What survives are the custom validator bodies (Fernet,
-IANA timezone, backup passphrase length) plus the LRU cache.
+IANA timezone, backup passphrase length, pocket language, voice-ref
+bounds) plus the LRU cache.
 """
 
 from __future__ import annotations
@@ -24,15 +25,62 @@ def test_settings_loads_env_vars_and_defaults(
 ) -> None:
     """One smoke confirming env-var pickup + defaults wire through."""
     monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
-    monkeypatch.setenv("DEFAULT_VOICE", "kokoro/pf_dora")
+    monkeypatch.setenv("DEFAULT_VOICE", "pocket/galvani")
     monkeypatch.setenv("PORT", "9000")
 
     s = Settings()
-    assert s.default_voice == "kokoro/pf_dora"
+    assert s.default_voice == "pocket/galvani"
     assert s.port == 9000
     # Defaults wire through.
-    assert s.kokoro_model_path == "models/kokoro-v1.0.onnx"
+    assert s.pocket_model_path == "models/pocket-tts/portuguese/model.safetensors"
     assert s.billing_timezone == "UTC"
+
+
+def test_v2_engine_fields_are_gone(
+    monkeypatch: pytest.MonkeyPatch, fernet_key: str
+) -> None:
+    """v3 removed the v2 engine surface — no kokoro/qwen/espeak fields."""
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
+    s = Settings()
+    for removed in (
+        "espeak_data_path",
+        "kokoro_model_path",
+        "kokoro_voices_path",
+        "qwen3_enabled",
+        "qwen3_cli_path",
+        "qwen3_model_path",
+        "qwen3_tokenizer_path",
+        "qwen3_threads",
+        "kokoro_model_url",
+        "kokoro_voices_url",
+        "qwen3_model_url",
+        "qwen3_tokenizer_url",
+    ):
+        assert not hasattr(s, removed), f"removed field still present: {removed}"
+
+
+def test_pocket_language_validator(
+    monkeypatch: pytest.MonkeyPatch, fernet_key: str
+) -> None:
+    """POCKET_LANGUAGE accepts only portuguese / portuguese_24l."""
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
+    for value in ("portuguese", "portuguese_24l"):
+        monkeypatch.setenv("POCKET_LANGUAGE", value)
+        assert Settings().pocket_language == value
+    monkeypatch.setenv("POCKET_LANGUAGE", "english")
+    with pytest.raises(ValidationError, match="POCKET_LANGUAGE"):
+        Settings()
+
+
+def test_voice_ref_bounds_validator(
+    monkeypatch: pytest.MonkeyPatch, fernet_key: str
+) -> None:
+    """VOICE_REF_MAX_SECONDS must be >= VOICE_REF_MIN_SECONDS."""
+    monkeypatch.setenv("KEY_REGISTRY_ENCRYPTION_KEY", fernet_key)
+    monkeypatch.setenv("VOICE_REF_MIN_SECONDS", "10")
+    monkeypatch.setenv("VOICE_REF_MAX_SECONDS", "5")
+    with pytest.raises(ValidationError, match="VOICE_REF_MAX_SECONDS"):
+        Settings()
 
 
 def test_missing_encryption_key_raises_validation_error(

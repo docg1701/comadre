@@ -20,6 +20,7 @@ import re
 import sqlite3
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 import click
@@ -27,6 +28,7 @@ import typer
 from cryptography.fernet import InvalidToken
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
+from comadre import voice_storage
 from comadre.config import get_registry_settings
 from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
@@ -1265,6 +1267,24 @@ def export_customer_cmd(
             for k in keys
         ],
     }
+    # 7b. Voice clones — stored clones are biometric personal data under
+    # LGPD (v3 voice cloning); list the customer-owned /voices/pocket
+    # entries alongside the registry rows. Operator voices (no
+    # customer_id meta) are never attributed to a customer.
+    try:
+        pocket_dir = Path(settings.voices_dir) / "pocket"
+        own_voices = voice_storage.list_for_customer(pocket_dir, customer_id)
+    except OSError:
+        own_voices = []
+    payload["voices"] = [
+        {
+            "voice": f"pocket/{entry.name}",
+            "display_name": entry.meta.get("display_name"),
+            "created_at": entry.meta.get("created_at"),
+        }
+        for entry in own_voices
+    ]
+
     if include_audit:
         # ``list_audit_events`` returns DESC (newest first) for the
         # ``show --audit-tail`` UX. The export envelope is documented as
@@ -1698,8 +1718,9 @@ def delete_customer_cmd(
                     (
                         f"This will permanently delete customer "
                         f"{customer_name} and all associated keys "
-                        f"({pre_keys} key(s)). This action cannot be "
-                        f"undone. Encrypted tax ID will be purged. Continue?"
+                        f"({pre_keys} key(s)) and stored voice clones. "
+                        "This action cannot be undone. Encrypted tax ID "
+                        "and voice biometrics will be purged. Continue?"
                     ),
                     default=False,
                     abort=True,
@@ -1709,9 +1730,25 @@ def delete_customer_cmd(
                 stderr_console().print("Aborted.")
                 raise typer.Exit(code=2) from None
 
+        # 6b. Voice-clone purge (LGPD biometric data, v3). Files are
+        # deleted FIRST so a DB failure cannot leave voice biometrics
+        # behind — the safe failure direction is over-purge.
+        voices_deleted = 0
+        try:
+            pocket_dir = Path(settings.voices_dir) / "pocket"
+            voices_deleted = voice_storage.delete_by_customer(pocket_dir, customer_id)
+        except OSError as exc:
+            render_error("Voice storage error", str(exc))
+            raise typer.Exit(code=5) from None
+
         # 7. Helper call.
         try:
-            result = delete_customer_hard(conn, customer_id, actor=get_cli_actor())
+            result = delete_customer_hard(
+                conn,
+                customer_id,
+                actor=get_cli_actor(),
+                voices_deleted=voices_deleted,
+            )
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
@@ -1730,9 +1767,10 @@ def delete_customer_cmd(
 
     # 8. PII-austere INFO log.
     _logger.info(
-        "Customer purged | id=%s | keys_purged=%d",
+        "Customer purged | id=%s | keys_purged=%d | voices_purged=%d",
         result.customer_id,
         result.keys_purged,
+        voices_deleted,
     )
 
     # 9. ConfirmationLine (UX-DR7).

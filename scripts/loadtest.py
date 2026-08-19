@@ -714,7 +714,7 @@ async def main() -> None:
     parser.add_argument(
         "--api-key", required=True, help="API key for Authorization header"
     )
-    parser.add_argument("--voice", default="kokoro/pm_santa", help="Voice to use")
+    parser.add_argument("--voice", default="pocket/rafael", help="Voice to use")
     parser.add_argument(
         "--scenario",
         default="all",

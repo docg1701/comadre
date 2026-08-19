@@ -1,5 +1,12 @@
 # Comadre Horizontal Scaling Report — 1 vs 2 Replicas
 
+**v2-era document (2026-04).** The numbers below reflect the v2 dual-engine
+deployment (Kokoro fp32 + Qwen3-TTS). Comadre 3.0.0 replaced both engines
+with kyutai-labs/pocket-tts (single engine + native voice cloning) in
+August 2026. A v3 addendum with fresh capacity/cost numbers will be
+appended after the production cutover and the loadtest/capacity re-run
+(migration plan Phase 4). Until then, treat the figures as historical.
+
 ## Executive Summary
 
 Doubling Comadre's `deploy.replicas` from 1 to 2 increases sustainable throughput from ~14 to ~21 requests per minute (a 1.5x speedup, not the theoretical 2x), and cuts p50 latency at saturation (50/min target) from 149s to 100s — a 33% reduction. The scaling is sub-linear because Caddy's `round_robin` load balancer is queue-blind: it dispatches new requests to busy replicas while idle ones could serve them faster, and CPU contention on the host (8 vCPU shared by two 4-CPU replicas) leaves no headroom for overhead.

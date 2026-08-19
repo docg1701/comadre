@@ -608,7 +608,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "--voice",
-        default="kokoro/pm_santa",
+        default="pocket/rafael",
         help="Voice to use",
     )
     parser.add_argument(

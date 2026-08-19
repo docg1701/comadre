@@ -25,12 +25,14 @@ _FULL_KEYS = [
 def mock_router() -> MagicMock:
     router = MagicMock()
     router.available_voices.return_value = [
-        "kokoro/pm_santa",
-        "qwen/female-reference",
+        "pocket/rafael",
+        "pocket/u_01J2K4M6N8P0Q2R4S6",
     ]
     router.engine_status.return_value = {
-        "kokoro": {"loaded": True, "voices": ["kokoro/pm_santa"]},
-        "qwen3": {"loaded": True, "voices": ["qwen/female-reference"]},
+        "pocket": {
+            "loaded": True,
+            "voices": ["pocket/rafael", "pocket/u_01J2K4M6N8P0Q2R4S6"],
+        },
     }
     return router
 

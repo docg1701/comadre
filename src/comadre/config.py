@@ -7,7 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
-from pydantic import Field, HttpUrl, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,20 +39,26 @@ _MODEL_CONFIG = SettingsConfigDict(
 class RegistrySettings(BaseSettings):
     """Registry, billing, and operator-contact configuration.
 
-    F33 — split out from ``Settings`` so the ``comadre-keys`` CLI loads
-    only the surface it actually consumes. The CLI never touches Kokoro /
-    Qwen3 / voices / noise paths; routing it through this narrower model
-    means a host that has not yet configured the TTS side (e.g. an
-    operator running ``comadre-keys issue-key`` from a fresh checkout
-    before deploying the FastAPI app) does not trip URL validators or
-    inherit defaults that pretend to mean something.
+    F33 — split out from Settings so the comadre-keys CLI loads
+    only the surface it actually consumes. The CLI never touches the TTS
+    engine / noise paths; routing it through this narrower model means a
+    host that has not yet configured the TTS side (e.g. an operator
+    running comadre-keys issue-key from a fresh checkout before
+    deploying the FastAPI app) does not inherit defaults that pretend to
+    mean something.
 
-    ``Settings`` extends this class to add the TTS-runtime surface — the
-    FastAPI app reads everything from a single ``Settings`` instance, so
-    no consumer is forced to load both. ``extra="ignore"`` on the model
-    config means ``RegistrySettings()`` silently skips any TTS-side env
+    v3 exception to the F33 CLI-never-touches-voices invariant: the
+    LGPD data-subject operations (export-customer voice listing and
+    delete-customer --hard voice purge) read voices_dir — stored
+    clones are biometric personal data under LGPD and must be exported
+    and purged alongside the registry rows.
+
+    Settings extends this class to add the TTS-runtime surface — the
+    FastAPI app reads everything from a single Settings instance, so
+    no consumer is forced to load both. extra=ignore on the model
+    config means RegistrySettings() silently skips any TTS-side env
     vars the operator happens to have set; the values are still picked
-    up by the FastAPI app via ``get_settings()``.
+    up by the FastAPI app via get_settings().
     """
 
     model_config = _MODEL_CONFIG
@@ -66,8 +72,8 @@ class RegistrySettings(BaseSettings):
         ...,
         description=(
             "Fernet key for encrypting tax IDs at rest. Required — generate "
-            'with `python -c "from cryptography.fernet import Fernet; '
-            'print(Fernet.generate_key().decode())"`.'
+            "with: python -c 'from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())'."
         ),
     )
     backup_passphrase: SecretStr = Field(
@@ -84,6 +90,15 @@ class RegistrySettings(BaseSettings):
     operator_contact_hint: str = Field(
         default="Contact your Comadre operator for billing.",
         description="Operator contact string shown in CLI error hints.",
+    )
+    voices_dir: str = Field(
+        default="/voices",
+        min_length=1,
+        description=(
+            "Base directory for voice files (pocket/ subdir). Consumed by "
+            "the LGPD data-subject operations: export-customer lists the "
+            "customer's stored clones, delete-customer --hard purges them."
+        ),
     )
     billing_day: int = Field(
         default=5,
@@ -109,8 +124,8 @@ class RegistrySettings(BaseSettings):
     def _validate_fernet_key_shape(cls, v: SecretStr) -> SecretStr:
         """Reject malformed Fernet keys without echoing the raw value.
 
-        Runs on the already-coerced `SecretStr`, so pydantic's error rendering
-        masks the input as `**********` — AC5/NFR16 anti-enumeration guarantee
+        Runs on the already-coerced SecretStr, so pydantic's error rendering
+        masks the input as ********** — AC5/NFR16 anti-enumeration guarantee
         for the key value itself. The field itself is required (no default),
         so pydantic handles the missing-value case before this runs.
         """
@@ -127,7 +142,7 @@ class RegistrySettings(BaseSettings):
     def _validate_iana_timezone(cls, v: str) -> str:
         """Reject non-IANA timezone strings at config load time.
 
-        Without this, a typo like ``America/Sao-Paulo`` or ``BRT`` silently
+        Without this, a typo like America/Sao-Paulo or BRT silently
         desyncs the runtime BILLING_TIMEZONE from the cron's CRON_TZ — see
         the AGENTS.md gotcha. Failing fast at boot makes the misconfiguration
         immediately operator-visible.
@@ -149,9 +164,9 @@ class RegistrySettings(BaseSettings):
         Empty-at-boot is by design (Story 4.3): the passphrase is consumed
         only by the backup/restore playbooks, not the FastAPI app or any
         CLI verb. Forcing it to be required at boot would make the upgrade
-        path chicken-and-egg (service won't start → can't run bootstrap →
+        path chicken-and-egg (service won't start, can't run bootstrap,
         service won't start). The playbooks themselves enforce the length
-        check via ``ansible.builtin.assert``.
+        check via ansible.builtin.assert.
         """
         secret = v.get_secret_value()
         if secret and len(secret) < 16:
@@ -163,84 +178,115 @@ class RegistrySettings(BaseSettings):
         return v
 
 
+_POCKET_LANGUAGES = frozenset({"portuguese", "portuguese_24l"})
+
+
 class Settings(RegistrySettings):
     """Full application settings — registry surface plus TTS runtime.
 
     Consumed by the FastAPI app and any code path that needs both the
     registry/billing fields and the engine/voices/noise/port fields.
-    The ``comadre-keys`` CLI uses ``RegistrySettings`` directly via
-    ``get_registry_settings()``.
+    The comadre-keys CLI uses RegistrySettings directly via
+    get_registry_settings().
+
+    v3 — single-engine surface: pocket-tts is the only TTS. All fields
+    below are pocket-tts or voice-cloning configuration; the v2 dual-engine
+    fields were removed in 3.0.0.
     """
 
-    default_voice: str = "kokoro/pm_santa"
+    default_voice: str = "pocket/rafael"
     port: int = Field(default=8000, ge=1, le=65535)
-    espeak_data_path: str | None = Field(
-        default=None,
-        description="Override bundled espeak-ng data path",
+    pocket_language: str = Field(
+        default="portuguese",
+        description="Pocket TTS language variant: portuguese or portuguese_24l.",
     )
-    kokoro_model_path: str = Field(
-        default="models/kokoro-v1.0.onnx",
-        description="Path to the Kokoro ONNX model file",
+    pocket_config_path: str = Field(
+        default="models/pocket-tts-config/portuguese.yaml",
+        description="Pocket TTS config YAML (baked in image, local paths)",
     )
-    kokoro_voices_path: str = Field(
-        default="models/voices-v1.0.bin",
-        description="Path to the Kokoro voices binary file",
+    pocket_model_path: str = Field(
+        default="models/pocket-tts/portuguese/model.safetensors",
+        description="Pocket TTS flow-LM + Mimi model weights",
     )
-    qwen3_enabled: bool = Field(
+    pocket_tokenizer_path: str = Field(
+        default="models/pocket-tts/portuguese/tokenizer.model",
+        description="Pocket TTS sentencepiece tokenizer",
+    )
+    pocket_default_voice_path: str = Field(
+        default="models/pocket-tts/portuguese/embeddings/rafael.safetensors",
+        description="Default catalog voice state (rafael)",
+    )
+    pocket_threads: int = Field(
+        default=4,
+        ge=1,
+        description="CPU threads applied via torch.set_num_threads",
+    )
+    pocket_quantize: bool = Field(
+        default=False,
+        description="Apply int8 quantization (torchao) to attention + FFN layers",
+    )
+    pocket_temperature: float = Field(
+        default=0.7,
+        ge=0,
+        description="Generation temperature (the pocket-tts default)",
+    )
+    pocket_sigla_spacing: bool = Field(
         default=True,
         description=(
-            "Enable Qwen3 engine (set false on hosts where the binary is"
-            " unavailable, e.g. aarch64). When false, Qwen3 model download,"
-            " load, and warm-up are skipped at startup, and qwen/* voices"
-            " are excluded from the available list."
+            "Apply expand_siglas (spaced letters, e.g. CNPJ -> C N P J) "
+            "before generation. The sigla pronunciation lever for pocket-tts."
         ),
     )
-    qwen3_cli_path: str = Field(
-        default="/usr/local/bin/qwen3-tts-cli",
-        description="Path to the qwen3-tts-cli binary",
+    voice_upload_max_mb: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum upload size in MB for voice-clone audio files",
     )
-    qwen3_model_path: str = Field(
-        default="models/qwen3-tts-0.6b-q8_0.gguf",
-        description="Path to the Qwen3 TTS Q8_0 model file",
+    voice_ref_min_seconds: int = Field(
+        default=3,
+        ge=1,
+        description="Minimum reference-audio duration in seconds (reject below)",
     )
-    qwen3_tokenizer_path: str = Field(
-        default="models/qwen3-tts-tokenizer-f16.gguf",
-        description="Path to the Qwen3 TTS tokenizer file",
+    voice_ref_max_seconds: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Maximum reference-audio duration in seconds. The library "
+            "truncates at 30 s (truncate=True); this must be >= min."
+        ),
     )
-    voices_dir: str = Field(
-        default="/voices",
-        min_length=1,
-        description="Base directory for voice files (kokoro/ and qwen/ subdirs)",
+    voice_ephemeral_idle_ttl_seconds: int = Field(
+        default=3600,
+        description="Ephemeral clone idle TTL (swept when unused longer)",
+    )
+    voice_ephemeral_absolute_ttl_seconds: int = Field(
+        default=86400,
+        description="Ephemeral clone absolute TTL (swept regardless of use)",
+    )
+    voice_ephemeral_max_per_key: int = Field(
+        default=5,
+        description="Maximum ephemeral clones per API key",
+    )
+    voice_ephemeral_global_max: int = Field(
+        default=50,
+        description="Global LRU cap for ephemeral clones across all keys",
+    )
+    voice_stored_max_per_customer: int = Field(
+        default=20,
+        description="Maximum stored (persisted) clones per customer",
     )
     noise_dir: str = Field(
         default="/app/noise",
         min_length=1,
         description="Directory containing room/hiss noise WAV files",
     )
-    qwen3_threads: int = Field(
-        default=4,
-        ge=1,
-        description="Number of CPU threads for Qwen3 inference",
-    )
-    kokoro_model_url: str = Field(
-        default=(
-            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
-            "model-files-v1.0/kokoro-v1.0.onnx"
-        ),
-        description="URL to download Kokoro ONNX model",
-    )
-    kokoro_voices_url: str = Field(
-        default=(
-            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
-            "model-files-v1.0/voices-v1.0.bin"
-        ),
-        description="URL to download Kokoro voices binary",
-    )
-    # Per-IP rate limits — pre-auth gates on /health and /v1/audio/speech.
-    # When all legitimate clients share a small set of IPs (NAT, office proxy),
-    # raise these to avoid false 429s. Set to "999999/minute" to effectively
-    # disable a gate. The per-key limit (rate_limit_rpm per API key) is the
-    # primary enforcement for authenticated traffic.
+    # Per-IP rate limits — pre-auth gates on /health, /v1/audio/speech and
+    # POST /v1/voices. When all legitimate clients share a small set of IPs
+    # (NAT, office proxy), raise these to avoid false 429s. Set to
+    # 999999/minute to effectively disable a gate. The per-key limit
+    # (rate_limit_rpm per API key) is the primary enforcement for
+    # authenticated traffic.
     per_ip_health_rate_limit: str = Field(
         default="60/minute",
         description="Per-IP rate limit for GET /health (unauthenticated endpoint)",
@@ -248,18 +294,32 @@ class Settings(RegistrySettings):
     per_ip_speech_rate_limit: str = Field(
         default="600/minute",
         description=(
-            "Per-IP rate limit for POST /v1/audio/speech pre-auth gate. "
-            "Runs before verify_api_key to bound token-spray attacks."
+            "Per-IP rate limit for POST /v1/audio/speech and POST /v1/voices "
+            "pre-auth gates. Runs before verify_api_key to bound token-spray attacks."
         ),
     )
-    qwen3_model_url: str = Field(
-        default="",
-        description="URL to download Qwen3 GGUF model (empty = skip auto-download)",
-    )
-    qwen3_tokenizer_url: str = Field(
-        default="",
-        description="URL to download Qwen3 tokenizer GGUF (empty = skip auto-download)",
-    )
+
+    @field_validator("pocket_language")
+    @classmethod
+    def _validate_pocket_language(cls, v: str) -> str:
+        """Restrict the language variant to the two supported values."""
+        if v not in _POCKET_LANGUAGES:
+            raise ValueError(
+                f"POCKET_LANGUAGE {v!r} is not supported; "
+                "use one of: portuguese, portuguese_24l"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_voice_ref_bounds(self) -> Settings:
+        """Enforce VOICE_REF_MAX_SECONDS >= VOICE_REF_MIN_SECONDS."""
+        if self.voice_ref_max_seconds < self.voice_ref_min_seconds:
+            raise ValueError(
+                "VOICE_REF_MAX_SECONDS must be >= VOICE_REF_MIN_SECONDS "
+                f"(got max={self.voice_ref_max_seconds}, "
+                f"min={self.voice_ref_min_seconds})"
+            )
+        return self
 
     @field_validator(
         "per_ip_health_rate_limit",
@@ -269,30 +329,13 @@ class Settings(RegistrySettings):
     def _validate_rate_limit_format(cls, v: str) -> str:
         """Accept any non-empty string; the limits library parses it at runtime.
 
-        Invalid formats (e.g. ``"abc"``) raise from ``limits.parse()`` inside
-        ``_check_per_ip_bucket`` and fail-closed (429) rather than failing
+        Invalid formats raise from limits.parse() inside
+        _check_per_ip_bucket and fail-closed (429) rather than failing
         open, so the operator sees the misconfiguration immediately.
         """
         if not v or not v.strip():
             raise ValueError("Per-IP rate limit must not be empty")
         return v.strip()
-
-    @field_validator(
-        "kokoro_model_url",
-        "kokoro_voices_url",
-        "qwen3_model_url",
-        "qwen3_tokenizer_url",
-    )
-    @classmethod
-    def validate_url_format(cls, v: str) -> str:
-        """Validate URL format at config load time.
-
-        Empty string is allowed for optional URLs (skip download).
-        """
-        if v == "":
-            return v
-        HttpUrl(v)
-        return v
 
 
 @lru_cache(maxsize=1)
@@ -303,11 +346,11 @@ def get_settings() -> Settings:
 
 @lru_cache(maxsize=1)
 def get_registry_settings() -> RegistrySettings:
-    """Return cached registry-only settings for ``comadre-keys`` CLI.
+    """Return cached registry-only settings for comadre-keys CLI.
 
-    F33 — narrower load surface than ``get_settings()``. Reads the same
-    ``.env`` (or process env), but excludes TTS-runtime fields entirely,
-    so a host without Kokoro/Qwen3 paths configured can still issue keys,
+    F33 — narrower load surface than get_settings(). Reads the same
+    .env (or process env), but excludes TTS-runtime fields entirely,
+    so a host without pocket-tts paths configured can still issue keys,
     run billing reports, and operate the registry.
     """
     return RegistrySettings()

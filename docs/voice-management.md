@@ -1,155 +1,94 @@
-# Voice Management
+# Voice Management (v3.0.0)
 
-Comadre discovers voices from the filesystem at request time. Drop a file in the right directory and it's immediately available — no restart needed.
+Single voice format: `pocket/<name>`. Voices live in `/voices/pocket/`
+(the `comadre-voices` volume, mounted `rw` so the app can write uploads).
 
-## Volume Structure
+## Artifact layout
 
-The `comadre-voices` Docker volume is mounted at `/voices/` with two subdirectories:
+Each voice is up to three files:
 
-```text
-/voices/
-  kokoro/          <- Kokoro custom voice profiles (.npy)
-  qwen/            <- Qwen3 reference audio for cloning (.wav)
-```
+| File | Purpose |
+|---|---|
+| `<name>.wav` | Reference audio — provenance + regeneration source (always kept) |
+| `<name>.safetensors` | Model state (precomputed or lazily generated) |
+| `<name>.json` | Metadata: `display_name`, `customer_id`, `key_id`, `created_at`, `ref_duration_s`, `model_hash` |
 
-## Adding Voices
+`model_hash` is the sha256 of `POCKET_MODEL_PATH`, computed at startup.
+When the meta `model_hash` differs from the current model, the state is
+re-encoded from the reference WAV on the next request and the meta is
+rewritten — model upgrades never orphan a voice.
 
-### Kokoro Voices (.npy files)
+## Voice kinds
 
-Kokoro uses voice style vectors stored as numpy arrays. Two sources:
+- **Catalog voice** — `pocket/rafael` (Kyutai embedding, the default).
+  Registered virtually from `POCKET_DEFAULT_VOICE_PATH`; not a filesystem
+  file.
+- **Operator voices** — `/voices/pocket/<name>.wav` (name matches
+  `^[a-zA-Z0-9_-]+$`). Drop the WAV → available immediately, no restart.
+  The state materializes lazily on first request. Optionally ship a
+  precomputed `<name>.safetensors` + `<name>.json` via `deploy-voices.yml`
+  (used when `model_hash` matches).
+- **API uploads** — `pocket/u_<ULID>`, created by `POST /v1/voices`.
+  The `u_` prefix is RESERVED for the API: operator files starting with
+  `u_` that are not ULIDs are ignored by the scanner, so stray files can
+  never shadow a clone.
 
-1. **Built-in voices** — bundled in `voices-v1.0.bin` (numpy archive format). These work automatically without any files. Examples: `pm_santa`, `pf_dora`, `pm_alex`, and 50+ others.
+### v2 migration note
 
-2. **Custom voices** — `.npy` files placed in `/voices/kokoro/`. These are voice style vectors exported from your voice cloning pipeline.
+Existing v2 Qwen3 reference WAVs (`qwen/*.wav`) are reused **verbatim** as
+`pocket/*.wav` — pocket-tts consumes them as voice-conditioning audio and
+states materialize lazily on first request. Copy them into the `pocket/`
+subdirectory of `voices_local_dir` and run `deploy-voices.yml`.
 
-To add a custom Kokoro voice:
+## Cloning lifecycle (API)
 
-```bash
-# Copy the .npy file into the shared volume via a helper container
-docker run --rm -v comadre-voices:/voices -v "$(pwd)":/src:ro \
-  alpine cp /src/joao.npy /voices/kokoro/
-```
+`POST /v1/voices` — multipart `file` (+ optional `display_name`,
+`persist`). Reference audio: min 3 s, recommended 5-20 s, hard max 30 s
+(server truncates), ≤ 10 MB, wav/mp3. LGPD consent is required (the
+landing page enforces it with a checkbox).
 
-The voice is immediately available as `kokoro/joao`.
+| Mode | Storage | Lifetime | Quota |
+|---|---|---|---|
+| Ephemeral (`persist=false`) | memory-only | idle TTL 3600 s, absolute TTL 86400 s | 5 per key; global LRU cap 50 (oldest evicted) |
+| Stored (`persist=true`) | `/voices/pocket/u_<ULID>.*` | until deleted | 20 per customer (`VOICE_STORED_MAX_PER_CUSTOMER`) |
 
-For bulk deployment, use the `deploy-voices.yml` Ansible playbook (see [Deploy via Ansible](#deploy-via-ansible) below).
+`GET /v1/voices` lists operator voices + the caller-owned stored clones +
+the caller-owned ephemeral clones (other customer clones are never
+listed). `DELETE /v1/voices/pocket/<name>` removes a caller-owned clone
+(204); operator voices return 403 and are managed on the filesystem.
 
-### Qwen3 Voices (.wav files)
-
-Qwen3 uses reference audio files (3-10 seconds, WAV format) for voice cloning via the `-r` flag.
-
-To add a Qwen3 voice:
-
-```bash
-# Copy the reference WAV into the shared volume via a helper container
-docker run --rm -v comadre-voices:/voices -v "$(pwd)":/src:ro \
-  alpine cp /src/galvani.wav /voices/qwen/
-```
-
-The voice is immediately available as `qwen/galvani`.
-
-**WAV requirements:**
-
-- Format: WAV (16-bit PCM)
-- Duration: 3-10 seconds recommended
-- Content: clean speech sample of the target voice
-
-## API Usage
-
-The `voice` parameter uses the format `{engine}/{name}`:
-
-```json
-{
-  "input": "Hello, this is a test.",
-  "voice": "kokoro/pm_santa",
-  "response_format": "ogg"
-}
-```
-
-### Examples for n8n HTTP Request node
-
-**Kokoro built-in voice:**
-
-```json
-{
-  "input": "{{ $json.message }}",
-  "voice": "kokoro/pm_santa"
-}
-```
-
-**Kokoro custom cloned voice:**
-
-```json
-{
-  "input": "{{ $json.message }}",
-  "voice": "kokoro/joao"
-}
-```
-
-**Qwen3 cloned voice:**
-
-```json
-{
-  "input": "{{ $json.message }}",
-  "voice": "qwen/galvani"
-}
-```
-
-### Default voice
-
-If `voice` is omitted, the service uses the `DEFAULT_VOICE` environment variable (default: `kokoro/pm_santa`).
-
-## Listing Available Voices
-
-The `/health` endpoint returns all available voices:
-
-> **Note:** When `QWEN3_ENABLED=false`, Qwen3 voices are hidden from the `/health` endpoint and the landing page voice picker, even if `.wav` files exist in `/voices/qwen/`. This is controlled by `EngineRouter.available_voices()` which checks `QwenEngine.is_loaded` before scanning the qwen directory.
+## Operator provisioning
 
 ```bash
-curl -sk https://localhost/health | jq '.voices'
-```
-
-Output:
-
-```json
-[
-  "kokoro/pf_dora",
-  "kokoro/pm_alex",
-  "kokoro/pm_santa",
-  "qwen/female",
-  "qwen/galvani"
-]
-```
-
-## Voice Name Rules
-
-- Names may contain: letters, digits, hyphens (`-`), underscores (`_`)
-- No spaces, dots, slashes, or special characters
-- The filename stem (without extension) becomes the voice name
-- Example: `my-voice_01.wav` -> voice name `qwen/my-voice_01`
-
-## Migration from Previous Versions
-
-Old voice names map to the new format:
-
-| Old name      | New name                   | Notes                          |
-|---------------|----------------------------|--------------------------------|
-| `santa`       | `kokoro/pm_santa`          | Built-in, no file needed       |
-| `dora`        | `kokoro/pf_dora`           | Built-in, no file needed       |
-| `alex`        | `kokoro/pm_alex`           | Built-in, no file needed       |
-| `qwen-female` | `qwen/female`              | Requires .wav in /voices/qwen/ |
-| `qwen-male`   | `qwen/male`                | Requires .wav in /voices/qwen/ |
-| `clone`       | `qwen/<your-reference>`    | Use the actual filename         |
-
-## Deploy via Ansible
-
-Use the `deploy-voices.yml` playbook to deploy voice files to the VPS:
-
-```bash
+# Ship voices from the control node (voices_local_dir/pocket/*.wav
+# + optional precomputed .safetensors/.json)
 cd deploy/ansible
 ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
+
+# Or drop a WAV directly into the volume:
+docker compose exec tts-service mkdir -p /voices/pocket
+docker cp minha-voz.wav comadre:/voices/pocket/minha-voz.wav
 ```
 
-Set `voices_local_dir` in `inventory/production.yml` to the local directory containing your `kokoro/` and `qwen/` subdirectories with voice files.
+Voice discovery is per-request; new WAVs surface at the next request
+(restart the service to force an immediate rescan).
 
-After deploying voices, the service picks them up immediately — no restart needed. Run `ansible-playbook playbooks/health.yml` to verify.
+## LGPD verbs (biometric data)
+
+Stored clones are biometric personal data under LGPD:
+
+- `comadre-keys export-customer <id>` now emits a `voices` array
+  (`voice`, `display_name`, `created_at`) from
+  `voice_storage.list_for_customer`.
+- `comadre-keys delete-customer <id> --hard` deletes the customer voice
+  files BEFORE the DB purge (files-first: a DB failure cannot leave
+  biometrics behind) and records `voices_deleted: N` in the audit row.
+
+## Troubleshooting
+
+- Clone state too slow on first use of a fresh WAV → expected: the first
+  request encodes the state (1-2 s for 5-10 s refs); subsequent requests
+  load the `.safetensors` directly.
+- State regenerating on every request → `model_hash` mismatch (model was
+  replaced); correct behavior, not a bug.
+- See `docs/troubleshooting.md` for upload validation errors and quotas.

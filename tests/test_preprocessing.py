@@ -3,13 +3,12 @@
 Lean by design (test-suite review 2026-04-25): per-sigla, per-number,
 per-currency parametrize-bait collapsed into representative smoke
 tests. The full table is exercised via integration smoke against real
-audio output.
+audio output (scripts/spike_pocket_tts.py).
 """
 
 from __future__ import annotations
 
 from comadre.preprocessing import (
-    chunk_text,
     expand_siglas,
     normalize_currency,
     normalize_numbers,
@@ -31,7 +30,7 @@ def test_expand_siglas_spells_unknowns_keeps_word_siglas() -> None:
 
 def test_expand_siglas_does_not_match_lowercase_or_single_letter() -> None:
     """Only ALL-CAPS multi-letter runs trigger spelling; lowercase or
-    single letters are left alone (avoid false positives like 'I went')."""
+    single letters are left alone (avoid false positives)."""
     assert "cnpj" in expand_siglas("cnpj minúsculo")  # unchanged
     assert "I" in expand_siglas("I went home")  # unchanged
 
@@ -51,17 +50,8 @@ def test_normalize_currency_expands_brl_amounts() -> None:
     assert "1.234,56" not in out
 
 
-def test_chunk_text_splits_long_inputs() -> None:
-    """Chunk strategy splits long text into multiple chunks; each chunk
-    fits within max_tokens."""
-    long = "Primeira frase. " * 50
-    chunks = chunk_text(long, max_tokens=20)
-    assert len(chunks) > 1
-
-
 def test_normalize_text_pipeline_applies_currency_and_numbers() -> None:
-    """End-to-end smoke for the Kokoro normalization pipeline (siglas
-    are handled by espeak-ng dictionary, NOT by normalize_text)."""
+    """End-to-end smoke for the normalization pipeline."""
     out = normalize_text("Pague R$ 100,00 até o 1º dia de janeiro.")
     assert "100,00" not in out  # currency expanded
     assert "1º" not in out  # ordinal expanded

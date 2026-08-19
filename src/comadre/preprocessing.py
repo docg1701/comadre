@@ -1,4 +1,4 @@
-"""pt-BR text normalization and sentence chunking."""
+"""pt-BR text normalization (currency, dates, times, numbers, siglas)."""
 
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ _SIGLA_RE = re.compile(r"\b([A-Z]{2,})\b")
 
 
 def expand_siglas(text: str) -> str:
-    """Convert spelled siglas to spaced format for Qwen3 pronunciation.
+    """Convert spelled siglas to spaced format for engine pronunciation.
 
     Spelled siglas (CNPJ, CPF, FGTS) become "C N P J", "C P F", "F G T S".
     Word siglas (SUS, PIX, LOAS) are kept as-is.
@@ -178,33 +178,3 @@ def normalize_text(text: str) -> str:
     text = normalize_times(text)
     text = normalize_numbers(text)
     return text
-
-
-def chunk_text(text: str, max_tokens: int = 200) -> list[str]:
-    """Split text at sentence boundaries targeting max_tokens per chunk.
-
-    Token count is approximated by whitespace-splitting.
-    Returns at least one chunk (never empty list).
-    """
-    if not text.strip():
-        return [text]
-
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    chunks: list[str] = []
-    current_chunk: list[str] = []
-    current_tokens = 0
-
-    for sentence in sentences:
-        token_count = len(sentence.split())
-        if current_tokens + token_count > max_tokens and current_chunk:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = [sentence]
-            current_tokens = token_count
-        else:
-            current_chunk.append(sentence)
-            current_tokens += token_count
-
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-
-    return chunks if chunks else [text]

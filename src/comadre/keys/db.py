@@ -839,6 +839,7 @@ def delete_customer_hard(
     customer_id: str,
     *,
     actor: str,
+    voices_deleted: int = 0,
 ) -> DeleteCustomerResult | None:
     """Hard-delete ``customer_id`` + all associated keys in one transaction.
 
@@ -849,7 +850,8 @@ def delete_customer_hard(
     2. ``UPDATE customer SET name = '', email = '', tax_id_encrypted = X'',
        notes = '', deleted_at = <utcnow-iso>`` for the matching id.
     3. ``log_event(..., action='delete_customer', target_type='customer',
-       target_id=customer_id, details={'keys_purged': N, 'tax_id_kind': kind})``
+       target_id=customer_id, details={'keys_purged': N, 'tax_id_kind': kind,
+       'voices_deleted': M})``
        — no personal data in ``details`` (defense-in-depth: audit.py's
        ``_FORBIDDEN_DETAIL_KEYS`` blocks ``name``/``email``/``cpf``/``cnpj``
        / ``tax_id`` already; this helper never attempts to pass them).
@@ -913,7 +915,11 @@ def delete_customer_hard(
             action="delete_customer",
             target_type="customer",
             target_id=customer_id,
-            details={"keys_purged": keys_purged, "tax_id_kind": tax_id_kind},
+            details={
+                "keys_purged": keys_purged,
+                "tax_id_kind": tax_id_kind,
+                "voices_deleted": voices_deleted,
+            },
         )
 
     _touch_auth_cache_sentinel(conn)

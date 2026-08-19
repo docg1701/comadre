@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-18
 **Author:** Engineering (agent-assisted feasibility analysis)
-**Status:** DECIDED (2026-08-18) — full migration approved, including native voice-cloning uploads. Implementation plan: [docs/pocket-tts-v3-migration-plan.md](pocket-tts-v3-migration-plan.md); normative API contract: [docs/pocket-tts-v3-api-spec.md](pocket-tts-v3-api-spec.md). The Phase-0 spike (now "baseline capture & tuning", §11 of the plan) still produces the pipeline/sigla/thread constants, but the migration itself is committed.
+**Status:** DECIDED — see the migration plan. Executed 2026-08-18 (Phases 0-3, 5-6 complete; Phase 4 production cutover staged pending VPS network access — see the Phase 0 execution record + summary in [docs/pocket-tts-v3-migration-plan.md](pocket-tts-v3-migration-plan.md)). Normative API contract: [docs/pocket-tts-v3-api-spec.md](pocket-tts-v3-api-spec.md).
 **Sources:** official repo cloned and code-reviewed (HEAD `891886a6`, 2026-08-17),
 Hugging Face model-card API, HeyNEO CPU TTS benchmark (2026-07-06), independent
 reviews, and a full map of Comadre's engine-coupled surface.
@@ -57,8 +57,10 @@ Python 3.10–3.14, pip-installable (`pocket-tts` 2.1.0).
 Key API (from code review):
 
 ```python
-model = TTSModel.load_model(language="portuguese")        # or config=<local .yaml>
-state = model.get_state_for_audio_prompt("/voices/pocket/galvani.safetensors")  # or a .wav/.mp3/URL
+model = TTSModel.load_model(language="portuguese")  # or config=<local .yaml>
+state = model.get_state_for_audio_prompt(
+    "/voices/pocket/galvani.safetensors"
+)  # or a .wav/.mp3/URL
 audio = model.generate_audio(state, text, copy_state=True)  # -> [ch, samples] @ 24 kHz
 ```
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from comadre import __version__
+from comadre import __version__, voices_api
 from comadre.api import api_router
 from comadre.config import get_settings
 from comadre.counters import (
@@ -22,7 +23,7 @@ from comadre.counters import (
     counters_snapshot_path,
     default_replica_id,
 )
-from comadre.download import ensure_kokoro_models, ensure_qwen3_models
+from comadre.download import ensure_pocket_models
 from comadre.exceptions import (
     ComadreError,
     KeyRegistryError,
@@ -38,7 +39,7 @@ from comadre.rate_limit import (
     check_health_per_ip_rate_limit,
     get_client_ip,
 )
-from comadre.service import EngineRouter, KokoroEngine, QwenEngine
+from comadre.service import PocketEngine, VoiceRegistry, set_active_registry
 
 logger = get_logger("startup")
 
@@ -55,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.start_time = time.monotonic()
     app.state.settings = settings
     app.state.router = None
+    app.state.registry = None
 
     # Phase 1: Load config (already done via get_settings)
     logger.info("Configuration loaded")
@@ -144,25 +146,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.request_counters.snapshot_interval_seconds,
     )
 
-    # Phase 2.5: Ensure models are downloaded (non-blocking)
+    # Phase 2.5: Ensure models are downloaded (non-blocking).
+    # Runtime is fully offline (HF_HUB_OFFLINE=1): the download only runs
+    # on first boot (with HF_TOKEN); offline mode verifies files exist and
+    # fails fast with a clear message otherwise.
     logger.info("Checking model files...")
-    await asyncio.to_thread(
-        ensure_kokoro_models,
-        model_path=settings.kokoro_model_path,
-        voices_path=settings.kokoro_voices_path,
-        model_url=settings.kokoro_model_url,
-        voices_url=settings.kokoro_voices_url,
-    )
-    if settings.qwen3_enabled:
-        await asyncio.to_thread(
-            ensure_qwen3_models,
-            model_path=settings.qwen3_model_path,
-            tokenizer_path=settings.qwen3_tokenizer_path,
-            model_url=settings.qwen3_model_url,
-            tokenizer_url=settings.qwen3_tokenizer_url,
-        )
+    if os.environ.get("HF_HUB_OFFLINE") == "1":
+        for label, path in (
+            ("model", settings.pocket_model_path),
+            ("tokenizer", settings.pocket_tokenizer_path),
+            ("default voice state", settings.pocket_default_voice_path),
+        ):
+            if not Path(path).is_file():
+                msg = (
+                    f"HF_HUB_OFFLINE=1 and {label} file missing: {path}. "
+                    "Run once with HF_TOKEN set (and HF_HUB_OFFLINE unset) to "
+                    "download the pinned model artifacts, then restart offline."
+                )
+                raise FileNotFoundError(msg)
+        logger.info("HF_HUB_OFFLINE=1: model files verified present")
     else:
-        logger.info("Qwen3 disabled (QWEN3_ENABLED=false), skipping model check")
+        await asyncio.to_thread(
+            ensure_pocket_models,
+            language=settings.pocket_language,
+            model_path=settings.pocket_model_path,
+            tokenizer_path=settings.pocket_tokenizer_path,
+            default_voice_path=settings.pocket_default_voice_path,
+        )
     logger.info("Model check complete")
 
     # Phase 2.7: Verify noise directory
@@ -172,90 +182,57 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("Noise directory found: %s", settings.noise_dir)
 
-    # Phase 3: Verify espeak-ng pt_extra data
-    logger.info("Verifying espeak-ng pt_extra dictionary...")
-    if settings.espeak_data_path:
-        pt_extra = Path(settings.espeak_data_path)
-        if pt_extra.is_dir():
-            logger.info("espeak-ng pt_extra found: %s", settings.espeak_data_path)
-        else:
-            logger.warning(
-                "espeak-ng pt_extra path not found: %s", settings.espeak_data_path
-            )
-    else:
-        logger.info("No custom espeak-ng data path configured")
-
     # Phase 4: Verify voices directory
     voices_dir = Path(settings.voices_dir)
-    kokoro_voices_dir = voices_dir / "kokoro"
-    qwen_voices_dir = voices_dir / "qwen"
+    pocket_voices_dir = voices_dir / "pocket"
     if voices_dir.is_dir():
         logger.info("Voices directory found: %s", settings.voices_dir)
-        if not kokoro_voices_dir.is_dir():
+        if not pocket_voices_dir.is_dir():
             logger.warning(
-                "Kokoro voices subdirectory not found: %s", kokoro_voices_dir
+                "Pocket voices subdirectory not found: %s", pocket_voices_dir
             )
-        if not qwen_voices_dir.is_dir():
-            logger.warning("Qwen3 voices subdirectory not found: %s", qwen_voices_dir)
     else:
         logger.warning("Voices directory not found: %s", settings.voices_dir)
 
     try:
-        # Phase 5: Load Kokoro model
-        logger.info("Loading Kokoro TTS model...")
-        kokoro = KokoroEngine()
-        kokoro.load_model(
-            model_path=settings.kokoro_model_path,
-            voices_path=settings.kokoro_voices_path,
-            espeak_data_path=settings.espeak_data_path,
+        # Phase 5: Load the pocket-tts model (sole engine)
+        logger.info("Loading pocket-tts TTS model...")
+        engine = PocketEngine()
+        engine.load_model(
+            config_path=settings.pocket_config_path,
+            threads=settings.pocket_threads,
+            quantize=settings.pocket_quantize,
+            temperature=settings.pocket_temperature,
+            sigla_spacing=settings.pocket_sigla_spacing,
         )
 
-        # Phase 6: Verify Qwen3 binary (skip when disabled)
-        qwen = QwenEngine()
-        if settings.qwen3_enabled:
-            logger.info("Verifying qwen3-tts-cli binary...")
-            qwen.load_model(
-                cli_path=settings.qwen3_cli_path,
-                model_path=settings.qwen3_model_path,
-                tokenizer_path=settings.qwen3_tokenizer_path,
-                threads=settings.qwen3_threads,
-            )
-        else:
-            logger.info("Qwen3 disabled, skipping engine load")
-
-        # Phase 7: Warm up Kokoro
-        logger.info("Warming up Kokoro engine...")
-        kokoro.warm_up()
-
-        # Phase 8: Warm up Qwen3 (using first available reference WAV)
-        if settings.qwen3_enabled:
-            logger.info("Warming up Qwen3 engine...")
-            qwen_warmup_ref: Path | None = None
-            if qwen_voices_dir.is_dir():
-                wavs = sorted(qwen_voices_dir.glob("*.wav"))
-                if wavs:
-                    qwen_warmup_ref = wavs[0]
-            qwen.warm_up(reference_path=qwen_warmup_ref)
+        # Phase 6: Warm up with the default catalog voice state
+        logger.info("Warming up pocket-tts engine...")
+        engine.warm_up(Path(settings.pocket_default_voice_path))
     except Exception:
         logger.critical("Startup failed during engine initialization", exc_info=True)
         raise
 
-    # Phase 9: Ready
-    router = EngineRouter(kokoro=kokoro, qwen=qwen, voices_dir=voices_dir)
-    app.state.router = router
+    # Phase 7: Build the voice registry + start the ephemeral sweeper
+    logger.info("Building voice registry...")
+    registry = VoiceRegistry(engine=engine, voices_dir=voices_dir, settings=settings)
+    engine.attach_registry(registry)
+    registry.start_sweeper(asyncio.get_running_loop())
+    set_active_registry(registry)
+
+    # Phase 8: Ready
+    app.state.router = engine
+    app.state.registry = registry
     app.state.ready = True
 
-    # Validate default voice is resolvable
+    # Validate the default voice resolves (pocket/rafael or filesystem)
     default = settings.default_voice
-    if default not in router.available_voices():
-        try:
-            router._parse_voice(default)
-        except Exception:
-            logger.warning(
-                "DEFAULT_VOICE '%s' has invalid format — requests"
-                " without explicit voice will fail",
-                default,
-            )
+    if default not in registry.available_voices():
+        logger.warning(
+            "DEFAULT_VOICE '%s' not found among available voices — requests"
+            " without explicit voice will fail",
+            default,
+        )
 
     logger.info("Service ready on http://0.0.0.0:%d", settings.port)
 
@@ -263,6 +240,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("Shutting down...")
+        live_registry = getattr(app.state, "registry", None)
+        if live_registry is not None:
+            await live_registry.stop_sweeper()
         rc = getattr(app.state, "request_counters", None)
         if rc is not None:
             # Best-effort final snapshot + task cancel. A hung writer (e.g.
@@ -276,7 +256,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 _GENERIC_VALIDATION_HINT = (
     'Expected JSON: {"input": "text to speak",'
-    ' "voice": "kokoro/pm_santa", "response_format": "ogg"}'
+    ' "voice": "pocket/rafael", "response_format": "ogg"}'
 )
 
 
@@ -372,7 +352,7 @@ def _format_validation_error(exc: RequestValidationError) -> tuple[str, str]:
         )
     if err_type == "value_error":
         # ``model_validator`` ValueErrors — already carry a tailored msg
-        # (e.g. the Qwen3 char-limit message). Surface verbatim.
+        # (e.g. a char-limit message). Surface verbatim.
         return raw_msg or "Invalid request body", _GENERIC_VALIDATION_HINT
     if err_type == "json_invalid":
         return ("Malformed JSON body", _GENERIC_VALIDATION_HINT)
@@ -439,8 +419,8 @@ def _not_found_handler(request: Request, exc: Exception) -> JSONResponse:
                 "message": f"Not found: {method} {path}",
                 "type": "not_found_error",
                 "hint": (
-                    "Check the URL. The Comadre API surface is /v1/audio/speech"
-                    " and /health."
+                    "Check the URL. The Comadre API surface is /v1/audio/speech,"
+                    " /v1/voices, and /health."
                 ),
             }
         },
@@ -467,7 +447,10 @@ def _method_not_allowed_handler(request: Request, exc: Exception) -> JSONRespons
             "error": {
                 "message": f"Method {method} not allowed on {path}",
                 "type": "method_not_allowed_error",
-                "hint": "Use POST for /v1/audio/speech and GET for /health.",
+                "hint": (
+                    "Use POST for /v1/audio/speech, POST/GET/DELETE for"
+                    " /v1/voices, and GET for /health."
+                ),
             }
         },
         headers=headers,
@@ -517,6 +500,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(404, _not_found_handler)
     app.add_exception_handler(405, _method_not_allowed_handler)
     app.include_router(api_router)
+    app.include_router(voices_api.voices_router)
 
     async def _try_auth(request: Request) -> bool:
         """Return True if the request carries a valid API key.
@@ -562,7 +546,7 @@ def create_app() -> FastAPI:
         authenticated = await _try_auth(request)
 
         if not getattr(request.app.state, "ready", False):
-            router = getattr(request.app.state, "router", None)
+            router = getattr(request.app.state, "registry", None)
             if router is None:
                 minimal: dict[str, Any] = {
                     "status": "warming_up",
@@ -582,14 +566,14 @@ def create_app() -> FastAPI:
 
         if authenticated:
             body, status_code = build_health_response(
-                router=request.app.state.router,
+                router=request.app.state.registry,
                 ready=request.app.state.ready,
                 start_time=request.app.state.start_time,
                 queue_depth=request.app.state.queue_depth,
             )
         else:
             body, status_code = build_minimal_health_response(
-                router=request.app.state.router,
+                router=request.app.state.registry,
                 ready=request.app.state.ready,
             )
         return JSONResponse(content=body, status_code=status_code)

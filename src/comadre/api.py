@@ -55,6 +55,10 @@ async def generate_speech(
     # Resolve default voice (AC #4)
     voice = body.voice or settings.default_voice
 
+    # Registry key id for ephemeral-clone resolution (set by verify_api_key).
+    auth_payload = getattr(request.state, "auth_payload", None)
+    key_id: str | None = getattr(auth_payload, "key_id", None)
+
     # Determine media type
     media_type = (
         "audio/ogg" if body.response_format == ResponseFormat.ogg else "audio/wav"
@@ -78,6 +82,7 @@ async def generate_speech(
                         noise_dir=Path(settings.noise_dir),
                         speed=body.speed,
                         raw=body.raw,
+                        key_id=key_id,
                     ),
                     timeout=120.0,
                 )

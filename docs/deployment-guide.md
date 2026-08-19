@@ -54,19 +54,21 @@ all:
     github_pat: !vault |
               $ANSIBLE_VAULT;1.1;AES256
               CHANGE_ME
-    default_voice: "kokoro/pm_santa"
+    default_voice: "pocket/rafael"
     domain: "localhost"
     landing_enabled: true
-    kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
-    kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
-    qwen3_enabled: true
-    qwen3_model_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf"
-    qwen3_tokenizer_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf"
-    qwen3_model_local: ""
-    qwen3_tokenizer_local: ""
+    pocket_language: "portuguese"
+    pocket_threads: 4
+    pocket_quantize: false
+    pocket_temperature: 0.7
+    pocket_sigla_spacing: true
+    pocket_hf_token: "{{ lookup('env', 'HF_TOKEN') | default('') }}"
+    pocket_model_local: ""
+    pocket_tokenizer_local: ""
+    pocket_rafael_local: ""
 ```
 
-For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/oracle.yml.example` as a starting point instead. It sets `qwen3_enabled: false` since the Qwen3 binary is x86_64-only, and configures a real domain for Let's Encrypt certificates.
+For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/oracle.yml.example` as a starting point instead — pocket-tts is pure Python + torch CPU, so aarch64 is fully supported (v3), and the example configures a real domain for Let's Encrypt certificates.
 
 **Variables:**
 
@@ -82,11 +84,14 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `deploy_key_path` | Yes | Path where the VPS-local deploy keypair is stored (default: `/home/<user>/.ssh/comadre_deploy`) |
 | `github_repo_path` | Yes | GitHub repository path as `owner/repo` used for deploy key registration via API (e.g. `docg1701/comadre`) |
 | `github_pat` | Yes | GitHub Personal Access Token (classic) with `repo` scope — encrypted with Ansible Vault. Used once at bootstrap to register the deploy key. Can expire after registration with zero impact. Encrypt with `ansible-vault encrypt_string`. |
-| `default_voice` | No | Default voice for TTS when none specified (default: `kokoro/pm_santa`) |
+| `default_voice` | No | Default voice for TTS when none specified (default: `pocket/rafael`) |
 | `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed). Set to a real domain for Let's Encrypt auto-cert. |
 | `landing_enabled` | No | Deploy the public landing page at the root URL (default: `true`). When false, Caddy uses `Caddyfile-no-landing` which proxies all paths to the API. The API endpoints (`/v1/*`, `/health`, etc.) are always available regardless. |
-| `qwen3_enabled` | No | Enable Qwen3 engine (default: `true`). Set `false` on hosts where the x86_64 binary cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). Maps to `QWEN3_ENABLED` env var. |
-| `voices_local_dir` | No | Local directory containing `kokoro/` and `qwen/` subdirectories with voice files (empty to skip). See [voice-management.md](voice-management.md). |
+| `pocket_language` | No | Language variant: `portuguese` (default) or `portuguese_24l`. |
+| `pocket_threads` / `pocket_quantize` / `pocket_temperature` / `pocket_sigla_spacing` | No | Engine tuning (defaults: 4 / false / 0.7 / true). |
+| `pocket_hf_token` | No | HF token for the one-time gated-model download (reads `HF_TOKEN` env). Unset after first boot. |
+| `pocket_model_local` / `pocket_tokenizer_local` / `pocket_rafael_local` | No | Air-gapped deploy paths (empty = auto-download). |
+| `voices_local_dir` | No | Local directory containing a `pocket/` subdirectory with voice files (empty to skip). See [voice-management.md](voice-management.md). |
 | `kokoro_model_url` | No | URL to download Kokoro ONNX model on first start (default: GitHub release URL) |
 | `kokoro_voices_url` | No | URL to download Kokoro voices binary on first start (default: GitHub release URL) |
 | `qwen3_model_url` | No | URL to download Qwen3 GGUF model on first start (default: HuggingFace URL). Empty string skips download. |
@@ -355,46 +360,45 @@ ansible-playbook playbooks/cleanup.yml -i inventory/production.yml \
 
 After cleanup, the VPS is restored to its pre-bootstrap state. To redeploy, run `bootstrap.yml` again.
 
-## Model Deployment
+## Model Deployment (v3 — pocket-tts)
 
-Qwen3 GGUF models (~1.6 GB total) are too large for git. They deploy via SCP through the `deploy-models.yml` playbook.
+**Default path: auto-download on first boot with `HF_TOKEN`.** The weights
+live in the gated `kyutai/pocket-tts` HuggingFace repo:
 
-**Prerequisites:**
+1. Accept the terms at <https://huggingface.co/kyutai/pocket-tts> with the
+   operator's HF account.
+2. Create a HF token and set it in `.env` (`HF_TOKEN=...`) or export it for
+   `bootstrap.yml` (the `pocket_hf_token` inventory var reads the env var).
+3. First boot downloads the model (~370 MB), tokenizer (~1 MB) and rafael
+   embedding (~1 MB) into `/models/pocket-tts/<lang>/` with pinned
+   revisions.
+4. After the first successful boot, **unset `HF_TOKEN` and set
+   `HF_HUB_OFFLINE=1`** in `.env` — the runtime is then fully offline.
 
-- This playbook is **air-gapped only**. If `qwen3_model_local` and
-  `qwen3_tokenizer_local` are empty strings in inventory (the default), the
-  playbook **fails its prerequisite check — this is intentional**. Models
-  auto-download on first container start when `QWEN3_MODEL_URL` and
-  `QWEN3_TOKENIZER_URL` are set. Do not treat the prerequisite failure as a
-  bug.
-- For air-gapped deployments: Qwen3 models must be converted locally from
-  HuggingFace safetensors. See [quantizing-qwen3-models.md](quantizing-qwen3-models.md).
-- Two files needed: `qwen3-tts-0.6b-q8_0.gguf` (~1.3 GB) and
-  `qwen3-tts-tokenizer-f16.gguf` (~325 MB).
+**Air-gapped path: `deploy-models.yml`.**
 
-**Configure inventory:**
+- This playbook is **air-gapped only**. If `pocket_model_local`,
+  `pocket_tokenizer_local` and `pocket_rafael_local` are empty strings in
+  inventory (the default), the playbook **fails its prerequisite check —
+  this is intentional** (the default path is the auto-download above). Do
+  not treat the prerequisite failure as a bug.
+- Download the three files on any internet-connected machine (accepting
+  the gated terms first), then:
 
 ```yaml
-qwen3_model_local: "/path/to/qwen3-tts-0.6b-q8_0.gguf"
-qwen3_tokenizer_local: "/path/to/qwen3-tts-tokenizer-f16.gguf"
+pocket_model_local: "/path/to/model.safetensors"      # ~370 MB, gated
+pocket_tokenizer_local: "/path/to/tokenizer.model"    # ~1 MB
+pocket_rafael_local: "/path/to/rafael.safetensors"    # ~1 MB, default voice
 ```
-
-**Run:**
 
 ```bash
 cd deploy/ansible
 ansible-playbook playbooks/deploy-models.yml -i inventory/production.yml
 ```
 
-The playbook copies files to a staging directory on the VPS, then deploys them into the `comadre-models` Docker volume using a temporary helper container. Staging files are cleaned up automatically.
-
-After deployment, restart the service to load the new models:
-
-```bash
-ssh YOUR_SSH_USER@YOUR_VPS_IP "cd ~/comadre && docker compose restart"
-```
-
-**Alternative: auto-download.** If you set `QWEN3_MODEL_URL` and `QWEN3_TOKENIZER_URL` in `.env`, the application downloads models automatically on first start. This is slower but requires no manual file transfer.
+The playbook stages the files on the VPS and deploys them into the
+`comadre-models` volume at `/models/pocket-tts/<lang>/` via a temporary
+helper container.
 
 ## Voice Deployment
 

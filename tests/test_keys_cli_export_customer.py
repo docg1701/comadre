@@ -106,3 +106,51 @@ def test_export_customer_with_include_audit_emits_filtered_events(
         details = event.get("details", {})
         forbidden = {"cpf", "cnpj", "tax_id", "name", "email", "key_plaintext"}
         assert not (forbidden & set(details.keys()))
+
+
+def test_export_customer_includes_stored_voice_clones(
+    env: dict[str, str],
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """v3 LGPD: the export envelope carries the customer stored voice
+    clones; other customer clones and operator voices are excluded."""
+    from ulid import ULID
+
+    from comadre import voice_storage
+
+    cid = _seed_with_real_tax_id(env)
+    monkeypatch.setenv("VOICES_DIR", str(tmp_path))
+    pocket_dir = tmp_path / "pocket"
+    pocket_dir.mkdir()
+
+    mine = f"u_{ULID()}"
+    (pocket_dir / f"{mine}.wav").write_bytes(b"x")
+    voice_storage.write_meta(
+        pocket_dir,
+        mine,
+        display_name="Minha voz",
+        customer_id=cid,
+        key_id="key_mine",
+        created_at="2026-08-18T10:00:00Z",
+        ref_duration_s=5.0,
+        model_hash="h",
+    )
+    other = f"u_{ULID()}"
+    (pocket_dir / f"{other}.wav").write_bytes(b"x")
+    voice_storage.write_meta(
+        pocket_dir, other, display_name=None, customer_id="cust_other"
+    )
+    (pocket_dir / "operadora.wav").write_bytes(b"x")  # operator voice
+
+    result = runner.invoke(app, ["export-customer", cid])
+    stdout, _ = buffers()
+    assert result.exit_code == 0
+    parsed = json.loads(stdout)
+    assert parsed["voices"] == [
+        {
+            "voice": f"pocket/{mine}",
+            "display_name": "Minha voz",
+            "created_at": "2026-08-18T10:00:00Z",
+        }
+    ]

@@ -1,23 +1,27 @@
 ---
-# Comadre Voice Deployment Playbook
-# Deploys voice files (Kokoro .npy + Qwen3 .wav) into the comadre-voices Docker volume:
+# Comadre Voice Deployment Playbook (v3 — pocket/ voices)
+# Deploys voice files (reference .wav + optional precomputed .safetensors/.json)
+# into the comadre-voices Docker volume:
 #   ansible-playbook playbooks/deploy-voices.yml -i inventory/production.yml
 #
 # Requires voices_local_dir inventory variable pointing to a local directory
-# with kokoro/ and qwen/ subdirectories containing voice files.
+# with a pocket/ subdirectory containing the voice files.
 # See docs/voice-management.md for directory structure.
 #
-# Can be run independently: initial deploy, add new voices, or replace existing ones.
-# No service restart needed — voices are discovered per-request.
+# v3 note: former v2 voice references (.wav) are reused VERBATIM as
+# pocket/*.wav — pocket-tts states materialize lazily on first request.
+#
+# Can be run independently: initial deploy, add new voices, or replace
+# existing ones. No service restart needed — voices are discovered per-request.
 # Entirely unprivileged — no become: true.
 #
 # NOTE: This playbook reads voice files from the control node's filesystem
 # (``voices_local_dir`` with ``delegate_to: localhost``). This is the
-# design intent — voice files (.npy, .wav) are operator-owned binary assets
-# not tracked in Git, not deployment infrastructure scripts. If the control
-# node is lost, voice files must be recovered from the operator's backups.
-# For a fully machine-independent workflow, store voice files in object
-# storage (S3) and add a download task before the staging step.
+# design intent — voice files (.wav/.safetensors/.json) are operator-owned
+# binary assets not tracked in Git, not deployment infrastructure scripts.
+# If the control node is lost, voice files must be recovered from the
+# operator's backups. For a fully machine-independent workflow, store voice
+# files in object storage (S3) and add a download task before the staging step.
 
 - name: Deploy Voice Files
   hosts: comadre_vps
@@ -50,7 +54,7 @@
         fail_msg: >-
           voices_local_dir is not configured.
           Set it in inventory/production.yml to the local path of your
-          voices directory (containing kokoro/ and qwen/ subdirs).
+          voices directory (containing a pocket/ subdir).
           See docs/voice-management.md for details.
         success_msg: "Voices directory: {{ voices_local_dir }}"
 
@@ -58,54 +62,52 @@
     # Discover Voice Files
     # =========================================================================
 
-    - name: "[Voices] Find Kokoro .npy files"
+    - name: "[Voices] Find pocket .wav files"
       ansible.builtin.find:
-        paths: "{{ voices_local_dir }}/kokoro"
-        patterns: "*.npy"
-      register: kokoro_files
+        paths: "{{ voices_local_dir }}/pocket"
+        patterns: "*.wav"
+      register: wav_files
       delegate_to: localhost
 
-    - name: "[Voices] Find Qwen3 .wav files"
+    - name: "[Voices] Find precomputed state/meta files"
       ansible.builtin.find:
-        paths: "{{ voices_local_dir }}/qwen"
-        patterns: "*.wav"
-      register: qwen_files
+        paths: "{{ voices_local_dir }}/pocket"
+        patterns: "*.safetensors,*.json"
+        use_regex: true
+      register: extra_files
       delegate_to: localhost
 
     - name: "[Voices] Report discovered files"
       ansible.builtin.debug:
         msg: >-
-          Found {{ kokoro_files.files | length }} Kokoro .npy file(s)
-          and {{ qwen_files.files | length }} Qwen3 .wav file(s)
+          Found {{ wav_files.files | length }} pocket .wav file(s)
+          and {{ extra_files.files | length }} precomputed state/meta file(s)
 
     # =========================================================================
     # Stage Files on VPS
     # =========================================================================
 
-    - name: "[Voices] Create staging directories"
+    - name: "[Voices] Create staging directory"
       ansible.builtin.file:
-        path: "~/comadre/deploy/staging/{{ item }}"
+        path: "~/comadre/deploy/staging/pocket"
         state: directory
         mode: "0755"
-      loop:
-        - kokoro
-        - qwen
 
-    - name: "[Voices] Stage Kokoro .npy files"
+    - name: "[Voices] Stage .wav files"
       ansible.builtin.copy:
         src: "{{ item.path }}"
-        dest: "~/comadre/deploy/staging/kokoro/{{ item.path | basename }}"
+        dest: "~/comadre/deploy/staging/pocket/{{ item.path | basename }}"
         mode: "0644"
-      loop: "{{ kokoro_files.files }}"
+      loop: "{{ wav_files.files }}"
       loop_control:
         label: "{{ item.path | basename }}"
 
-    - name: "[Voices] Stage Qwen3 .wav files"
+    - name: "[Voices] Stage precomputed state/meta files"
       ansible.builtin.copy:
         src: "{{ item.path }}"
-        dest: "~/comadre/deploy/staging/qwen/{{ item.path | basename }}"
+        dest: "~/comadre/deploy/staging/pocket/{{ item.path | basename }}"
         mode: "0644"
-      loop: "{{ qwen_files.files }}"
+      loop: "{{ extra_files.files }}"
       loop_control:
         label: "{{ item.path | basename }}"
 
@@ -119,7 +121,7 @@
           community.docker.docker_container:
             name: comadre-volume-helper
             image: alpine:3.21
-            command: "sh -c 'mkdir -p /voices/kokoro /voices/qwen && sleep 3600'"
+            command: "sh -c 'mkdir -p /voices/pocket && sleep 3600'"
             volumes:
               - "comadre-voices:/voices"
             state: started
@@ -127,33 +129,32 @@
 
         # B26 — `mode_parse: modern` is required so the "0644" string is
         # parsed as octal (0o644 = 0644). The legacy default parses it as
-        # decimal 644, which lands as 0o1204 on disk
-        # (sticky + --w----r--), making files non-writable by appuser and
-        # marking regular files with the sticky bit. Read still works
-        # because of the world-read bit, but the contract is broken.
-        - name: "[Voices] Copy Kokoro .npy files into volume"
+        # decimal 644, which lands as 0o1204 on disk (sticky + --w----r--),
+        # making files non-writable by appuser. See the v2-era comment —
+        # this trap is preserved verbatim.
+        - name: "[Voices] Copy .wav files into volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
-            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/kokoro/{{ item.path | basename }}"
-            container_path: "/voices/kokoro/{{ item.path | basename }}"
+            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/pocket/{{ item.path | basename }}"
+            container_path: "/voices/pocket/{{ item.path | basename }}"
             owner_id: 0
             group_id: 0
             mode: "0644"
             mode_parse: modern
-          loop: "{{ kokoro_files.files }}"
+          loop: "{{ wav_files.files }}"
           loop_control:
             label: "{{ item.path | basename }}"
 
-        - name: "[Voices] Copy Qwen3 .wav files into volume"
+        - name: "[Voices] Copy precomputed state/meta files into volume"
           community.docker.docker_container_copy_into:
             container: comadre-volume-helper
-            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/qwen/{{ item.path | basename }}"
-            container_path: "/voices/qwen/{{ item.path | basename }}"
+            path: "{{ ansible_facts['env']['HOME'] }}/comadre/deploy/staging/pocket/{{ item.path | basename }}"
+            container_path: "/voices/pocket/{{ item.path | basename }}"
             owner_id: 0
             group_id: 0
             mode: "0644"
             mode_parse: modern
-          loop: "{{ qwen_files.files }}"
+          loop: "{{ extra_files.files }}"
           loop_control:
             label: "{{ item.path | basename }}"
 
@@ -179,15 +180,13 @@
           Comadre — Voice Deployment Complete
           ============================================
 
-          Kokoro voices deployed: {{ kokoro_files.files | length }}
-          {% for f in kokoro_files.files %}
-            - kokoro/{{ f.path | basename | regex_replace('\.npy$', '') }}
+          pocket voices deployed: {{ wav_files.files | length }}
+          {% for f in wav_files.files %}
+            - pocket/{{ f.path | basename | regex_replace('\.wav$', '') }}
           {% endfor %}
 
-          Qwen3 voices deployed: {{ qwen_files.files | length }}
-          {% for f in qwen_files.files %}
-            - qwen/{{ f.path | basename | regex_replace('\.wav$', '') }}
-          {% endfor %}
+          Voice states materialize lazily on first request; precomputed
+          .safetensors/.json files are used when their model_hash matches.
 
           No restart needed — voices are available immediately.
           Verify with:

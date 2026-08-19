@@ -46,7 +46,8 @@ all:
     # Operator contact string shown in CLI error messages (e.g. your ops email).
     operator_contact_hint: ""
 
-    # Optional: local directory containing kokoro/ and qwen/ subdirs with voice files
+    # Optional: local directory containing a pocket/ subdir with voice files
+    # (reference .wav per voice; optional precomputed .safetensors + .json).
     # Used by deploy-voices.yml playbook. Leave empty to skip voice deployment.
     # See docs/voice-management.md for directory structure.
     voices_local_dir: ""
@@ -74,8 +75,8 @@ all:
               $ANSIBLE_VAULT;1.1;AES256
               CHANGE_ME
 
-    # Default voice for TTS when none specified (format: engine/name)
-    default_voice: "kokoro/pm_santa"
+    # Default voice for TTS when none specified (format: pocket/<name>)
+    default_voice: "pocket/rafael"
 
     # Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert)
     # Use "localhost" for self-signed cert on private networks
@@ -99,20 +100,25 @@ all:
     # are onboarded shifts when their keys flip to 401 on the billing day.
     billing_timezone: "UTC"
 
-    # Kokoro model download URLs (auto-download on first startup)
-    kokoro_model_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
-    kokoro_voices_url: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+    # pocket-tts (v3) — the only engine. The language selects the baked
+    # config + the /models/pocket-tts/<lang>/ artifact subtree.
+    pocket_language: "portuguese"
+    pocket_threads: 4
+    pocket_quantize: false
+    pocket_temperature: 0.7
+    pocket_sigla_spacing: true
 
-    # Enable Qwen3 engine. Set to false on hosts where the x86_64 binary
-    # cannot run (e.g. aarch64 / Oracle Cloud Ampere A1). When false, Qwen3
-    # model download, load, and warm-up are skipped at startup.
-    qwen3_enabled: true
+    # HuggingFace token for the ONE-TIME first-boot model download (the
+    # weights live in the gated kyutai/pocket-tts repo — accept the terms at
+    # https://huggingface.co/kyutai/pocket-tts first). Read from the
+    # HF_TOKEN env var; leave unset after the first successful boot so the
+    # runtime stays offline (HF_HUB_OFFLINE=1 in the .env).
+    pocket_hf_token: "{{ lookup('env', 'HF_TOKEN') | default('') }}"
 
-    # Qwen3 GGUF model download URLs (auto-download on first startup)
-    qwen3_model_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-0.6b-q8_0.gguf"
-    qwen3_tokenizer_url: "https://huggingface.co/PabloHoties/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/qwen3-tts-tokenizer-f16.gguf"
-
-    # Optional: local paths to pre-converted Qwen3 GGUF model files
-    # If set, deploy-models.yml copies these to the VPS instead of downloading
-    qwen3_model_local: ""
-    qwen3_tokenizer_local: ""
+    # Optional: local paths to pre-downloaded pocket-tts artifacts for the
+    # air-gapped path (deploy-models.yml). Model ~370 MB (gated), tokenizer
+    # ~1 MB, rafael embedding ~1 MB. Leave empty to auto-download on first
+    # boot.
+    pocket_model_local: ""
+    pocket_tokenizer_local: ""
+    pocket_rafael_local: ""
