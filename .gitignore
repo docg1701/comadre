@@ -24,8 +24,10 @@ env/
 # Type checking
 .mypy_cache/
 
-# Linting
+# Linting / test / tool caches (regenerate on next run)
 .ruff_cache/
+.pytest_cache/
+.cache/
 
 # Ansible inventory (real credentials)
 deploy/ansible/inventory/production.yml

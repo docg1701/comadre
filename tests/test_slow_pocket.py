@@ -53,9 +53,11 @@ def test_generate_audio_non_silent(model: TTSModel) -> None:
         "models/pocket-tts/portuguese/embeddings/rafael.safetensors"
     )
     audio = model.generate_audio(state, "Olá, este é um teste de voz.", copy_state=True)
-    assert audio.shape[0] == 1  # mono
+    # pocket-tts 2.1.0 returns a flat [samples] float32 tensor at 24 kHz
+    # (verified against the gated model; earlier drafts assumed [1, N]).
+    assert audio.ndim in (1, 2)
     assert model.sample_rate == 24000
-    samples = audio.numpy().reshape(-1)
+    samples = audio.detach().cpu().float().numpy().reshape(-1)
     assert samples.size > 0
     assert float(np.abs(samples).max()) > 1e-4  # non-silent
 

@@ -76,80 +76,30 @@ tts-service:
     - "8000"
   volumes:
     - comadre-models:/models:rw
-    - comadre-voices:/voices:ro
-    - comadre-audio:/audio:rw
+    - comadre-voices:/voices:rw
     - comadre-registry:/var/lib/comadre:rw
   environment:
     KEY_REGISTRY_ENCRYPTION_KEY: ${KEY_REGISTRY_ENCRYPTION_KEY:?KEY_REGISTRY_ENCRYPTION_KEY must be set}
     KEY_REGISTRY_DB_PATH: "${KEY_REGISTRY_DB_PATH:-/var/lib/comadre/registry.db}"
-    OPERATOR_CONTACT_HINT: "${OPERATOR_CONTACT_HINT:-Contact your Comadre operator for billing.}"
     BILLING_TIMEZONE: "${BILLING_TIMEZONE:-UTC}"
-    DEFAULT_VOICE: "${DEFAULT_VOICE:-kokoro/pm_santa}"
-    PORT: "8000"
-    ESPEAK_DATA_PATH: /usr/local/share/espeak-ng-data
-    NOISE_DIR: /app/noise
-    VOICES_DIR: /voices
-    KOKORO_MODEL_PATH: /models/kokoro-v1.0.onnx
-    KOKORO_VOICES_PATH: /models/voices-v1.0.bin
-    QWEN3_MODEL_PATH: /models/qwen3-tts-0.6b-q8_0.gguf
-    QWEN3_TOKENIZER_PATH: /models/qwen3-tts-tokenizer-f16.gguf
-    QWEN3_CLI_PATH: /usr/local/bin/qwen3-tts-cli
-    QWEN3_THREADS: "4"
-    QWEN3_ENABLED: "${QWEN3_ENABLED:-true}"
-    QWEN3_MODEL_URL: "${QWEN3_MODEL_URL:-}"
-    QWEN3_TOKENIZER_URL: "${QWEN3_TOKENIZER_URL:-}"
-    KOKORO_MODEL_URL: "${KOKORO_MODEL_URL:-}"
-    KOKORO_VOICES_URL: "${KOKORO_VOICES_URL:-}"
+    DEFAULT_VOICE: "${DEFAULT_VOICE:-pocket/rafael}"
+    POCKET_LANGUAGE: "${POCKET_LANGUAGE:-portuguese}"
+    POCKET_THREADS: "${POCKET_THREADS:-4}"
+    HF_TOKEN: "${HF_TOKEN:-}"
+    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+    # ... full surface in compose.yaml (POCKET_*, VOICE_*)
   deploy:
     replicas: 1
     resources:
       limits:
         cpus: "4"
-        memory: 6G
+        memory: 4G
 ```
 
 `KEY_REGISTRY_ENCRYPTION_KEY` uses the `?` syntax, so Docker Compose refuses to start if it is missing from `.env`. The TTS service is not exposed on the host network — all external traffic flows through Caddy on 80/443. Scale horizontally by increasing `replicas` (see [rate-limiting.md](rate-limiting.md) for the per-replica rate-limit caveat).
 
 ## Complete .env.example
 
-The canonical template lives at `.env.example` in the repository root. At the time of writing its contents are:
+The canonical template lives at [`.env.example`](../.env.example) in the repository root — read that file directly instead of this doc; a transcription here would drift.
 
-```bash
-# Comadre — Environment Configuration
-# Copy to .env and fill in values.
-
-# Fernet key for encrypting tax IDs at rest in the key registry (REQUIRED).
-# Generate with:
-#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-KEY_REGISTRY_ENCRYPTION_KEY=
-
-# SQLite key registry path. Must match the in-container path used by both the
-# tts-service container and the comadre-keys CLI (when run against the same
-# mount). Compose bind-mounts the comadre-registry named volume at
-# /var/lib/comadre, so the default below keeps the CLI and the service pointed
-# at the same file.
-KEY_REGISTRY_DB_PATH=/var/lib/comadre/registry.db
-
-# Operator contact string shown in CLI error hints (e.g. your ops email).
-OPERATOR_CONTACT_HINT=
-
-# Default voice for TTS when none specified (format: engine/name).
-DEFAULT_VOICE=kokoro/pm_santa
-
-# Domain for HTTPS (Caddy auto-provisions Let's Encrypt cert).
-# Use "localhost" for a self-signed cert on private networks.
-DOMAIN=localhost
-
-# Enable Qwen3 engine. Set to false on hosts where the x86_64 binary cannot
-# run (e.g. aarch64 / Oracle Cloud Ampere A1).
-QWEN3_ENABLED=true
-
-# Model download URLs (auto-download on first container start; leave empty to
-# skip download for that model).
-KOKORO_MODEL_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
-KOKORO_VOICES_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
-QWEN3_MODEL_URL=
-QWEN3_TOKENIZER_URL=
-```
-
-Advanced voice/model/threading overrides (`VOICES_DIR`, `NOISE_DIR`, `KOKORO_MODEL_PATH`, `QWEN3_CLI_PATH`, `QWEN3_THREADS`, `BILLING_DAY`, `BILLING_TIMEZONE`, `ESPEAK_DATA_PATH`, `PORT`) accept the defaults in the table above and can be set in `.env` only when a deployment needs to deviate.
+Advanced engine/threading overrides (`POCKET_LANGUAGE`, `POCKET_THREADS`, `POCKET_QUANTIZE`, `POCKET_TEMPERATURE`, `POCKET_SIGLA_SPACING`, `VOICE_*`, `NOISE_DIR`, `VOICES_DIR`, `PORT`) accept the defaults in the table above and can be set in `.env` only when a deployment needs to deviate.
