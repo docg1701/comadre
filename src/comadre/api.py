@@ -49,7 +49,7 @@ async def generate_speech(
 ) -> Response:
     """Generate speech audio from text input."""
     settings = request.app.state.settings
-    router = request.app.state.router
+    engine = request.app.state.engine
     queue_lock = request.app.state.queue_lock
 
     # Resolve default voice (AC #4)
@@ -75,7 +75,7 @@ async def generate_speech(
             try:
                 audio_bytes = await asyncio.wait_for(
                     asyncio.to_thread(
-                        router.generate_speech,
+                        engine.generate_speech,
                         text=body.input,
                         voice_name=voice,
                         response_format=body.response_format.value,

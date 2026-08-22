@@ -35,7 +35,6 @@ services:
     volumes:
       - comadre-models:/models:rw
       - comadre-voices:/voices:rw
-      - comadre-audio:/audio:rw
       - comadre-registry:/var/lib/comadre:rw
     environment:
       KEY_REGISTRY_ENCRYPTION_KEY: ${KEY_REGISTRY_ENCRYPTION_KEY:?KEY_REGISTRY_ENCRYPTION_KEY must be set}
@@ -66,8 +65,9 @@ services:
       VOICE_EPHEMERAL_MAX_PER_KEY: "${VOICE_EPHEMERAL_MAX_PER_KEY:-5}"
       VOICE_EPHEMERAL_GLOBAL_MAX: "${VOICE_EPHEMERAL_GLOBAL_MAX:-50}"
       VOICE_STORED_MAX_PER_CUSTOMER: "${VOICE_STORED_MAX_PER_CUSTOMER:-20}"
-      # Model download: HF_TOKEN once for first boot (gated weights),
-      # then set HF_HUB_OFFLINE=1 for a fully offline runtime.
+      # Model download: HF_TOKEN once for first boot (gated weights).
+      # bootstrap.yml blanks the token and sets HF_HUB_OFFLINE=1 after a
+      # healthy first boot.
       HF_TOKEN: "${HF_TOKEN:-}"
       HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
     deploy:
@@ -88,8 +88,6 @@ volumes:
     name: comadre-models
   comadre-voices:
     name: comadre-voices
-  comadre-audio:
-    name: comadre-audio
   comadre-registry:
     name: comadre-registry
   caddy-data:

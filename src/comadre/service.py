@@ -624,7 +624,11 @@ class VoiceRegistry:
         return h.hexdigest()
 
     def _state_matches_model(self, entry: voice_storage.VoiceFileEntry) -> bool:
-        return entry.meta.get("model_hash") == self._model_hash
+        # model_hash drives lazy state regen; it fingerprints the public
+        # model weights and is not secret material.
+        return entry.meta.get("model_hash") == (
+            self._model_hash  # scan-allow[timing-safe-compare]: not secret
+        )
 
     def _load_state(self, entry: voice_storage.VoiceFileEntry) -> dict[str, Any]:
         """Load (or lazily materialize) the model state for an entry.

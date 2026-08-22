@@ -25,7 +25,7 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `POCKET_QUANTIZE` | `false` | int8 quantization of attention + FFN layers (torchao). Phase 0 spike measured +26% RTF on the distilled model — opt-in per host. | `true` |
 | `POCKET_TEMPERATURE` | `0.7` | Generation temperature (≥0). | `0.7` |
 | `POCKET_SIGLA_SPACING` | `true` | Apply `expand_siglas` (spaced letters, `CNPJ` → `C N P J`) — the sigla quality lever. | `false` |
-| `VOICE_UPLOAD_MAX_MB` | `10` | Upload size cap for voice-clone audio (1-50). | `10` |
+| `VOICE_UPLOAD_MAX_MB` | `10` | Upload size cap for voice-clone audio (1-50). Caddy rejects `/v1/voices` bodies over **11 MiB** (this value + multipart overhead) before they reach the app — raise both together. | `10` |
 | `VOICE_REF_MIN_SECONDS` | `3` | Minimum reference-audio duration (≥1); below → 400 `too_short`. | `3` |
 | `VOICE_REF_MAX_SECONDS` | `30` | Maximum reference-audio duration (≥ min); above → 400 `too_long`. The library truncates at 30 s. | `30` |
 | `VOICE_EPHEMERAL_IDLE_TTL_SECONDS` | `3600` | Ephemeral-clone idle TTL (swept every 60 s). | `3600` |

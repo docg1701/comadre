@@ -1,9 +1,12 @@
-"""FR49 non-regression — Caddy body-framing + oversize policy (Story 4.5d).
+"""FR49 + FR-clone non-regression — Caddy body-framing + oversize policy.
 
-Policy mirrors AWS API Gateway / Cloudflare / nginx ``client_max_body_size``:
+Policy mirrors AWS API Gateway / Cloudflare / nginx ``client_max_body_size``,
+with a two-tier oversize threshold:
 1. Any ``Transfer-Encoding`` on ``@api`` → 411 (force Content-Length).
 2. ``Content-Length`` non-canonical (non-numeric / >10 digits) → 400.
-3. Valid ``Content-Length > 1 MiB`` → 413.
+3. Valid ``Content-Length > 1 MiB`` → 413 — EXCEPT ``/v1/voices``, whose
+   clone uploads carry up to VOICE_UPLOAD_MAX_MB=10 MiB of audio plus
+   multipart overhead, capped at 11 MiB instead.
 4. Write method without framing headers → 411.
 5. Otherwise → proxy to upstream.
 """
@@ -24,6 +27,9 @@ _TWO_MB: int = 2 * _ONE_MB
 _SUB_BOUNDARY: int = _ONE_MB - 1024
 _STUB_SIGNATURE: bytes = b"non-regression-stub"
 _API_PATHS: tuple[str, ...] = ("/v1/audio/speech", "/health")
+_VOICES_PATH: str = "/v1/voices"
+_ELEVEN_MB: int = 11 * _ONE_MB
+_TWELVE_MB: int = 12 * _ONE_MB
 _OCTET_STREAM: dict[str, str] = {"Content-Type": "application/octet-stream"}
 
 _REPO_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -34,6 +40,7 @@ _EXPECTED_MATCHERS: tuple[str, ...] = (
     "@api_has_te",
     "@api_malformed_cl",
     "@api_oversized_body",
+    "@api_voices_oversized_body",
     "@api_missing_cl",
 )
 
@@ -105,6 +112,36 @@ def test_sub_boundary_post_is_accepted_and_reaches_upstream(
     resp = probe_client.post("/v1/audio/speech", content=payload, headers=_OCTET_STREAM)
     assert resp.status_code != 413
     assert _STUB_SIGNATURE in resp.content
+
+
+@pytest.mark.non_regression
+def test_clone_upload_under_11mib_is_accepted_and_reaches_upstream(
+    probe_client: httpx.Client,
+) -> None:
+    """A 2 MiB POST to /v1/voices is accepted AND reaches upstream — proves
+    the voices path escaped the generic 1 MiB cap (the v3 clone contract
+    allows VOICE_UPLOAD_MAX_MB=10 MiB; a regression re-narrowing the path
+    lands red here)."""
+    payload = b"x" * _TWO_MB
+    resp = probe_client.post(_VOICES_PATH, content=payload, headers=_OCTET_STREAM)
+    assert resp.status_code != 413, (
+        "clone upload below VOICE_UPLOAD_MAX_MB must not be rejected at the proxy"
+    )
+    assert _STUB_SIGNATURE in resp.content
+
+
+@pytest.mark.non_regression
+def test_clone_upload_over_11mib_is_rejected_with_413(
+    probe_client: httpx.Client,
+) -> None:
+    """A 12 MiB POST to /v1/voices → 413 from ``@api_voices_oversized_body``;
+    body does NOT reach upstream."""
+    payload = b"x" * _TWELVE_MB
+    resp = probe_client.post(_VOICES_PATH, content=payload, headers=_OCTET_STREAM)
+    assert resp.status_code == 413, (
+        f"clone upload over 11 MiB expected 413, got {resp.status_code}"
+    )
+    assert _STUB_SIGNATURE not in resp.content
 
 
 @pytest.mark.non_regression
@@ -225,6 +262,6 @@ def test_caddyfile_variants_share_the_same_body_framing_policy() -> None:
     )
     with_thresholds = set(threshold_pattern.findall(with_landing))
     no_thresholds = set(threshold_pattern.findall(no_landing))
-    assert with_thresholds == no_thresholds == {"1048576"}, (
+    assert with_thresholds == no_thresholds == {"1048576", str(_ELEVEN_MB)}, (
         f"oversize threshold drift: with={with_thresholds}, no={no_thresholds}"
     )

@@ -4,7 +4,7 @@
 #   ansible-playbook playbooks/update.yml -i inventory/production.yml
 #
 # Assumes bootstrap.yml has already been run. Entirely unprivileged — no become: true.
-# Data in Docker volumes (models, voices, audio) is preserved across rebuilds.
+# Data in Docker volumes (models, voices, registry) is preserved across rebuilds.
 
 - name: Update Comadre TTS Service
   hosts: comadre_vps
@@ -166,7 +166,7 @@
           Voice Count:     {{ hc.voices | default([]) | length }}
           HTTPS URL:       https://{{ ansible_host }}
 
-          Data preserved:  Volumes (models, voices, audio, registry) intact
+          Data preserved:  Volumes (models, voices, registry) intact
           Config:          Missing env vars added from .env.example
 
           ============================================

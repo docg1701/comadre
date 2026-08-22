@@ -40,12 +40,24 @@
 		respond "malformed Content-Length header" 400
 	}
 
-	# 3. Valid Content-Length > 1 MiB → 413.
+	# 3. Valid Content-Length > 1 MiB → 413, EXCEPT POST /v1/voices
+	# (voice-clone uploads: 11 MiB = VOICE_UPLOAD_MAX_MB 10 MiB + overhead).
 	@api_oversized_body {
+		not path /v1/voices
 		header Content-Length *
 		expression `{http.request.header.content-length}.matches('^[0-9]{1,10}$') && int({http.request.header.content-length}) > 1048576`
 	}
 	handle @api_oversized_body {
+		respond "Payload Too Large" 413
+	}
+
+	# 3b. Valid Content-Length > 11 MiB on the clone-upload path → 413.
+	@api_voices_oversized_body {
+		path /v1/voices
+		header Content-Length *
+		expression `{http.request.header.content-length}.matches('^[0-9]{1,10}$') && int({http.request.header.content-length}) > 11534336`
+	}
+	handle @api_voices_oversized_body {
 		respond "Payload Too Large" 413
 	}
 

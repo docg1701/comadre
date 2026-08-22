@@ -471,8 +471,8 @@ cleanup.yml → bootstrap.yml → deploy-voices.yml → health.yml → backup-ke
 
 Bootstrap needs **≥ 3600 s bash timeout** (model downloads + 30-min health poll).
 `cleanup.yml` is optional if the VPS is already bare. First-boot v3 downloads
-the gated pocket-tts model with `HF_TOKEN`; set `HF_HUB_OFFLINE=1` in `.env`
-afterwards.
+the gated pocket-tts model with `HF_TOKEN`; bootstrap then blanks the token
+and sets `HF_HUB_OFFLINE=1` automatically (no operator follow-up).
 
 ### 5. `deploy-models.yml` fails by design
 

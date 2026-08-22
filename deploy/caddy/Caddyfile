@@ -94,15 +94,30 @@
 		respond `{"error":{"message":"Malformed Content-Length header","type":"invalid_request_error","hint":"Send a single non-negative integer Content-Length within 1-10 digits."}}` 400
 	}
 
-	# 3. Valid Content-Length > 1 MiB → 413.
+	# 3. Valid Content-Length > 1 MiB → 413, EXCEPT POST /v1/voices:
+	# voice-clone uploads carry up to VOICE_UPLOAD_MAX_MB=10 MiB of audio
+	# plus multipart form overhead — capped at 11 MiB. If VOICE_UPLOAD_MAX_MB
+	# is raised beyond 10, raise the 11534336 (11 MiB) threshold here too.
 	@api_oversized_body {
 		path /v1/* /health
+		not path /v1/voices
 		header Content-Length *
 		expression `{http.request.header.content-length}.matches('^[0-9]{1,10}$') && int({http.request.header.content-length}) > 1048576`
 	}
 	handle @api_oversized_body {
 		header Content-Type "application/json"
 		respond `{"error":{"message":"Payload too large","type":"invalid_request_error","hint":"Maximum request body size for /v1/* and /health is 1 MiB."}}` 413
+	}
+
+	# 3b. Valid Content-Length > 11 MiB on the clone-upload path → 413.
+	@api_voices_oversized_body {
+		path /v1/voices
+		header Content-Length *
+		expression `{http.request.header.content-length}.matches('^[0-9]{1,10}$') && int({http.request.header.content-length}) > 11534336`
+	}
+	handle @api_voices_oversized_body {
+		header Content-Type "application/json"
+		respond `{"error":{"message":"Payload too large","type":"invalid_request_error","hint":"Maximum request body size for POST /v1/voices is 11 MiB (VOICE_UPLOAD_MAX_MB + multipart overhead)."}}` 413
 	}
 
 	# 4. Write method (POST/PUT/PATCH) with neither Content-Length nor

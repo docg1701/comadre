@@ -429,18 +429,6 @@
     # Cron Jobs
     # =========================================================================
 
-    - name: "[Cron] Configure audio cleanup every 6 hours"
-      ansible.builtin.cron:
-        name: "comadre-audio-cleanup"
-        minute: "0"
-        hour: "*/6"
-        job: >-
-          cd ~/comadre &&
-          docker compose exec -T tts-service find /audio -type f
-          \( -name '*.ogg' -o -name '*.wav' \)
-          -mmin +1440 -delete 2>/dev/null
-          || logger -t comadre-cleanup 'audio cleanup failed — service may be down'
-
     - name: "[Cron] Set CRON_TZ for billing-aware schedules"
       ansible.builtin.cron:
         name: "CRON_TZ"
@@ -586,6 +574,51 @@
       delay: 10
 
     # =========================================================================
+    # Offline Hardening (automatic — no operator follow-up)
+    # =========================================================================
+    # First boot downloaded the pinned model artifacts with HF_TOKEN.
+    # Runtime must be fully offline (HF_HUB_OFFLINE=1): no accidental
+    # HuggingFace calls, deterministic boots. The token leaves the .env
+    # once the download has served its purpose. Skipped (no recreate)
+    # when nothing changed — re-bootstrap against an already-offline host
+    # converges without a second container restart.
+
+    - name: "[Offline] Blank HF_TOKEN in .env"
+      ansible.builtin.lineinfile:
+        path: "~/comadre/.env"
+        regexp: "^HF_TOKEN="
+        line: "HF_TOKEN="
+      register: hf_token_blank
+
+    - name: "[Offline] Set HF_HUB_OFFLINE=1 in .env"
+      ansible.builtin.lineinfile:
+        path: "~/comadre/.env"
+        regexp: "^HF_HUB_OFFLINE="
+        line: "HF_HUB_OFFLINE=1"
+      register: hf_offline_set
+
+    - name: "[Offline] Apply hardened env (recreate service)"
+      when: hf_token_blank.changed or hf_offline_set.changed
+      community.docker.docker_compose_v2:
+        project_src: "~/comadre"
+        state: present
+        recreate: always
+        remove_orphans: true
+
+    - name: "[Offline] Wait for service to become healthy (hardened env)"
+      when: hf_token_blank.changed or hf_offline_set.changed
+      ansible.builtin.uri:
+        url: "https://{{ domain | default('localhost') }}/health"
+        validate_certs: false
+        return_content: true
+      register: health_check_hardened
+      until: >-
+        health_check_hardened.status == 200
+        and (health_check_hardened.json.status | default('')) == "healthy"
+      retries: 30
+      delay: 10
+
+    # =========================================================================
     # Summary
     # =========================================================================
 
@@ -610,9 +643,10 @@
 
           Next steps — issue a customer API key from the host:
             docker compose exec tts-service comadre-keys create-customer \
-              --name "Acme" --tax-id "12345678000199"
+              --name "Acme" --email "ops@acme.com.br" --cpf "52998224725"
             docker compose exec tts-service comadre-keys issue-key \
               --customer <customer-id> --rpm 30 --price 149.00  # BRL/month
+            # CNPJ customers: use --cnpj "12345678000199" instead of --cpf.
 
           Then test the returned key (shown once at issuance):
           curl -k -X POST \

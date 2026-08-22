@@ -44,12 +44,15 @@ def test_check_rate_limit_is_canonical_dep_on_speech_route() -> None:
     check are needed — declared-list catches "Depends() removed", identity
     catches "renamed and old symbol left as no-op".
     """
-    from comadre.main import create_app
+    from comadre.api import api_router
 
-    app = create_app()
+    # FastAPI >= 0.137 wraps include_router() targets in private
+    # _IncludedRouter objects, so app.routes no longer flattens to
+    # APIRoute. The wiring under test is ours — assert on the source
+    # router directly (stable public surface).
     speech_routes = [
         r
-        for r in app.routes
+        for r in api_router.routes
         if isinstance(r, APIRoute) and r.path == _SPEECH_PATH and "POST" in r.methods
     ]
     assert len(speech_routes) == 1, (

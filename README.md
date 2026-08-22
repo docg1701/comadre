@@ -68,8 +68,9 @@ curl -k -X POST https://localhost/v1/audio/speech \
   --output clone.ogg
 ```
 
-After the first boot, unset `HF_TOKEN` and set `HF_HUB_OFFLINE=1` in `.env`
-for a fully offline runtime.
+`bootstrap.yml` hardens the runtime automatically: after the first boot
+passes its health check it blanks `HF_TOKEN` and sets `HF_HUB_OFFLINE=1`
+in `.env`, then restarts the service — fully offline, zero manual steps.
 
 ## How It Works
 

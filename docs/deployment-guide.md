@@ -372,8 +372,9 @@ live in the gated `kyutai/pocket-tts` HuggingFace repo:
 3. First boot downloads the model (~370 MB), tokenizer (~1 MB) and rafael
    embedding (~1 MB) into `/models/pocket-tts/<lang>/` with pinned
    revisions.
-4. After the first successful boot, **unset `HF_TOKEN` and set
-   `HF_HUB_OFFLINE=1`** in `.env` — the runtime is then fully offline.
+4. `bootstrap.yml` then hardens the runtime automatically: once the first
+   boot is healthy it **blanks `HF_TOKEN` and sets `HF_HUB_OFFLINE=1`** in
+   `.env` and recreates the service — no manual follow-up.
 
 **Air-gapped path: `deploy-models.yml`.**
 

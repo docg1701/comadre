@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.queue_depth = 0
     app.state.start_time = time.monotonic()
     app.state.settings = settings
-    app.state.router = None
+    app.state.engine = None
     app.state.registry = None
 
     # Phase 1: Load config (already done via get_settings)
@@ -221,7 +221,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_active_registry(registry)
 
     # Phase 8: Ready
-    app.state.router = engine
+    app.state.engine = engine
     app.state.registry = registry
     app.state.ready = True
 
@@ -545,24 +545,23 @@ def create_app() -> FastAPI:
         await check_health_per_ip_rate_limit(request)
         authenticated = await _try_auth(request)
 
-        if not getattr(request.app.state, "ready", False):
-            router = getattr(request.app.state, "registry", None)
-            if router is None:
-                minimal: dict[str, Any] = {
-                    "status": "warming_up",
-                    "voices": [],
-                }
-                if authenticated:
-                    minimal.update(
-                        {
-                            "engines": {},
-                            "queue_depth": 0,
-                            "uptime_seconds": 0,
-                            "memory_mb": 0,
-                            "version": __version__,
-                        }
-                    )
-                return JSONResponse(content=minimal, status_code=503)
+        ready = getattr(request.app.state, "ready", False)
+        if not ready and request.app.state.registry is None:
+            minimal: dict[str, Any] = {
+                "status": "warming_up",
+                "voices": [],
+            }
+            if authenticated:
+                minimal.update(
+                    {
+                        "engines": {},
+                        "queue_depth": 0,
+                        "uptime_seconds": 0,
+                        "memory_mb": 0,
+                        "version": __version__,
+                    }
+                )
+            return JSONResponse(content=minimal, status_code=503)
 
         if authenticated:
             body, status_code = build_health_response(

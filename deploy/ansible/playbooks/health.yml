@@ -492,27 +492,6 @@
       register: disk_usage
       changed_when: false
 
-    - name: "[Diag] Check audio volume size"
-      ansible.builtin.command:
-        cmd: docker compose -f ~/comadre/compose.yaml exec -T tts-service du -sh /audio
-      register: audio_volume_size
-      changed_when: false
-      ignore_errors: true
-
-    - name: "[Diag] Warn on high disk usage"
-      when:
-        - disk_usage.stdout is defined
-        - >-
-          (disk_usage.stdout_lines[1] | default('')
-          | regex_search('([0-9]+)%', '\\1')
-          | default(['0']) | first | int) > 80
-      ansible.builtin.debug:
-        msg: >-
-          WARNING: Root filesystem usage is
-          {{ disk_usage.stdout | regex_search('([0-9]+%)', '\\1') | default(['unknown']) | first }}
-          (threshold: 80%).
-          Verify audio cleanup cron is active: crontab -l | grep comadre-audio-cleanup
-
     # =========================================================================
     # Summary
     # =========================================================================
@@ -542,6 +521,5 @@
           Voice count:      {{ hc.voices | default([]) | length }}
           {% endif %}
           Disk usage:       {{ disk_usage.stdout_lines[1] | default('Unable to check') }}
-          Audio volume:     {{ audio_volume_size.stdout | default('Unable to check') }}
 
           ============================================

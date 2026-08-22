@@ -80,20 +80,20 @@ def mock_settings(fernet_key: str) -> Settings:
 
 
 @pytest.fixture()
-def mock_router() -> MagicMock:
+def mock_engine() -> MagicMock:
     """Mock engine (speech facade) with the canonical pocket voice list.
 
-    Serves as both app.state.router (generate_speech) and, via
+    Serves as both app.state.engine (generate_speech) and, via
     available_voices/engine_status, the health surface.
     """
-    router = MagicMock()
-    router.generate_speech.return_value = b"fake-audio-bytes"
-    router.available_voices.return_value = [
+    engine = MagicMock()
+    engine.generate_speech.return_value = b"fake-audio-bytes"
+    engine.available_voices.return_value = [
         "pocket/rafael",
         "pocket/galvani",
         "pocket/u_01J2K4M6N8P0Q2R4S6",
     ]
-    router.engine_status.return_value = {
+    engine.engine_status.return_value = {
         "pocket": {
             "loaded": True,
             "voices": [
@@ -103,7 +103,7 @@ def mock_router() -> MagicMock:
             ],
         },
     }
-    return router
+    return engine
 
 
 @pytest.fixture()
@@ -126,7 +126,7 @@ def registry_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 @pytest.fixture()
 def app(
-    mock_router: MagicMock,
+    mock_engine: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
     registry_db_path: Path,
     fernet_key: str,
@@ -142,8 +142,8 @@ def app(
 
     application = create_app()
     application.state.settings = get_settings()
-    application.state.router = mock_router
-    application.state.registry = mock_router
+    application.state.engine = mock_engine
+    application.state.registry = mock_engine
     application.state.ready = True
     application.state.queue_lock = asyncio.Lock()
     application.state.queue_depth = 0

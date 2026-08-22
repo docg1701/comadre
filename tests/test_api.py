@@ -125,9 +125,9 @@ async def test_speech_validation_messages_are_field_specific(
 
 
 async def test_speech_unknown_voice_returns_404(
-    client: AsyncClient, auth_headers: dict[str, str], mock_router: MagicMock
+    client: AsyncClient, auth_headers: dict[str, str], mock_engine: MagicMock
 ) -> None:
-    mock_router.generate_speech.side_effect = VoiceNotFoundError(
+    mock_engine.generate_speech.side_effect = VoiceNotFoundError(
         "nonexistent", available=["pocket/rafael"]
     )
     response = await client.post(
@@ -249,24 +249,24 @@ async def test_no_audit_log_writes_on_any_speech_outcome(
 
 
 async def test_speed_is_forwarded_to_engine(
-    client: AsyncClient, auth_headers: dict[str, str], mock_router: MagicMock
+    client: AsyncClient, auth_headers: dict[str, str], mock_engine: MagicMock
 ) -> None:
     """speed reaches the engine for ALL voices (v3 atempo semantics)."""
-    mock_router.generate_speech.reset_mock()
+    mock_engine.generate_speech.reset_mock()
     response = await client.post(
         "/v1/audio/speech",
         json={"input": "oi", "voice": "pocket/rafael", "speed": 1.5},
         headers=auth_headers,
     )
     assert response.status_code == 200
-    assert mock_router.generate_speech.call_count == 1
-    kwargs = mock_router.generate_speech.call_args.kwargs
+    assert mock_engine.generate_speech.call_count == 1
+    kwargs = mock_engine.generate_speech.call_args.kwargs
     assert kwargs["speed"] == 1.5
     assert kwargs["voice_name"] == "pocket/rafael"
 
 
 async def test_rate_limit_429_envelope_and_independent_per_key(
-    app: Any, client: AsyncClient, mock_router: MagicMock
+    app: Any, client: AsyncClient, mock_engine: MagicMock
 ) -> None:
     """Rate-limit contract: rpm=2 admits 2 requests then 429 with envelope
     + retry-after + X-RateLimit-* headers; engine NOT invoked on 429.
@@ -278,7 +278,7 @@ async def test_rate_limit_429_envelope_and_independent_per_key(
         app.state.registry_db, customer_email="b@x.com", rate_limit_rpm=2
     )
     headers_a = {"Authorization": f"Bearer {pt_a}"}
-    mock_router.generate_speech.reset_mock()
+    mock_engine.generate_speech.reset_mock()
 
     for _ in range(2):
         r = await client.post("/v1/audio/speech", json=_SPEECH_BODY, headers=headers_a)
@@ -293,7 +293,7 @@ async def test_rate_limit_429_envelope_and_independent_per_key(
     assert 1 <= int(trip.headers["retry-after"]) <= 60
     assert trip.headers["x-ratelimit-remaining"] == "0"
     # Engine called rpm times only — 429 short-circuits before TTS.
-    assert mock_router.generate_speech.call_count == 2
+    assert mock_engine.generate_speech.call_count == 2
 
     # Key B in independent bucket — gets full budget.
     r = await client.post(

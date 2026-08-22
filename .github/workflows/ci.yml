@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
     branches: [master]
 
@@ -64,3 +65,39 @@ jobs:
           ids=$(docker ps -aq --filter label=comadre-non-regression || true)
           if [ -n "$ids" ]; then docker rm -f $ids || true; fi
           docker network rm comadre-non-regression-net 2>/dev/null || true
+
+  release:
+    name: Release (tag → GitHub Release)
+    # Zero-touch releases: pushing a v* tag runs the full QA gate above,
+    # then publishes a GitHub Release whose notes are extracted from the
+    # matching CHANGELOG.md section. Fails loudly when the section is
+    # missing — a tag without changelog entries is a process bug, not
+    # something to paper over with an empty body.
+    needs: [lint, test, non-regression]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Extract CHANGELOG section for this tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          awk -v ver="$TAG" '
+            $0 ~ "^## \\["ver"\\]" {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "::error::No '## [$TAG]' section in CHANGELOG.md — add it before tagging"
+            exit 1
+          fi
+          cat release_notes.md
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release_notes.md

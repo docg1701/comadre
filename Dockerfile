@@ -55,8 +55,8 @@ RUN chmod +x /app/scripts/entrypoint.sh
 # this, the volume comes up root:root 0755 and the non-root appuser cannot
 # create registry.db (sqlite3.OperationalError: unable to open database file).
 RUN useradd --create-home --shell /bin/bash appuser && \
-    mkdir -p /models /audio /voices /var/lib/comadre && \
-    chown -R appuser:appuser /app /models /audio /voices /var/lib/comadre
+    mkdir -p /models /voices /var/lib/comadre && \
+    chown -R appuser:appuser /app /models /voices /var/lib/comadre
 
 ENV PATH="/app/.venv/bin:$PATH"
 

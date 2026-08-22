@@ -100,7 +100,7 @@ async def test_registry_bootstrap_migrates_caches_and_closes_db(
         assert snapshot["ttl_seconds"] == 60
         # v3 engine + registry surfaces wired.
         assert app.state.ready is True
-        assert app.state.router is not None
+        assert app.state.engine is not None
         assert app.state.registry is not None
     finally:
         await cm.__aexit__(None, None, None)

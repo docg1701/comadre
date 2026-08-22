@@ -19,7 +19,7 @@ class TestSequentialProcessing:
         self,
         app: Any,
         auth_headers: dict[str, str],
-        mock_router: MagicMock,
+        mock_engine: MagicMock,
     ) -> None:
         timestamps: list[tuple[str, float]] = []
 
@@ -30,7 +30,7 @@ class TestSequentialProcessing:
             timestamps.append(("end", time.monotonic()))
             return b"fake-audio-bytes"
 
-        mock_router.generate_speech.side_effect = slow_generate
+        mock_engine.generate_speech.side_effect = slow_generate
 
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -71,7 +71,7 @@ class TestQueueDepth:
         self,
         app: Any,
         auth_headers: dict[str, str],
-        mock_router: MagicMock,
+        mock_engine: MagicMock,
     ) -> None:
         depth_during: list[int] = []
 
@@ -79,7 +79,7 @@ class TestQueueDepth:
             depth_during.append(app.state.queue_depth)
             return b"fake-audio-bytes"
 
-        mock_router.generate_speech.side_effect = capture_depth
+        mock_engine.generate_speech.side_effect = capture_depth
 
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -101,9 +101,9 @@ class TestQueueDepth:
         self,
         app: Any,
         auth_headers: dict[str, str],
-        mock_router: MagicMock,
+        mock_engine: MagicMock,
     ) -> None:
-        mock_router.generate_speech.side_effect = GenerationError("Simulated failure")
+        mock_engine.generate_speech.side_effect = GenerationError("Simulated failure")
 
         async with AsyncClient(
             transport=ASGITransport(app=app),
