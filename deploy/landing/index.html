@@ -178,6 +178,8 @@
 
     input[type="password"],
     input[type="number"],
+    input[type="text"],
+    input[type="file"],
     select,
     textarea {
       width: 100%;
@@ -558,69 +560,140 @@
         padding: 5px 10px;
       }
     }
+    /* ─── Voice cloning (v3) ─── */
+
+    #cloneCard,
+    #myVoicesCard {
+      margin-top: 24px;
+    }
+
     .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
       margin: 0 0 4px;
-      font-size: 20px;
-      font-weight: 700;
     }
+
     .card-sub {
-      margin: 0 0 16px;
       font-size: 13px;
-      color: var(--muted, #64748b);
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin: 0 0 20px;
     }
+
+    input[type="file"]::file-selector-button {
+      padding: 8px 14px;
+      margin-right: 12px;
+      background: var(--accent-dim);
+      border: none;
+      border-radius: 6px;
+      color: var(--accent-hover);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    input[type="file"]::file-selector-button:hover {
+      background: rgba(184, 85, 21, 0.22);
+    }
+
     .checkbox-option {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       font-size: 14px;
+      font-weight: 400;
+      color: var(--text);
       cursor: pointer;
+      text-transform: none;
+      letter-spacing: 0;
+      margin-bottom: 0;
     }
+
+    .checkbox-option input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
     .checkbox-option.consent {
       font-size: 13px;
-      color: var(--muted, #64748b);
+      color: var(--text-secondary);
+      line-height: 1.6;
     }
+
     .voice-list {
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
+
+    .voice-list-empty {
+      font-size: 13px;
+      color: var(--text-secondary);
+      padding: 4px 2px;
+    }
+
     .voice-row {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 8px 12px;
-      border: 1px solid var(--border, #e2e8f0);
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
       border-radius: 8px;
     }
+
     .voice-label {
       flex: 1;
       font-size: 14px;
+      color: var(--text);
       word-break: break-all;
     }
+
     .voice-badge {
       font-size: 11px;
-      padding: 3px 8px;
+      font-weight: 500;
+      padding: 3px 10px;
       border-radius: 999px;
-      background: var(--muted-bg, #eef2f7);
-      color: var(--muted, #64748b);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      white-space: nowrap;
     }
+
+    .voice-badge.saved {
+      color: var(--success);
+      border-color: rgba(78, 234, 187, 0.3);
+      background: rgba(78, 234, 187, 0.08);
+    }
+
     .voice-delete {
-      font-size: 12px;
-      padding: 5px 10px;
-      border: 1px solid #fca5a5;
+      font-size: 13px;
+      padding: 6px 12px;
+      border: 1px solid rgba(240, 108, 142, 0.35);
       border-radius: 6px;
       background: transparent;
-      color: #dc2626;
+      color: var(--error);
+      font-family: inherit;
       cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
     }
+
     .voice-delete:hover {
-      background: #fef2f2;
+      background: var(--error-dim);
+      border-color: var(--error);
     }
-    #cloneCard, #myVoicesCard {
-      margin-top: 24px;
-    }
+
     .footer-bottom {
       display: flex;
+      justify-content: center;
       gap: 12px;
       flex-wrap: wrap;
     }
@@ -738,18 +811,16 @@
             <label for="cloneFile">Áudio de referência (5–20 s)</label>
             <input type="file" id="cloneFile" accept=".wav,.mp3,audio/*" required>
           </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label for="cloneName">Nome da voz (opcional)</label>
-              <input type="text" id="cloneName" maxlength="64"
-                     placeholder="Minha voz">
-            </div>
-            <div class="form-group">
-              <label class="checkbox-option">
-                <input type="checkbox" id="clonePersist">
-                <span>Salvar para uso futuro</span>
-              </label>
-            </div>
+          <div class="form-group">
+            <label for="cloneName">Nome da voz (opcional)</label>
+            <input type="text" id="cloneName" maxlength="64"
+                   placeholder="Minha voz">
+          </div>
+          <div class="form-group">
+            <label class="checkbox-option">
+              <input type="checkbox" id="clonePersist">
+              <span>Salvar para uso futuro</span>
+            </label>
           </div>
           <div class="form-group">
             <label class="checkbox-option consent">
@@ -984,7 +1055,15 @@
           if (!r.ok) { myVoicesEl.innerHTML = ''; return; }
           const data = await r.json();
           myVoicesEl.innerHTML = '';
-          for (const v of (data.voices || [])) {
+          const voices = data.voices || [];
+          if (voices.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'voice-list-empty';
+            empty.textContent = 'Nenhuma voz ainda — crie um clone acima ou use as vozes do operador no seletor.';
+            myVoicesEl.appendChild(empty);
+            return;
+          }
+          for (const v of voices) {
             const row = document.createElement('div');
             row.className = 'voice-row';
             const label = document.createElement('span');
@@ -994,7 +1073,7 @@
               : v.voice;
             row.appendChild(label);
             const badge = document.createElement('span');
-            badge.className = 'voice-badge';
+            badge.className = 'voice-badge' + (v.persisted ? ' saved' : '');
             badge.textContent = v.persisted ? 'salva' : 'sessão';
             row.appendChild(badge);
             const isOwnClone = v.voice.startsWith('pocket/u_');
