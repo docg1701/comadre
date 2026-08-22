@@ -1077,6 +1077,10 @@
         myVoicesEl.innerHTML = '';
         if (!key) {
           appendListHint('Não há vozes clonadas.');
+          // Drop personal options left over from a previous key.
+          for (const opt of Array.from(voiceEl.options)) {
+            if (opt.value.startsWith('pocket/u_')) opt.remove();
+          }
           return;
         }
         let data;
@@ -1092,6 +1096,11 @@
         } catch (e) {
           appendListHint('Não há vozes clonadas.');
           return;
+        }
+        // Merge the caller's own voices into the main picker with their
+        // display names (operator voices dedupe via addVoiceOption).
+        for (const v of data.voices || []) {
+          addVoiceOption(v.voice, v.display_name || v.voice);
         }
         // This section is strictly the caller's own clones (u_<ULID>);
         // catalog/operator voices live in the main voice picker.

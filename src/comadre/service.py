@@ -922,9 +922,18 @@ class VoiceRegistry:
         return result
 
     def available_voices(self) -> list[str]:
-        """Filesystem pocket voices only (names only — no PII in /health)."""
+        """Public catalog voices (operator drops + virtual rafael).
+
+        Persisted API clones carry a customer_id meta and are excluded:
+        /health is unauthenticated, so other callers' clones must never
+        surface here — own clones are listed via list_for() instead.
+        """
         self._refresh_files()
-        return [f"{_VOICE_PREFIX}{name}" for name in sorted(self._files)]
+        return [
+            f"{_VOICE_PREFIX}{name}"
+            for name, entry in sorted(self._files.items())
+            if entry.meta.get("customer_id") is None
+        ]
 
     def engine_status(self) -> dict[str, dict[str, object]]:
         """Per-engine status for the health endpoint (single engine)."""

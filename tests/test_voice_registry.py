@@ -97,6 +97,23 @@ def test_scan_and_available_voices(
     assert registry.available_voices() == ["pocket/ana", "pocket/galvani"]
 
 
+def test_customer_clone_hidden_from_public_voice_list(
+    registry_env: tuple[VoiceRegistry, Path, Settings],
+) -> None:
+    """Persisted clones (customer_id meta) never surface in
+    available_voices(): /health is unauthenticated, so other callers'
+    clones must not leak — own clones come via list_for() instead."""
+    registry, pocket_dir, _ = registry_env
+    clone = "u_01J2K4M6N8P0Q2R4S6T5V7W8X9"
+    _add_wav(pocket_dir, "oper")
+    _add_wav(pocket_dir, clone, meta={"customer_id": "cust_1"})
+    voices = registry.available_voices()
+    assert "pocket/oper" in voices
+    assert f"pocket/{clone}" not in voices
+    owned = [v.voice for v in registry.list_for(key_id="k1", customer_id="cust_1")]
+    assert f"pocket/{clone}" in owned
+
+
 def test_resolve_loads_state_from_safetensors(
     registry_env: tuple[VoiceRegistry, Path, Settings],
 ) -> None:
