@@ -307,7 +307,11 @@
           community.docker.docker_container:
             name: comadre-volume-helper
             image: alpine:3.21
-            command: "sh -c 'mkdir -p /voices/pocket'"
+            # 1000:1000 = appuser in the image (first useradd gets UID
+            # 1000). The API writes clone trios into /voices/pocket as
+            # appuser; a root-owned dir (Docker's default when a helper
+            # creates it) makes every upload fail with PermissionError.
+            command: "sh -c 'mkdir -p /voices/pocket && chown -R 1000:1000 /voices'"
             volumes:
               - "comadre-voices:/voices"
             state: started
