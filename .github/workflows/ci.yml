@@ -34,6 +34,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+      # The clone-persistence regression test runs the REAL ffmpeg
+      # transcoder; runners no longer ship it preinstalled.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
