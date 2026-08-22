@@ -400,3 +400,26 @@ Two measurement campaigns inform this report. The 2026-04-11 four-way verificati
 - **Output format:** OGG Opus 24 kbps, 16 kHz mono.
 - **Audio integrity (2026-04-11):** 2,440 of 2,440 requests across all four configurations produced valid audio files (verified with `ffprobe`). Zero crashes, zero corrupted outputs.
 - **Test dates:** 2026-04-06 (initial single-replica), 2026-04-11 (multi-replica four-way verification)
+
+## v3 Addendum — pocket-tts measured on the production VPS (2026-08-22)
+
+Single replica, 4 vCPU shared (Proxmox VM, CPX31-class), `pocket/rafael`,
+OGG Opus output. Full methodology identical to the sessions above
+(`scripts/loadtest.py` 6 scenarios + `scripts/capacity_test.py` 8 rate
+tiers, seed 42); raw data in `tests/results/v3-loadtest/` and
+`tests/results/v3-capacity/`.
+
+| Metric | v2 (Kokoro fp32) | v3 (pocket-tts 2.1.0) |
+|---|---|---|
+| Single-request latency (mixed sizes) | p50 ~12 s | p50 5.65 s |
+| Sustained single-replica ceiling | ~13 req/min | ~16 req/min |
+| Comfortable operating zone | ≤ 8 req/min (p50 < 6 s) | ≤ 10 req/min (p50 3.7–4.2 s) |
+| RTF (inference+pipeline, in-container) | ~0.7–0.9 | 0.53–0.58 |
+| Native voice cloning | No (Qwen3 sidecar, RTF 2.4+) | Yes, included (clone encode 0.7 s for a 10 s ref) |
+| Audio integrity (this session) | 2440/2440 | 700/700 (loadtest 147 + capacity 580 incl. clone smoke) |
+
+Above the ceiling every extra request just queues behind the FIFO and
+the client's 130 s timeout eventually fires — by design (backpressure,
+not collapse). Memory stayed flat through all tiers. Cost conclusion is
+unchanged and strengthens: fixed ~$7/month now includes cloning that
+previously needed a separate Qwen3 pipeline at 1/4 the speed.

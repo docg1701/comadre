@@ -384,3 +384,18 @@ For Kokoro-only chatbot workloads (Qwen3 is unscalable on CPU and is a separate 
 - **Burst scenario (0% success on all 4 runs):** still a test ordering artifact, not a scaling defect — the 30 simultaneous requests inherit the queue from the preceding stress scenario, all of them hit the 130 s client timeout. Consistent with the original report.
 - **Loadtest light/baseline scenarios slightly slower under `least_conn`** than under `round_robin` (e.g., light p50 12.16s → 18.10s). This is the expected behavior of `least_conn` under low load: when both replicas are idle, `least_conn` breaks ties by upstream order and sticks with replica 1, losing the parallelism benefit of round-robin's enforced rotation. This only matters at concurrency below the replica count, and is not a real-world regression — at low concurrency, latency is dominated by single-request inference time, which is identical on both LB policies.
 - **Measured 1r ceiling dropped from ~14 (original) to ~13 (this run)** — the new randomized workload is slightly harder than the sorted one because adjacent random picks include long-message bursts that the sorted workload smoothed out. This makes `least_conn`'s queue-aware behavior more important in practice, not less.
+
+## v3 Addendum — pocket-tts single-replica ceiling (2026-08-22)
+
+Measured on the production VPS (4 vCPU shared Proxmox VM), seed 42,
+same corpora/scripts as the 2026-04 sessions:
+
+- Single-replica sustained ceiling: **~16 req/min** (all tiers ≥20/min
+  clamp at 15.4–16.8/min actual; audio integrity 580/580).
+- Comfortable zone: **≤10 req/min** with p50 3.7–4.2 s.
+- Queue behavior above ceiling matches the v2 findings: linear wait
+  growth under the FIFO lock, client timeouts past ~130 s, zero
+  corruption, flat memory.
+- Scaling math for v3 planning: replicas ≈ ceil(target_req_per_min / 14)
+  leaves 15% headroom under the measured 16/min ceiling; Caddy
+  `least_conn` distributes per-replica queues as before.
