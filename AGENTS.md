@@ -9,6 +9,11 @@ stored). Serves n8n chatbot workflows for WhatsApp/Telegram/Messenger in
 Brazilian Portuguese. Version 3.0.0 — the v2 dual-engine (Kokoro + Qwen3)
 was removed entirely.
 
+**API-first (operator decision):** Comadre is primarily a REST API. The
+landing page (`deploy/landing/`) is a demo surface only — every feature
+must be fully usable through the HTTP API alone, and server-side behavior
+is never shaped to accommodate the demo UI.
+
 ## Tooling
 
 - **Agent harness: DeepSeek Harness (DSH).** The repository is developed with
