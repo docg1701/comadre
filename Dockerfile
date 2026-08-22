@@ -54,13 +54,15 @@ RUN chmod +x /app/scripts/entrypoint.sh
 # volume on first mount" behaviour gives the volume the right owner — without
 # this, the volume comes up root:root 0755 and the non-root appuser cannot
 # create registry.db (sqlite3.OperationalError: unable to open database file).
-RUN useradd --create-home --shell /bin/bash appuser && \
+# UID/GID are pinned to 1000 (hadolint DL3066): deploy scripts — notably the
+# bootstrap.yml voices helper's chown 1000:1000 — depend on the deterministic id.
+RUN useradd --uid 1000 --user-group --create-home --shell /bin/bash appuser && \
     mkdir -p /models /voices /var/lib/comadre && \
     chown -R appuser:appuser /app /models /voices /var/lib/comadre
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-USER appuser
+USER 1000:1000
 
 EXPOSE 8000
 

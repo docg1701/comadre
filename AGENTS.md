@@ -36,6 +36,41 @@ uv run mypy src/                 # Type check (strict mode)
 uv run pre-commit run --all-files  # All quality checks
 ```
 
+## CI / Release — mandatory workflow
+
+GitHub Actions (`.github/workflows/ci.yml`). **Every push to `master` and
+every `v*` tag MUST be monitored to green before the work is considered
+done.** Local green does NOT substitute CI verification.
+
+Jobs (sequential):
+
+1. **Lint** — `uv sync` + `pre-commit run --all-files` (ruff, hadolint,
+   yamllint, shellcheck, markdownlint-cli2, mypy). Note: `hadolint-docker`
+   runs the `ghcr.io/hadolint/hadolint:latest` image regardless of the
+   pre-commit rev pin; new hadolint rules can appear upstream — fix the
+   Dockerfile, never blanket-disable.
+2. **Test** — `uv run pytest` (unit suite, mocked).
+3. **Non-Regression (Security)** — `pytest -m non_regression` boots real
+   Caddy + nginx-stub containers on the runner.
+4. **Release** (only on `v*` tags, needs 1–3 green) — extracts the
+   matching `## [<version>]` section from `CHANGELOG.md` (fails loudly if
+   absent) and publishes a GitHub Release via `gh release create`.
+
+Monitoring commands:
+
+```bash
+gh run list --repo docg1701/comadre --limit 5               # recent runs
+gh run watch <run-id> --repo docg1701/comadre               # live tail
+gh run view <run-id> --repo docg1701/comadre --log-failed   # failure logs
+gh release list --repo docg1701/comadre                     # published releases
+```
+
+Release flow: bump versions → ensure `CHANGELOG.md` has the `## [X.Y.Z]`
+section → commit → push master → **wait for CI green** → `git tag vX.Y.Z`
+→ push the tag → **watch the Release job publish**. Re-pointing a pushed
+tag re-triggers the flow (`git push origin :refs/tags/vX.Y.Z`, then
+re-tag and push again).
+
 ## Architecture — What You Must Know
 
 - **Single engine + filesystem voice discovery**: voice param format is

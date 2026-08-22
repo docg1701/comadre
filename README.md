@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
+<!-- markdownlint-disable-next-line MD036 -- tagline, intentionally not a heading -->
 **Comadre Manda Áudio Direto, Rápido e Eficiente**
 
 Self-hosted TTS API for Brazilian Portuguese on the **Kyutai pocket-tts**

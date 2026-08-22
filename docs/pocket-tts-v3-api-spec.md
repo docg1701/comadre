@@ -31,7 +31,7 @@ stored on the server for future requests.
 - **Processing:** voice-state encoding runs under the same per-replica FIFO
   queue lock as speech generation (CPU-bound), timeout 120 s.
 
-**Form fields**
+#### Form fields
 
 | Field | Type | Required | Constraints |
 |---|---|---|---|
@@ -44,7 +44,7 @@ below), recommended **5–20 s** (UI hint; 5 s is Kyutai's stated minimum, 5–1
 is the quality/cost sweet spot), hard maximum **30 s** (server truncates at
 30 s — mirror of the library's `truncate=True` behavior).
 
-**201 response**
+#### 201 response
 
 ```json
 {

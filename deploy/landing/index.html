@@ -604,51 +604,55 @@
       background: rgba(184, 85, 21, 0.22);
     }
 
-    /* Persist toggle reuses the radio-option card component — a checkbox
-       inside gets the same border/hover/checked treatment for free via
-       :has(input:checked). */
-    .option-check {
-      justify-content: flex-start;
+    /* Clone rows — inline label + control, per operator spec. */
+    .clone-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .clone-row:last-of-type {
+      margin-bottom: 20px;
+    }
+
+    .clone-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .clone-row input[type="file"],
+    .clone-row input[type="text"] {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .save-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 400;
+      color: var(--text);
+      cursor: pointer;
       text-transform: none;
       letter-spacing: 0;
-      font-weight: 400;
+      white-space: nowrap;
       margin-bottom: 0;
     }
 
-    .option-check input[type="checkbox"] {
+    .save-check input[type="checkbox"] {
       width: 16px;
       height: 16px;
       accent-color: var(--accent);
       cursor: pointer;
-      flex-shrink: 0;
     }
 
-    /* LGPD consent — quiet fine-print row, functional size (14). */
-    .consent-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      cursor: pointer;
-      text-transform: none;
-      letter-spacing: 0;
-      font-weight: 400;
-    }
-
-    .consent-row input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-      cursor: pointer;
-      flex-shrink: 0;
-      margin-top: 3px;
-    }
-
-    .consent-row span {
-      font-size: 14px;
-      font-weight: 400;
-      color: var(--text-secondary);
-      line-height: 1.6;
-    }
+    /* LGPD consent lives in docs/monetization.md, not in the form. */
 
     .voice-list {
       display: flex;
@@ -830,33 +834,24 @@
 
       </form>
 
-      <!-- Voice cloning (v3) -->
+      <!-- Voice cloning (v3): compact form per operator spec -->
       <div class="card" id="cloneCard">
         <h2 class="card-title">Clonar voz</h2>
-        <p class="card-sub">Envie um áudio de 5–20 segundos (WAV ou MP3) para criar uma voz com a sua voz. Vozes de sessão somem após 24h; marque "salvar para uso futuro" para guardar no servidor.</p>
+        <p class="card-sub">Grave 5–20 segundos em WAV ou MP3 e envie para criar a sua voz.</p>
         <form id="cloneForm" autocomplete="off">
-          <div class="form-group">
-            <label for="cloneFile">Áudio de referência (5–20 s)</label>
+          <div class="clone-row">
+            <span class="clone-label">Áudio de referência:</span>
             <input type="file" id="cloneFile" accept=".wav,.mp3,audio/*" required>
           </div>
-          <div class="form-group">
-            <label for="cloneName">Nome da voz (opcional)</label>
-            <input type="text" id="cloneName" maxlength="64"
-                   placeholder="Minha voz">
-          </div>
-          <div class="form-group">
-            <label class="radio-option option-check">
+          <div class="clone-row">
+            <span class="clone-label">Nome da voz:</span>
+            <input type="text" id="cloneName" maxlength="64" placeholder="Minha voz">
+            <label class="save-check">
               <input type="checkbox" id="clonePersist">
-              <span>Salvar para uso futuro</span>
+              <span>Salvar</span>
             </label>
           </div>
-          <div class="form-group">
-            <label class="consent-row">
-              <input type="checkbox" id="cloneConsent">
-              <span>Autorizo o processamento da minha biometria de voz para gerar o clone (LGPD).</span>
-            </label>
-          </div>
-          <button type="submit" id="cloneSubmit">Criar clone</button>
+          <button type="submit" id="cloneSubmit">Clonar voz</button>
         </form>
       </div>
 
@@ -865,7 +860,6 @@
            state and renders honest hints when empty. -->
       <div class="card" id="myVoicesCard">
         <h2 class="card-title">Minhas vozes</h2>
-        <p class="card-sub">Clones criados com a sua API Key. Vozes de sessão somem em 24 h; salvas permanecem até você excluir.</p>
         <div id="myVoices" class="voice-list"></div>
       </div>
 
@@ -1051,7 +1045,6 @@
       const cloneFileEl = document.getElementById('cloneFile');
       const cloneNameEl = document.getElementById('cloneName');
       const clonePersistEl = document.getElementById('clonePersist');
-      const cloneConsentEl = document.getElementById('cloneConsent');
       const cloneSubmitBtn = document.getElementById('cloneSubmit');
       const myVoicesEl = document.getElementById('myVoices');
 
@@ -1083,7 +1076,7 @@
         const key = apiKeyEl.value.trim();
         myVoicesEl.innerHTML = '';
         if (!key) {
-          appendListHint('Cole sua API Key acima para ver e gerenciar seus clones.');
+          appendListHint('Não há vozes clonadas.');
           return;
         }
         let data;
@@ -1097,14 +1090,14 @@
           if (!r.ok) throw new Error('HTTP ' + r.status);
           data = await r.json();
         } catch (e) {
-          appendListHint('Não foi possível carregar seus clones — confira a API Key e tente novamente.');
+          appendListHint('Não há vozes clonadas.');
           return;
         }
         // This section is strictly the caller's own clones (u_<ULID>);
         // catalog/operator voices live in the main voice picker.
         const clones = (data.voices || []).filter(v => v.voice.startsWith('pocket/u_'));
         if (clones.length === 0) {
-          appendListHint('Nenhum clone ainda — crie o primeiro em “Clonar voz” acima.');
+          appendListHint('Não há vozes clonadas.');
           return;
         }
         for (const v of clones) {
@@ -1156,10 +1149,6 @@
         const key = apiKeyEl.value.trim();
         if (!key) {
           showError('invalid_request', 'API Key é obrigatória.', 'Cole sua chave no campo acima.');
-          return;
-        }
-        if (!cloneConsentEl.checked) {
-          showError('voice_upload_error', 'Consentimento LGPD é obrigatório.', 'Marque a autorização de processamento da biometria de voz antes de criar o clone.');
           return;
         }
         const file = cloneFileEl.files[0];
@@ -1225,7 +1214,7 @@
           showError('network_error', e2.message || 'Erro de rede', 'Verifique sua conexão e tente novamente.');
         } finally {
           cloneSubmitBtn.disabled = false;
-          cloneSubmitBtn.textContent = 'Criar clone';
+          cloneSubmitBtn.textContent = 'Clonar voz';
         }
       });
 

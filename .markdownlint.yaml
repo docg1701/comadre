@@ -1,19 +1,28 @@
 ---
-# Disable line-length rule — documentation lines shouldn't be constrained
+# markdownlint — professional baseline.
+# Everything is ON by default; only documented exceptions are relaxed.
+
+# MD013 line-length OFF: docs carry wide tables, long URLs and CLI one-liners
+# where forced wrapping hurts more than helps. Structural quality is covered
+# by every other rule below (all ON).
 MD013: false
 
-# Allow emphasis used as heading
-MD036: false
-
-# Allow inline HTML for architecture docs
-MD033: false
-
-# Allow multiple top-level headings (some docs need them)
-MD025: false
-
-# Allow trailing punctuation in headings
-MD026: false
-
-# Allow repeated section headings per release (Keep a Changelog)
+# MD024 duplicate headings — CHANGELOG reuses "### Added/Fixed" across
+# releases; sibling-only keeps the rule meaningful elsewhere.
 MD024:
   siblings_only: true
+
+# MD033 inline HTML — architecture docs embed <details>/<sub> where Markdown
+# has no equivalent syntax.
+MD033: false
+
+# MD041 first-line heading — AGENTS.md opens with prose by convention;
+# suppressed per-file at the top of that document when needed.
+MD041: false
+
+# MD060 table column style — enforce padded cells ("| col |") repo-wide.
+MD060:
+  style: padded
+
+# Everything else (headings, lists, bare URLs, emphasis-as-heading,
+# blank lines, fences with language, final newline...) stays ON.
