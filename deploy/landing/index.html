@@ -168,7 +168,7 @@
 
     label {
       display: block;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
       color: var(--text-secondary);
       margin-bottom: 8px;
@@ -230,7 +230,7 @@
 
     summary {
       cursor: pointer;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
       color: var(--text-secondary);
       text-transform: uppercase;
@@ -417,7 +417,7 @@
     .error-type {
       font-weight: 600;
       text-transform: uppercase;
-      font-size: 11px;
+      font-size: 12px;
       letter-spacing: 0.5px;
       margin-bottom: 4px;
       opacity: 0.8;
@@ -425,7 +425,7 @@
 
     .error-hint {
       margin-top: 6px;
-      font-size: 13px;
+      font-size: 14px;
       opacity: 0.8;
     }
 
@@ -504,7 +504,7 @@
     .footer-bottom {
       border-top: 1px solid var(--border);
       padding-top: 20px;
-      font-size: 13px;
+      font-size: 12px;
       color: var(--text-secondary);
       text-align: center;
     }
@@ -556,7 +556,7 @@
         gap: 6px;
       }
       .info-badge {
-        font-size: 11px;
+        font-size: 12px;
         padding: 5px 10px;
       }
     }
@@ -567,20 +567,23 @@
       margin-top: 24px;
     }
 
+    /* Section headers reuse the field-label language exactly
+       (uppercase, --text-secondary, letter-spacing) so all three cards
+       read as one system. */
     .card-title {
       font-size: 14px;
-      font-weight: 600;
-      color: var(--text);
+      font-weight: 500;
+      color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin: 0 0 4px;
+      margin: 0 0 8px;
     }
 
     .card-sub {
-      font-size: 13px;
+      font-size: 12px;
       color: var(--text-secondary);
       line-height: 1.6;
-      margin: 0 0 20px;
+      margin: -2px 0 20px;
     }
 
     input[type="file"]::file-selector-button {
@@ -591,7 +594,7 @@
       border-radius: 6px;
       color: var(--accent-hover);
       font-family: inherit;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
       cursor: pointer;
       transition: background 0.2s ease;
@@ -601,20 +604,18 @@
       background: rgba(184, 85, 21, 0.22);
     }
 
-    .checkbox-option {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 14px;
-      font-weight: 400;
-      color: var(--text);
-      cursor: pointer;
+    /* Persist toggle reuses the radio-option card component — a checkbox
+       inside gets the same border/hover/checked treatment for free via
+       :has(input:checked). */
+    .option-check {
+      justify-content: flex-start;
       text-transform: none;
       letter-spacing: 0;
+      font-weight: 400;
       margin-bottom: 0;
     }
 
-    .checkbox-option input[type="checkbox"] {
+    .option-check input[type="checkbox"] {
       width: 16px;
       height: 16px;
       accent-color: var(--accent);
@@ -622,8 +623,29 @@
       flex-shrink: 0;
     }
 
-    .checkbox-option.consent {
-      font-size: 13px;
+    /* LGPD consent — quiet fine-print row, functional size (14). */
+    .consent-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      cursor: pointer;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+    }
+
+    .consent-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      flex-shrink: 0;
+      margin-top: 3px;
+    }
+
+    .consent-row span {
+      font-size: 14px;
+      font-weight: 400;
       color: var(--text-secondary);
       line-height: 1.6;
     }
@@ -635,16 +657,17 @@
     }
 
     .voice-list-empty {
-      font-size: 13px;
+      font-size: 14px;
       color: var(--text-secondary);
-      padding: 4px 2px;
+      padding: 2px 0;
     }
 
+    /* Rows mirror the input/select chrome (bg, border, radius, padding). */
     .voice-row {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 10px 14px;
+      padding: 12px 14px;
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -657,13 +680,16 @@
       word-break: break-all;
     }
 
+    /* Badge = the info-badge pill vocabulary. */
     .voice-badge {
-      font-size: 11px;
-      font-weight: 500;
-      padding: 3px 10px;
-      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
       background: var(--surface-2);
       border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
       color: var(--text-secondary);
       white-space: nowrap;
     }
@@ -674,14 +700,16 @@
       background: rgba(78, 234, 187, 0.08);
     }
 
+    /* Delete = ghost button in the download-btn mold, error-tinted. */
     .voice-delete {
-      font-size: 13px;
-      padding: 6px 12px;
-      border: 1px solid rgba(240, 108, 142, 0.35);
-      border-radius: 6px;
+      padding: 8px 14px;
       background: transparent;
+      border: 1px solid rgba(240, 108, 142, 0.35);
+      border-radius: 8px;
       color: var(--error);
       font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
       cursor: pointer;
       transition: background 0.2s ease, border-color 0.2s ease;
     }
@@ -817,13 +845,13 @@
                    placeholder="Minha voz">
           </div>
           <div class="form-group">
-            <label class="checkbox-option">
+            <label class="radio-option option-check">
               <input type="checkbox" id="clonePersist">
               <span>Salvar para uso futuro</span>
             </label>
           </div>
           <div class="form-group">
-            <label class="checkbox-option consent">
+            <label class="consent-row">
               <input type="checkbox" id="cloneConsent">
               <span>Autorizo o processamento da minha biometria de voz para gerar o clone (LGPD).</span>
             </label>
