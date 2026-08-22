@@ -17,7 +17,6 @@ import contextlib
 import hashlib
 import io
 import re
-import shutil
 import subprocess
 import wave
 from collections import OrderedDict
@@ -39,6 +38,7 @@ from comadre.exceptions import (
     VoiceDeleteError,
     VoiceLimitError,
     VoiceNotFoundError,
+    VoiceUnreadableError,
     VoiceUploadError,
 )
 from comadre.logging import get_logger
@@ -142,6 +142,7 @@ class PocketEngine:
         temperature: float,
         *,
         sigla_spacing: bool = True,
+        eos_threshold: float = -2.0,
     ) -> None:
         """Load the pocket-tts model from a local config YAML.
 
@@ -153,14 +154,18 @@ class PocketEngine:
         torch.set_num_threads(threads)
         startup_logger.info(
             "Loading pocket-tts model (config=%s, threads=%d, quantize=%s, "
-            "temperature=%.2f)...",
+            "temperature=%.2f, eos_threshold=%.2f)...",
             config_path,
             threads,
             quantize,
             temperature,
+            eos_threshold,
         )
         self._model = TTSModel.load_model(
-            config=config_path, quantize=quantize, temp=temperature
+            config=config_path,
+            quantize=quantize,
+            temp=temperature,
+            eos_threshold=eos_threshold,
         )
         startup_logger.info(
             "pocket-tts model loaded (sample_rate=%d)", self._model.sample_rate
@@ -290,6 +295,34 @@ def _parse_voice(voice_name: str) -> str:
             ),
         )
     return name
+
+
+def _transcode_to_wav(src: Path, dst: Path) -> None:
+    """Transcode any soundfile-readable upload into PCM WAV 24 kHz mono."""
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(dst),
+        ],
+        capture_output=True,
+        timeout=60,
+    )
+    if result.returncode != 0 or not dst.is_file() or dst.stat().st_size == 0:
+        stderr = result.stderr.decode(errors="replace")[-300:]
+        raise VoiceUnreadableError() from RuntimeError(
+            f"ffmpeg transcode failed for {src.name}: {stderr}"
+        )
 
 
 def _samples_to_wav(samples: NDArray[np.float32], sample_rate: int) -> bytes:
@@ -757,7 +790,12 @@ class VoiceRegistry:
         if persist:
             ref_path = self._pocket_dir / f"{name}.wav"
             self._pocket_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, ref_path)
+            # Persist a REAL PCM WAV: pocket_tts.audio_read dispatches on the
+            # .wav suffix to the stdlib wave module (RIFF only, no fallback),
+            # so a raw copy of an mp3/webm upload would be unreadable on any
+            # later state regeneration. Transcode also normalizes rate/channels.
+            _transcode_to_wav(path, ref_path)
+            state = self._engine.get_state_for_audio_prompt(ref_path, truncate=True)
             export_model_state(state, self._pocket_dir / f"{name}.safetensors")
             voice_storage.write_meta(
                 self._pocket_dir,

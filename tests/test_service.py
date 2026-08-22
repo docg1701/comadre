@@ -8,6 +8,7 @@ chains, and voice-name parse rules (traversal rejection, u_ ULID shape).
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -230,3 +231,34 @@ def test_voice_registry_smoke_constructs_from_empty_dir(
     registry = VoiceRegistry(mock_engine, tmp_path, settings)  # type: ignore[arg-type]
     assert registry.available_voices() == []
     assert registry.engine_status()["pocket"]["loaded"] is True
+
+
+def test_load_model_passes_eos_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POCKET_EOS_THRESHOLD must reach TTSModel.load_model — the upstream
+    default (-4.0) truncates short pt-BR phrases (regression: 0.48s output)."""
+
+    from comadre.service import PocketEngine
+
+    captured: dict[str, object] = {}
+
+    class FakeModel:
+        sample_rate = 24000
+
+        @classmethod
+        def load_model(cls, **kwargs: object) -> FakeModel:
+            captured.update(kwargs)
+            return cls()
+
+    monkeypatch.setattr("comadre.service.TTSModel", FakeModel)
+    cfg = Path("/tmp/nonexistent.yaml")
+    engine = PocketEngine()
+    engine.load_model(
+        cfg,
+        threads=2,
+        quantize=False,
+        temperature=0.7,
+        sigla_spacing=True,
+        eos_threshold=-2.0,
+    )
+    assert captured["eos_threshold"] == -2.0
+    assert captured["temp"] == 0.7

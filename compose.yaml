@@ -55,6 +55,9 @@ services:
       POCKET_THREADS: "${POCKET_THREADS:-4}"
       POCKET_QUANTIZE: "${POCKET_QUANTIZE:-false}"
       POCKET_TEMPERATURE: "${POCKET_TEMPERATURE:-0.7}"
+      # -2.0: upstream default (-4.0) truncates short pt-BR phrases (~0.5s,
+      # EOS fires early). Measured on production VPS 2026-08-22.
+      POCKET_EOS_THRESHOLD: "${POCKET_EOS_THRESHOLD:--2.0}"
       POCKET_SIGLA_SPACING: "${POCKET_SIGLA_SPACING:-true}"
       # Voice cloning quotas (v3)
       VOICE_UPLOAD_MAX_MB: "${VOICE_UPLOAD_MAX_MB:-10}"

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Short pt-BR phrases truncated to ~0.5 s** — pocket-tts's EOS detector
+  (upstream threshold `-4.0`) fired early on short inputs and the auto tail
+  (~3 frames) cut the ending mid-word, in any voice. New
+  `POCKET_EOS_THRESHOLD` (default `-2.0`, measured on production VPS:
+  "Que voz é essa?" 0.48 s → 0.96–1.36 s full audio, medium/long phrases
+  unaffected).
+- **Persisted clone references were not real WAV files** — uploads were
+  raw-copied with a `.wav` name, so an mp3/webm payload produced a
+  non-RIFF file that `pocket_tts.audio_read` cannot open on later state
+  regeneration. Uploads are now transcoded to PCM WAV 24 kHz mono via
+  ffmpeg before persisting.
+
 ### Changed
 
 - **Agent tooling migrated from Claude Code to the DeepSeek Harness.**

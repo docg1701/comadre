@@ -230,6 +230,16 @@ class Settings(RegistrySettings):
         ge=0,
         description="Generation temperature (the pocket-tts default)",
     )
+    pocket_eos_threshold: float = Field(
+        default=-2.0,
+        description=(
+            "EOS detection threshold. The upstream default (-4.0) fires "
+            "end-of-speech early on short pt-BR phrases, truncating them to "
+            "~0.5s. -2.0 makes EOS harder to trigger; measured on the "
+            "production VPS: short 0.96-1.36s (was 0.48s cut mid-word), "
+            "medium/long unaffected, quiet tails."
+        ),
+    )
     pocket_sigla_spacing: bool = Field(
         default=True,
         description=(

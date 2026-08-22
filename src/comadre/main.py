@@ -204,6 +204,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             quantize=settings.pocket_quantize,
             temperature=settings.pocket_temperature,
             sigla_spacing=settings.pocket_sigla_spacing,
+            eos_threshold=settings.pocket_eos_threshold,
         )
 
         # Phase 6: Warm up with the default catalog voice state

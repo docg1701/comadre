@@ -54,6 +54,17 @@ def test_operator_wav_drop_visible_without_restart(
     assert "pocket/lateop" not in registry.available_voices()
 
 
+def _fake_transcode(src: Path, dst: Path) -> None:
+    """Stand-in for _transcode_to_wav: emits a minimal valid PCM WAV."""
+    import wave
+
+    with wave.open(str(dst), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x00\x00" * 24000)
+
+
 def _add_wav(
     pocket_dir: Path, name: str, *, meta: dict[str, object] | None = None
 ) -> None:
@@ -127,7 +138,10 @@ def test_model_hash_mismatch_reencodes_from_wav(
     registry, pocket_dir, _settings = registry_env
     _add_wav(pocket_dir, "galvani", meta={"model_hash": "stale-hash"})
     (pocket_dir / "galvani.safetensors").write_bytes(b"old-state")
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         registry.resolve("galvani")
     registry._engine.get_state_for_audio_prompt.assert_called_once_with(
         pocket_dir / "galvani.wav", truncate=True
@@ -155,7 +169,10 @@ def test_ephemeral_ttl_sweep_idle_and_absolute(
 ) -> None:
     """Idle TTL and absolute TTL both evict; a fresh voice survives."""
     registry, _pocket_dir, _settings = registry_env
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         registry.create_from_upload(
             Path("fake.wav"),
             key_id="key1",
@@ -176,7 +193,10 @@ def test_ephemeral_per_key_max(
 ) -> None:
     """A 6th ephemeral for the same key raises VoiceLimitError."""
     registry, _pocket_dir, _settings = registry_env
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         for _ in range(5):
             registry.create_from_upload(
                 Path("fake.wav"),
@@ -202,7 +222,10 @@ def test_ephemeral_global_lru_cap_evicts_oldest(
     """Cross-key global cap evicts the least-recently-used ephemeral."""
     settings = _settings(tmp_path, fernet_key, voice_ephemeral_global_max=3)
     registry = VoiceRegistry(_make_engine(), tmp_path, settings)  # type: ignore[arg-type]
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         for i in range(4):
             registry.create_from_upload(
                 Path("fake.wav"),
@@ -224,7 +247,10 @@ def test_persisted_create_writes_trio_and_stored_quota(
     registry, pocket_dir, settings = registry_env
     src = pocket_dir.parent / "upload.wav"
     src.write_bytes(b"wav-bytes")
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         info = registry.create_from_upload(
             src,
             key_id="key1",
@@ -267,7 +293,10 @@ def test_delete_own_only(registry_env: tuple[VoiceRegistry, Path, Settings]) -> 
     _add_wav(pocket_dir, "operadora")  # operator voice: no customer_id
     src = pocket_dir.parent / "upload.wav"
     src.write_bytes(b"wav-bytes")
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         info = registry.create_from_upload(
             src,
             key_id="key1",
@@ -297,7 +326,10 @@ def test_list_for_visibility_rules(
     _add_wav(pocket_dir, "operadora", meta={"display_name": "Operadora"})
     src = pocket_dir.parent / "upload.wav"
     src.write_bytes(b"wav-bytes")
-    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+    with (
+        patch("comadre.service._audio_duration_seconds", return_value=5.0),
+        patch("comadre.service._transcode_to_wav", side_effect=_fake_transcode),
+    ):
         stored_a = registry.create_from_upload(
             src,
             key_id="key1",
@@ -346,3 +378,44 @@ def test_voice_storage_delete_by_customer_purges_only_that_customer(
     assert voice_storage.count_by_customer(pocket_dir, "cust_a") == 0
     assert voice_storage.count_by_customer(pocket_dir, "cust_b") == 1
     assert (pocket_dir / "operadora.wav").is_file()
+
+
+def test_persisted_reference_is_real_riff_wav(
+    registry_env: tuple[VoiceRegistry, Path, Settings],
+    tmp_path: Path,
+) -> None:
+    """Regression: uploads were raw-copied with a .wav name, so an mp3/webm
+    payload produced a non-RIFF file that pocket_tts.audio_read cannot open
+    on later state regeneration. The persisted reference must be a genuine
+    PCM WAV (real ffmpeg transcode, no mocks)."""
+    import struct
+    import wave
+
+    registry, pocket_dir, _settings = registry_env
+    src = tmp_path / "upload.mp3"
+    # Build a real mono 24 kHz WAV payload, then name it .mp3 to simulate a
+    # browser upload whose bytes are not RIFF.
+    frames = b"".join(
+        struct.pack("<h", int(6000 * ((i % 80) / 80 - 0.5) * 2)) for i in range(24000)
+    )
+    with wave.open(str(src), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(frames)
+
+    with patch("comadre.service._audio_duration_seconds", return_value=5.0):
+        info = registry.create_from_upload(
+            src,
+            key_id="k1",
+            customer_id="c1",
+            display_name=None,
+            persist=True,
+        )
+    name = info.voice.removeprefix("pocket/")
+    ref = pocket_dir / f"{name}.wav"
+    assert ref.read_bytes()[:4] == b"RIFF"
+    # the persisted artifact is readable by the stdlib wave module —
+    # exactly what pocket_tts.audio_read requires for .wav suffixes
+    with wave.open(str(ref), "rb") as wf:
+        assert wf.getframerate() == 24000
