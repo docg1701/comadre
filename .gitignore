@@ -76,4 +76,4 @@ models/
 .pi/
 
 # Operator key material — never commit
-.galvani-key.txt
+usuario-teste.txt
