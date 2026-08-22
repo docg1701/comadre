@@ -665,6 +665,29 @@ class VoiceRegistry:
                 break
         return state
 
+    def _refresh_files(self) -> None:
+        """Re-scan /voices/pocket so operator WAV drops appear without a
+        restart (documented voice-management contract). Cheap: small dir
+        glob + meta reads. Keeps the virtual rafael entry. Callers that
+        hold the FIFO lock (resolve) and lock-free readers (health) both
+        use this; the dict rebind is atomic under the GIL.
+        """
+        files: dict[str, voice_storage.VoiceFileEntry] = {
+            entry.name: entry for entry in voice_storage.scan_entries(self._pocket_dir)
+        }
+        if "rafael" not in files and self._rafael_path.is_file():
+            files["rafael"] = self._files.get("rafael") or voice_storage.VoiceFileEntry(
+                name="rafael",
+                ref_path=self._rafael_path,
+                state_path=self._rafael_path,
+                meta={
+                    "display_name": "Rafael",
+                    "model_hash": self._model_hash,
+                },
+            )
+        # Deleted-on-disk entries must vanish from the live map too.
+        self._files = files
+
     def resolve(self, name: str, *, key_id: str | None = None) -> dict[str, Any]:
         """Resolve a bare voice name to a model state (LRU-cached)."""
         if key_id is not None:
@@ -674,6 +697,10 @@ class VoiceRegistry:
                 return ephemeral.state
 
         entry = self._files.get(name)
+        if entry is None:
+            # Miss may mean an operator dropped a WAV after startup.
+            self._refresh_files()
+            entry = self._files.get(name)
         if entry is None:
             raise VoiceNotFoundError(
                 voice=f"{_VOICE_PREFIX}{name}", available=self.available_voices()
@@ -807,6 +834,10 @@ class VoiceRegistry:
         (no customer_id meta) cannot be deleted via the API.
         """
         entry = self._files.get(name)
+        if entry is None:
+            # Miss may mean an operator dropped a WAV after startup.
+            self._refresh_files()
+            entry = self._files.get(name)
         if entry is not None:
             if entry.meta.get("customer_id") != customer_id:
                 raise VoiceDeleteError(f"{_VOICE_PREFIX}{name}")
@@ -825,6 +856,7 @@ class VoiceRegistry:
 
         Other customer clones are never listed (API spec section 2.2).
         """
+        self._refresh_files()
         result: list[VoiceInfo] = []
         for name, entry in sorted(self._files.items()):
             owner = entry.meta.get("customer_id")
@@ -853,6 +885,7 @@ class VoiceRegistry:
 
     def available_voices(self) -> list[str]:
         """Filesystem pocket voices only (names only — no PII in /health)."""
+        self._refresh_files()
         return [f"{_VOICE_PREFIX}{name}" for name in sorted(self._files)]
 
     def engine_status(self) -> dict[str, dict[str, object]]:

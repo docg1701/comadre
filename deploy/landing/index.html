@@ -860,10 +860,12 @@
         </form>
       </div>
 
-      <!-- My voices (v3) -->
+      <!-- My voices (v3): the caller's own clones only. Catalog/operator
+           voices live in the main picker above — this list is personal
+           state and renders honest hints when empty. -->
       <div class="card" id="myVoicesCard">
         <h2 class="card-title">Minhas vozes</h2>
-        <p class="card-sub">Vozes do operador + seus clones (lista obtida com a sua API Key).</p>
+        <p class="card-sub">Clones criados com a sua API Key. Vozes de sessão somem em 24 h; salvas permanecem até você excluir.</p>
         <div id="myVoices" class="voice-list"></div>
       </div>
 
@@ -1070,70 +1072,80 @@
         }
       }
 
+      function appendListHint(text) {
+        const hint = document.createElement('div');
+        hint.className = 'voice-list-empty';
+        hint.textContent = text;
+        myVoicesEl.appendChild(hint);
+      }
+
       async function refreshMyVoices() {
         const key = apiKeyEl.value.trim();
-        if (!key) { myVoicesEl.innerHTML = ''; return; }
+        myVoicesEl.innerHTML = '';
+        if (!key) {
+          appendListHint('Cole sua API Key acima para ver e gerenciar seus clones.');
+          return;
+        }
+        let data;
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 10000);
         try {
-          const ac = new AbortController();
-          setTimeout(() => ac.abort(), 10000);
           const r = await fetch('/v1/voices', {
             headers: { 'Authorization': 'Bearer ' + key },
             signal: ac.signal,
           });
-          if (!r.ok) { myVoicesEl.innerHTML = ''; return; }
-          const data = await r.json();
-          myVoicesEl.innerHTML = '';
-          const voices = data.voices || [];
-          if (voices.length === 0) {
-            const empty = document.createElement('div');
-            empty.className = 'voice-list-empty';
-            empty.textContent = 'Nenhuma voz ainda — crie um clone acima ou use as vozes do operador no seletor.';
-            myVoicesEl.appendChild(empty);
-            return;
-          }
-          for (const v of voices) {
-            const row = document.createElement('div');
-            row.className = 'voice-row';
-            const label = document.createElement('span');
-            label.className = 'voice-label';
-            label.textContent = v.display_name
-              ? v.display_name + ' (' + v.voice + ')'
-              : v.voice;
-            row.appendChild(label);
-            const badge = document.createElement('span');
-            badge.className = 'voice-badge' + (v.persisted ? ' saved' : '');
-            badge.textContent = v.persisted ? 'salva' : 'sessão';
-            row.appendChild(badge);
-            const isOwnClone = v.voice.startsWith('pocket/u_');
-            if (isOwnClone) {
-              const del = document.createElement('button');
-              del.type = 'button';
-              del.className = 'voice-delete';
-              del.textContent = 'Excluir';
-              del.addEventListener('click', async () => {
-                try {
-                  const dr = await fetch('/v1/voices/' + encodeURIComponent(v.voice), {
-                    method: 'DELETE',
-                    headers: { 'Authorization': 'Bearer ' + key },
-                  });
-                  if (dr.status === 204) {
-                    removeVoiceOption(v.voice);
-                    await refreshMyVoices();
-                  } else {
-                    let err = { error: { message: 'Falha ao excluir', type: 'voice_delete_error', hint: '' } };
-                    try { err = await dr.json(); } catch { /* keep default */ }
-                    const e = err.error || err;
-                    showError(e.type, e.message, e.hint);
-                  }
-                } catch (e2) {
-                  showError('network_error', e2.message || 'Erro de rede', '');
-                }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          data = await r.json();
+        } catch (e) {
+          appendListHint('Não foi possível carregar seus clones — confira a API Key e tente novamente.');
+          return;
+        }
+        // This section is strictly the caller's own clones (u_<ULID>);
+        // catalog/operator voices live in the main voice picker.
+        const clones = (data.voices || []).filter(v => v.voice.startsWith('pocket/u_'));
+        if (clones.length === 0) {
+          appendListHint('Nenhum clone ainda — crie o primeiro em “Clonar voz” acima.');
+          return;
+        }
+        for (const v of clones) {
+          const row = document.createElement('div');
+          row.className = 'voice-row';
+          const label = document.createElement('span');
+          label.className = 'voice-label';
+          label.textContent = v.display_name
+            ? v.display_name + ' (' + v.voice + ')'
+            : v.voice;
+          row.appendChild(label);
+          const badge = document.createElement('span');
+          badge.className = 'voice-badge' + (v.persisted ? ' saved' : '');
+          badge.textContent = v.persisted ? 'salva' : 'sessão';
+          row.appendChild(badge);
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'voice-delete';
+          del.textContent = 'Excluir';
+          del.addEventListener('click', async () => {
+            try {
+              const dr = await fetch('/v1/voices/' + encodeURIComponent(v.voice), {
+                method: 'DELETE',
+                headers: { 'Authorization': 'Bearer ' + key },
               });
-              row.appendChild(del);
+              if (dr.status === 204) {
+                removeVoiceOption(v.voice);
+                await refreshMyVoices();
+              } else {
+                let err = { error: { message: 'Falha ao excluir', type: 'voice_delete_error', hint: '' } };
+                try { err = await dr.json(); } catch { /* keep default */ }
+                const e = err.error || err;
+                showError(e.type, e.message, e.hint);
+              }
+            } catch (e2) {
+              showError('network_error', e2.message || 'Erro de rede', '');
             }
-            myVoicesEl.appendChild(row);
-          }
-        } catch (e) { /* network — leave the list as-is */ }
+          });
+          row.appendChild(del);
+          myVoicesEl.appendChild(row);
+        }
       }
 
       apiKeyEl.addEventListener('change', refreshMyVoices);

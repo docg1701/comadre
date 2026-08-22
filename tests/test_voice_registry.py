@@ -36,11 +36,22 @@ def _make_engine() -> MagicMock:
     return engine
 
 
-def _rescan(registry: VoiceRegistry, pocket_dir: Path) -> None:
-    """Re-scan the filesystem into the registry (new files were added)."""
-    registry._files.clear()
-    for entry in voice_storage.scan_entries(pocket_dir):
-        registry._files[entry.name] = entry
+def test_operator_wav_drop_visible_without_restart(
+    registry_env: tuple[VoiceRegistry, Path, Settings],
+) -> None:
+    """Operator drops a .wav after startup -> it shows up in
+    available_voices() and resolves, no restart (voice-management doc)."""
+    registry, pocket_dir, _settings = registry_env
+    assert "pocket/lateop" not in registry.available_voices()
+    _add_wav(pocket_dir, "lateop")
+    assert "pocket/lateop" in registry.available_voices()
+    state = registry.resolve("lateop")
+    assert state  # lazy materialization kicked in on the resolve miss
+    # Operator voices are not API-deletable; removal is filesystem-side.
+    with pytest.raises(VoiceDeleteError):
+        registry.delete("lateop", key_id="k", customer_id="c")
+    voice_storage.delete_entries(pocket_dir, "lateop")
+    assert "pocket/lateop" not in registry.available_voices()
 
 
 def _add_wav(
@@ -72,7 +83,6 @@ def test_scan_and_available_voices(
     _add_wav(pocket_dir, "ana")
     _add_wav(pocket_dir, "bad..name")
     (pocket_dir / "u_not_ulid.wav").write_bytes(b"x")
-    _rescan(registry, pocket_dir)
     assert registry.available_voices() == ["pocket/ana", "pocket/galvani"]
 
 
@@ -83,7 +93,6 @@ def test_resolve_loads_state_from_safetensors(
     registry, pocket_dir, _settings = registry_env
     _add_wav(pocket_dir, "galvani", meta={"model_hash": registry.model_hash})
     (pocket_dir / "galvani.safetensors").write_bytes(b"state")
-    _rescan(registry, pocket_dir)
     state = registry.resolve("galvani")
     assert state is registry._engine.get_state_for_audio_prompt.return_value
     registry._engine.get_state_for_audio_prompt.assert_called_once_with(
@@ -98,7 +107,6 @@ def test_lazy_materialization_from_wav_persists_state_and_meta(
     land on disk with the current model_hash."""
     registry, pocket_dir, _settings = registry_env
     _add_wav(pocket_dir, "galvani")
-    _rescan(registry, pocket_dir)
     with patch("comadre.service._audio_duration_seconds", return_value=6.0):
         state = registry.resolve("galvani")
     assert state is registry._engine.get_state_for_audio_prompt.return_value
@@ -118,7 +126,6 @@ def test_model_hash_mismatch_reencodes_from_wav(
     wav instead of loading the outdated state."""
     registry, pocket_dir, _settings = registry_env
     _add_wav(pocket_dir, "galvani", meta={"model_hash": "stale-hash"})
-    _rescan(registry, pocket_dir)
     (pocket_dir / "galvani.safetensors").write_bytes(b"old-state")
     with patch("comadre.service._audio_duration_seconds", return_value=5.0):
         registry.resolve("galvani")
@@ -136,7 +143,6 @@ def test_lru_cap_16(registry_env: tuple[VoiceRegistry, Path, Settings]) -> None:
     registry, pocket_dir, _settings = registry_env
     for i in range(20):
         _add_wav(pocket_dir, f"v{i}", meta={"model_hash": registry.model_hash})
-    _rescan(registry, pocket_dir)
     for i in range(20):
         registry.resolve(f"v{i}")
     assert len(registry._loaded) == 16
@@ -259,7 +265,6 @@ def test_delete_own_only(registry_env: tuple[VoiceRegistry, Path, Settings]) -> 
     foreign clones raise; ephemeral delete is key-scoped."""
     registry, pocket_dir, _settings = registry_env
     _add_wav(pocket_dir, "operadora")  # operator voice: no customer_id
-    _rescan(registry, pocket_dir)
     src = pocket_dir.parent / "upload.wav"
     src.write_bytes(b"wav-bytes")
     with patch("comadre.service._audio_duration_seconds", return_value=5.0):
@@ -290,7 +295,6 @@ def test_list_for_visibility_rules(
     own stored clones + their own keys ephemeral clones."""
     registry, pocket_dir, _settings = registry_env
     _add_wav(pocket_dir, "operadora", meta={"display_name": "Operadora"})
-    _rescan(registry, pocket_dir)
     src = pocket_dir.parent / "upload.wav"
     src.write_bytes(b"wav-bytes")
     with patch("comadre.service._audio_duration_seconds", return_value=5.0):
