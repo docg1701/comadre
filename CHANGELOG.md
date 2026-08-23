@@ -5,10 +5,26 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.1] — 2026-08-22
+
+### Added
+
+- **Dynamic project version in the landing page footer** — `/health` now
+  includes `version` in the unauthenticated (minimal) envelope, and the
+  landing footer renders it (`v3.0.1`) fetched live from the backend —
+  no hardcoded version string in the HTML.
 
 ### Fixed
 
+- **Customer clones leaked into the public `/health` voice list** —
+  `available_voices()` predated v3 persisted clones and listed every
+  filesystem entry, so unauthenticated `/health` exposed other callers'
+  `pocket/u_<ULID>` clone IDs, and the landing voice picker rendered them
+  raw (coded IDs instead of display names). Customer-owned entries are now
+  excluded from the public catalog (same ownership predicate as
+  `list_for()`/`delete()`); the landing picker merges the caller's own
+  voices with their `display_name` labels when an API key is present and
+  strips them when the key is removed.
 - **Short pt-BR phrases truncated to ~0.5 s** — pocket-tts's EOS detector
   (upstream threshold `-4.0`) fired early on short inputs and the auto tail
   (~3 frames) cut the ending mid-word, in any voice. New

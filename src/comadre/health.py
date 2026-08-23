@@ -42,8 +42,9 @@ def build_minimal_health_response(
 ) -> tuple[dict[str, Any], int]:
     """Build minimal health response for unauthenticated callers.
 
-    Returns only status and voice list — no engine internals,
-    memory, uptime, version, or queue depth.
+    Returns status, voice list, and version — no engine internals,
+    memory, uptime, or queue depth. The version is public information
+    (GitHub releases) and feeds the landing page footer.
     """
     if ready:
         status = HealthStatus.healthy
@@ -55,6 +56,7 @@ def build_minimal_health_response(
     body: dict[str, Any] = {
         "status": str(status),
         "voices": router.available_voices(),
+        "version": __version__,
     }
     return body, status_code
 

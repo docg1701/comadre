@@ -885,6 +885,7 @@
       </div>
       <div class="footer-bottom">
         <span>&copy; 2026 PixelOddity Enterprises</span>
+        <span id="appVersion"></span>
         <span>TTS: Kyutai Pocket TTS (cc-by-4.0)</span>
       </div>
     </div>
@@ -932,6 +933,8 @@
           const r = await fetch('/health', { signal: ac.signal });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const data = await r.json();
+          const verEl = document.getElementById('appVersion');
+          if (verEl && data.version) verEl.textContent = 'v' + data.version;
           const voices = (data.voices || [])
             .filter(isVoiceAllowed)
             .slice()

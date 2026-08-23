@@ -551,6 +551,7 @@ def create_app() -> FastAPI:
             minimal: dict[str, Any] = {
                 "status": "warming_up",
                 "voices": [],
+                "version": __version__,
             }
             if authenticated:
                 minimal.update(

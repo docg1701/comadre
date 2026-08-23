@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import AsyncClient
 
+import comadre
 from comadre.health import build_health_response, build_minimal_health_response
 
 _FULL_KEYS = [
@@ -53,7 +54,8 @@ def test_health_response_shapes_full_vs_minimal_and_503_when_warming(
 
     minimal, mini_status = build_minimal_health_response(router=mock_router, ready=True)
     assert mini_status == 200
-    assert set(minimal.keys()) == {"status", "voices"}
+    assert set(minimal.keys()) == {"status", "voices", "version"}
+    assert minimal["version"] == comadre.__version__
     assert minimal["status"] == "healthy"
 
     warming, warming_status = build_minimal_health_response(
@@ -69,7 +71,7 @@ async def test_health_endpoint_minimal_unauth_full_auth(
     """End-to-end smoke: unauth → minimal shape; auth → full shape."""
     response = await client.get("/health")
     assert response.status_code == 200
-    assert set(response.json().keys()) == {"status", "voices"}
+    assert set(response.json().keys()) == {"status", "voices", "version"}
 
     response = await client.get("/health", headers=auth_headers)
     assert response.status_code == 200
