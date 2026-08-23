@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-3.0.0-blue" alt="Version 3.0.0">
+  <img src="https://img.shields.io/badge/version-3.0.7-blue" alt="Version 3.0.7">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-pocket--tts-ff6f00" alt="pocket-tts">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
@@ -89,8 +89,9 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
 
 **Voice cloning — `POST /v1/voices` (multipart upload)**
 
-1. The uploaded audio is authenticated, rate-limited, then validated: WAV or
-   MP3, 3–30 s, up to 10 MB.
+1. The uploaded audio is authenticated, rate-limited, then validated:
+   any soundfile-readable format (WAV, MP3, OGG/Opus — WhatsApp voice notes
+   work as-is — or FLAC), 3–30 s, up to 10 MB.
 2. A voice embedding is extracted from the sample.
 3. If `persist=true`, the clone is saved to `/voices/pocket/u_<ULID>/`
    (`.safetensors` state + reference `.wav` + metadata `.json`); otherwise it
@@ -129,6 +130,11 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
   `HF_TOKEN`; afterwards `HF_HUB_OFFLINE=1` makes generation fully offline.
 - **CPU-only** — 4 vCPU / 8 GB RAM VPS; torch CPU wheel via the pytorch-cpu
   index; optional int8 quantization (`POCKET_QUANTIZE`).
+- **Measured performance** — sustained ~15 audios/min on the default
+  single-replica 4 vCPU deployment (~22k audios/day), scaling to ~30/min with
+  2 replicas on an 8 vCPU host; typical-message latency p50 ≈ 2–6 s.
+  See [docs/cost-comparison-report.md](docs/cost-comparison-report.md) and
+  [docs/replica-scaling-report.md](docs/replica-scaling-report.md).
 - **Single FIFO queue** per instance (`asyncio.Lock`) — clone encoding and
   speech share the same queue. Scale horizontally via `deploy.replicas` in
   compose.yaml (Caddy load-balances with `least_conn`).
@@ -226,8 +232,10 @@ empty — that is intentional; the default path is auto-download).
   Why pocket-tts (v3 decision analysis)
 - [docs/pocket-tts-v3-migration-plan.md](docs/pocket-tts-v3-migration-plan.md) —
   The executed migration plan (with the Phase 0 spike record)
-- [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — v2-era
-  scaling/cost numbers (a v3 addendum lands after the production cutover)
+- [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — Measured
+  pocket-tts scaling matrix (1 vs 2 replicas × 4 vs 8 vCPU host)
+- [docs/cost-comparison-report.md](docs/cost-comparison-report.md) — Measured
+  cost & capacity comparison vs credit-based cloud TTS providers
 
 ## Load Testing
 
