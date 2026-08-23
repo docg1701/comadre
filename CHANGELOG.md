@@ -5,6 +5,39 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] — 2026-08-23
+
+### Added
+
+- **MP3 output format** — `response_format: "mp3"` (64 kbps, 24 kHz mono)
+  across the API and the landing page; WhatsApp-compatible fallback.
+- **Per-request sampling controls** — `temperature` (0.1–2.0; lower = more
+  consistent, higher = more expressive) and `seed` (reproducible prosody:
+  same text + voice + seed → identical audio) on `/v1/audio/speech`, with
+  matching controls in the landing demo's advanced options.
+
+### Fixed
+
+- **WhatsApp silent OGG** — OpusHead input sample rate is now the canonical
+  48000 Hz (16 kHz streams attached to WhatsApp played mute).
+- **Clipped first phoneme** — 500 ms of lead silence prepended to every
+  generated audio (`adelay` in both final encode paths).
+- **Download names** — landing saves as `comadre_<voice>_<timestamp>.<ext>`
+  and the API Content-Disposition echoes `comadre-<voice>.<fmt>` instead of
+  a fixed name.
+- **Decimal commas / dot-grouped thousands stalled generation** — `10,50`
+  used to expand to glued `dez,cinquenta` and `1.234` to `um.duzentos…`
+  (out-of-distribution punctuation for pocket-tts); both now read naturally.
+- **pt-BR preprocessing gaps** — `9h30`/`9h` times, short dates `12/05`,
+  percent `50%`, the `24/7` idiom, masked phone numbers read digit-by-digit,
+  emoji/URL/residual-slash sanitization. Full audit in
+  [docs/preprocessing-fix-plan.md](docs/preprocessing-fix-plan.md).
+
+### Removed
+
+- Obsolete v2-era docs: migration feasibility/plan, pentest reports,
+  deploy report, stale cost-comparison PDF (history preserved in git).
+
 ## [3.0.7] — 2026-08-23
 
 ### Fixed
