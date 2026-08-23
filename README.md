@@ -180,7 +180,9 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
 - Docker and Docker Compose v2 (Caddy handles external access on ports 80/443)
 - Optional: a HuggingFace account + token for the one-time gated-model
   download (accept the terms at <https://huggingface.co/kyutai/pocket-tts>)
-- Optional: a 5-20 second WAV/MP3 recording to clone your own voice
+- Optional: a 5-20 second WAV/MP3 recording to clone your own voice —
+  [docs/voice-reference-script.md](docs/voice-reference-script.md) has a
+  ready-to-read pt-BR script engineered for clone quality
 
 ## Deployment
 
@@ -209,6 +211,8 @@ empty — that is intentional; the default path is auto-download).
   Environment variables reference
 - [docs/voice-management.md](docs/voice-management.md) — Voice artifacts,
   cloning quotas/TTLs, operator provisioning, LGPD verbs
+- [docs/voice-reference-script.md](docs/voice-reference-script.md) —
+  Read-aloud pt-BR script for recording cloning reference audio
 - [docs/monetization.md](docs/monetization.md) — Billing tiers + LGPD operator
   handbook (incl. voice-clone biometrics)
 - [docs/rate-limiting.md](docs/rate-limiting.md) — Per-key algorithm, bucket
