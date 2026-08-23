@@ -180,7 +180,8 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
 - Docker and Docker Compose v2 (Caddy handles external access on ports 80/443)
 - Optional: a HuggingFace account + token for the one-time gated-model
   download (accept the terms at <https://huggingface.co/kyutai/pocket-tts>)
-- Optional: a 5-20 second WAV/MP3 recording to clone your own voice —
+- Optional: a 5-20 second recording to clone your own voice — WAV, MP3,
+  OGG/Opus (WhatsApp voice notes work as-is), or FLAC;
   [docs/voice-reference-script.md](docs/voice-reference-script.md) has a
   ready-to-read pt-BR script engineered for clone quality
 

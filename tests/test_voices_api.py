@@ -29,6 +29,15 @@ def _wav_bytes(seconds: float, sample_rate: int = 24000) -> bytes:
     return buf.getvalue()
 
 
+def _ogg_opus_bytes(seconds: float = 5.0) -> bytes:
+    """A real OGG/Opus file (WhatsApp voice-note shape) via libsndfile."""
+    import soundfile as sf
+
+    buf = io.BytesIO()
+    sf.write(buf, [0.0] * int(seconds * 48000), 48000, format="OGG", subtype="OPUS")
+    return buf.getvalue()
+
+
 def _upload(
     seconds: float = 5.0, *, filename: str = "voz.wav", data: bytes | None = None
 ) -> dict[str, Any]:
@@ -106,6 +115,31 @@ async def test_create_voice_201_persist_true(
     assert body["persisted"] is True
     assert body["expires_at"] is None
     assert voice_registry.create_from_upload.call_args.kwargs["persist"] is True
+
+
+async def test_create_voice_accepts_ogg_opus(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    voice_registry: MagicMock,
+) -> None:
+    """OGG/Opus (WhatsApp voice-note format) passes validation end to end.
+
+    Regression pin for the libsndfile Opus decoder in the pinned soundfile
+    wheel — a dependency bump that silently drops it must fail here.
+    """
+    voice_registry.create_from_upload.return_value = VoiceInfo(
+        voice="pocket/u_01J2K4M6N8P0Q2R4S6",
+        display_name=None,
+        persisted=False,
+        created_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
+    )
+    response = await client.post(
+        "/v1/voices",
+        files={"file": ("nota-de-voz.ogg", _ogg_opus_bytes(5.0), "audio/ogg")},
+        headers=auth_headers,
+    )
+    assert response.status_code == 201
 
 
 @pytest.mark.parametrize(

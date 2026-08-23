@@ -59,7 +59,7 @@ Form fields:
 
 | Field | Type | Required | Constraints |
 |---|---|---|---|
-| `file` | file | yes | wav or mp3 (anything libsndfile reads); ≤ `VOICE_UPLOAD_MAX_MB` (10 MB) |
+| `file` | file | yes | WAV, MP3, OGG (Vorbis/Opus), or FLAC — anything libsndfile reads; ≤ `VOICE_UPLOAD_MAX_MB` (10 MB) |
 | `display_name` | string | no | ≤ 64 chars; alphanumeric, spaces, `-` `_` and apostrophe |
 | `persist` | bool | no | default `false`; values `true/false/1/0` |
 

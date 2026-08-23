@@ -15,7 +15,7 @@ clone. One continuous take with steady energy beats several stitched ones.
 | Parameter    | Value                              |
 | ------------ | ---------------------------------- |
 | Duration     | 15-20 s recommended (3 s min, 30 s hard max — server truncates) |
-| Format       | WAV or MP3, ≤ 10 MB, mono or stereo |
+| Format       | WAV, MP3, OGG/Opus (WhatsApp voice notes), or FLAC; ≤ 10 MB; mono or stereo |
 | Speaker      | One person only, no music, no second voices |
 
 ## Before you record

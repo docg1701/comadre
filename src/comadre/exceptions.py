@@ -72,7 +72,8 @@ class VoiceUploadError(ComadreError):
             status_code=400,
             error_type="voice_upload_error",
             hint=(
-                "Upload a WAV or MP3 reference audio of 3-30 seconds"
+                "Upload a WAV, MP3, OGG (Opus/Vorbis — WhatsApp voice notes),"
+                " or FLAC reference audio of 3-30 seconds"
                 " (5-20 seconds recommended for best results)."
             ),
         )

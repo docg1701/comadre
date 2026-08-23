@@ -5,6 +5,20 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.7] — 2026-08-23
+
+### Fixed
+
+- **Upload-format messaging caught up with reality** — the server never
+  restricted reference audio to WAV/MP3: validation is libsndfile-based and
+  OGG Vorbis/Opus (the WhatsApp voice-note format) plus FLAC already passed.
+  Every surface that claimed "wav/mp3 only" now tells the truth: the
+  `VoiceUploadError` hint, README, api-reference, voice-management,
+  troubleshooting, the landing-page copy/`accept` filter/error toast, and
+  the voice reference script. Regression test pins real OGG-Opus upload
+  acceptance end to end so a dependency bump that drops the Opus decoder
+  fails CI.
+
 ## [3.0.6] — 2026-08-23
 
 ### Changed

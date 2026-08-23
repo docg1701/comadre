@@ -197,8 +197,8 @@ pointing at a changing file.
 
 1. 400 `too_short` / `too_long` — keep the reference between 3 and 30 s
    (5-20 s recommended).
-2. 400 `unsupported_format` / `empty_file` — send wav/mp3 with audio
-   content.
+2. 400 `unsupported_format` / `empty_file` — send a decodable audio file
+   (WAV, MP3, OGG Vorbis/Opus, FLAC).
 3. 413 — reduce the file below `VOICE_UPLOAD_MAX_MB` (10 MB).
 4. 422 `unreadable_audio` — the file is corrupt; re-export it.
 5. 429 `voice_limit_error` — delete clones (`DELETE /v1/voices/<name>`)

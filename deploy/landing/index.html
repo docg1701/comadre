@@ -837,11 +837,11 @@
       <!-- Voice cloning (v3): compact form per operator spec -->
       <div class="card" id="cloneCard">
         <h2 class="card-title">Clonar voz</h2>
-        <p class="card-sub">Grave 5–20 segundos em WAV ou MP3 e envie para criar a sua voz.</p>
+        <p class="card-sub">Grave 5–20 segundos em WAV, MP3 ou OGG (áudio do WhatsApp serve) e envie para criar a sua voz.</p>
         <form id="cloneForm" autocomplete="off">
           <div class="clone-row">
             <span class="clone-label">Áudio de referência:</span>
-            <input type="file" id="cloneFile" accept=".wav,.mp3,audio/*" required>
+            <input type="file" id="cloneFile" accept="audio/*,.ogg,.opus,.oga,.flac,.mp3,.wav" required>
           </div>
           <div class="clone-row">
             <span class="clone-label">Nome da voz:</span>
@@ -1165,7 +1165,7 @@
         }
         const file = cloneFileEl.files[0];
         if (!file) {
-          showError('voice_upload_error', 'Selecione um arquivo de áudio.', 'Grave 5–20 segundos e envie em WAV ou MP3.');
+          showError('voice_upload_error', 'Selecione um arquivo de áudio.', 'Grave 5–20 segundos e envie em WAV, MP3 ou OGG (áudio do WhatsApp serve).');
           return;
         }
         const fd = new FormData();
