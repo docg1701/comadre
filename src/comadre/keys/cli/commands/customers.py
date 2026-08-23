@@ -27,12 +27,11 @@ import typer
 from cryptography.fernet import InvalidToken
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
-from comadre import voice_storage
+from comadre import timeutil, voice_storage
 from comadre.config import get_registry_settings
 from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import filter_forbidden_keys, get_cli_actor
-from comadre.keys.cli import _clock
 from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
@@ -576,7 +575,7 @@ def show_cmd(
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
 
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations + resolve target + fetch events.
 
@@ -924,7 +923,7 @@ def update_customer_cmd(
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
 
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 5. Open DB + migrations + mutation. Close in finally + suppress.
 

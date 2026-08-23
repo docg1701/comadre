@@ -45,7 +45,9 @@ subdirectory of `voices_local_dir` and run `deploy-voices.yml`.
 `POST /v1/voices` — multipart `file` (+ optional `display_name`,
 `persist`). Reference audio: min 3 s, recommended 5-20 s, hard max 30 s
 (server truncates), ≤ 10 MB, wav/mp3. LGPD consent is required (the
-landing page enforces it with a checkbox).
+landing page enforces it with a checkbox). For a phonetically balanced
+read-aloud script speakers can use to record their reference, see
+[voice-reference-script.md](voice-reference-script.md).
 
 | Mode | Storage | Lifetime | Quota |
 |---|---|---|---|

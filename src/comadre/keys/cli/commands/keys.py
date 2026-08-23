@@ -23,10 +23,10 @@ import click
 import typer
 from pydantic import ValidationError
 
+from comadre import timeutil
 from comadre.config import RegistrySettings, get_registry_settings
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import days_until, first_charge_date
-from comadre.keys.cli import _clock
 from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
@@ -304,7 +304,7 @@ def issue_key(
 
         # 8. First-charge date (manual only).
         if billing_mode == "manual":
-            today_local = _clock.resolve_today_in_tz(billing_tz)
+            today_local = timeutil.resolve_today_in_tz(billing_tz)
             fc_date = first_charge_date(
                 today=today_local,
                 billing_day=settings.billing_day,
@@ -532,7 +532,7 @@ def list_keys_cmd(
     else:
         trimmed = paid_until_lte.strip()
         if trimmed == "today":
-            resolved_paid = _clock.resolve_today_in_tz(billing_tz).isoformat()
+            resolved_paid = timeutil.resolve_today_in_tz(billing_tz).isoformat()
         else:
             try:
                 parsed = date.fromisoformat(trimmed)
@@ -842,7 +842,7 @@ def update_key_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 6. Open DB + migrations (exit 5).
 
@@ -947,7 +947,7 @@ def rotate_key_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
 
@@ -1117,7 +1117,7 @@ def revoke_key_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
 

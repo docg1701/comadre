@@ -77,3 +77,6 @@ models/
 
 # Operator key material — never commit
 usuario-teste.txt
+
+# Operator local notes that may contain key material
+/usuario-teste.txt

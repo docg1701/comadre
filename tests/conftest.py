@@ -18,9 +18,9 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 from rich.console import Console
 
+from comadre import timeutil as _cli_timeutil
 from comadre.config import Settings, get_registry_settings, get_settings
 from comadre.keys.cache import AuthCache
-from comadre.keys.cli import _clock as _cli_clock
 from comadre.keys.cli import output as _keys_cli_output
 from comadre.keys.db import _apply_migrations, get_connection
 from comadre.main import create_app
@@ -188,10 +188,10 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 @pytest.fixture()
 def freeze_today(monkeypatch: pytest.MonkeyPatch) -> Callable[[date], None]:
-    """Pin ``_clock.resolve_today_in_tz`` to a fixed date for CLI tests."""
+    """Pin ``timeutil.resolve_today_in_tz`` to a fixed date for CLI tests."""
 
     def _factory(frozen: date) -> None:
-        monkeypatch.setattr(_cli_clock, "resolve_today_in_tz", lambda _tz: frozen)
+        monkeypatch.setattr(_cli_timeutil, "resolve_today_in_tz", lambda _tz: frozen)
 
     return _factory
 

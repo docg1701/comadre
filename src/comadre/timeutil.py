@@ -1,13 +1,14 @@
 """Shared UTC timestamp helpers — single source for every ISO-UTC surface.
 
 Lives at the bottom of the import graph (stdlib only) so service,
-counters, keys/db, keys/audit, and keys/health can all consume it without
-creating lateral or upward deps.
+counters, keys/db, keys/audit, keys/health, and the CLI commands can all
+consume it without creating lateral or upward deps.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 
 def utc_now_iso() -> str:
@@ -31,3 +32,8 @@ def parse_iso_utc(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def resolve_today_in_tz(tz: ZoneInfo) -> date:
+    """Return today's date resolved in ``tz``. Thin seam for tests."""
+    return datetime.now(tz).date()

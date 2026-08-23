@@ -32,9 +32,9 @@ from dateutil.relativedelta import (  # type: ignore[import-untyped]
     relativedelta,
 )
 
+from comadre import timeutil
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import first_charge_date
-from comadre.keys.cli import _clock
 from comadre.keys.cli._db import open_registry
 from comadre.keys.cli.commands.keys import (
     _key_row_to_json,
@@ -241,7 +241,7 @@ def mark_paid_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
 
@@ -423,7 +423,7 @@ def suspend_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
 
@@ -501,7 +501,7 @@ def reactivate_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
 
@@ -781,7 +781,7 @@ def at_risk_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
     cutoff = today + timedelta(days=window_days)
 
     # 4. Open DB + migrations (exit 5).
@@ -895,7 +895,7 @@ def revenue_cmd(
     if loaded is None:
         raise typer.Exit(code=6)
     settings, billing_tz = loaded
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 2b. --as-of shape + bounds (exit 2; pre-DB except for the lower-bound
     # check which needs the audit-log MIN — done after the DB opens).

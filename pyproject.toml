@@ -1,6 +1,6 @@
 [project]
 name = "comadre"
-version = "3.0.5"
+version = "3.0.6"
 description = "Comadre Manda Áudio Direto, Rápido e Eficiente — pocket-tts TTS API with native voice cloning"
 readme = "README.md"
 license = "MIT"
@@ -13,11 +13,10 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "pydantic-settings>=2.7",
     "pydantic[email]>=2.9",
-    "pocket-tts[audio]==2.1.0",
+    "pocket-tts[audio,quantize]==2.1.0",
     "torch>=2.5.0",
     "python-multipart>=0.0.9",
     "huggingface-hub>=0.13",
-    "torchao>=0.16",
     "num2words>=0.5",
     "limits>=3.13",
     "typer>=0.12,<0.25",

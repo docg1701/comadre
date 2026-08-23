@@ -46,6 +46,7 @@ import typer
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr, ValidationError
 
+from comadre import timeutil
 from comadre.config import get_registry_settings
 from comadre.counters import (
     WINDOW_SECONDS,
@@ -53,7 +54,6 @@ from comadre.counters import (
     read_all_snapshots,
 )
 from comadre.keys.audit import get_cli_actor
-from comadre.keys.cli import _clock
 from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
@@ -240,7 +240,7 @@ def suspend_sweep_cmd(
     # 00:30 São Paulo time but the VPS host clock is UTC. Without the
     # TZ-aware resolution, a sweep triggered near midnight could sweep
     # the wrong day's set.
-    today = _clock.resolve_today_in_tz(billing_tz)
+    today = timeutil.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
 

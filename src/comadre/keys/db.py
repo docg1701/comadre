@@ -631,7 +631,7 @@ def update_customer(
 
     ``today`` is the operator-TZ date used to stamp the appended note
     (``[YYYY-MM-DD] text``). The caller resolves it via the existing
-    ``cli._clock.resolve_today_in_tz`` seam so tests freeze the clock with
+    ``timeutil.resolve_today_in_tz`` seam so tests freeze the clock with
     ``monkeypatch`` instead of the helper touching ``date.today()`` directly.
     """
     from comadre.keys.audit import log_event

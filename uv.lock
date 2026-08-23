@@ -292,7 +292,7 @@ wheels = [
 
 [[package]]
 name = "comadre"
-version = "3.0.5"
+version = "3.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools", marker = "sys_platform == 'linux'" },
@@ -302,7 +302,7 @@ dependencies = [
     { name = "huggingface-hub", marker = "sys_platform == 'linux'" },
     { name = "limits", marker = "sys_platform == 'linux'" },
     { name = "num2words", marker = "sys_platform == 'linux'" },
-    { name = "pocket-tts", extra = ["audio"], marker = "sys_platform == 'linux'" },
+    { name = "pocket-tts", extra = ["audio", "quantize"], marker = "sys_platform == 'linux'" },
     { name = "pydantic", extra = ["email"], marker = "sys_platform == 'linux'" },
     { name = "pydantic-settings", marker = "sys_platform == 'linux'" },
     { name = "python-dateutil", marker = "sys_platform == 'linux'" },
@@ -310,7 +310,6 @@ dependencies = [
     { name = "python-ulid", marker = "sys_platform == 'linux'" },
     { name = "pyyaml", marker = "sys_platform == 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'" },
-    { name = "torchao", marker = "sys_platform == 'linux'" },
     { name = "typer", marker = "sys_platform == 'linux'" },
     { name = "uvicorn", extra = ["standard"], marker = "sys_platform == 'linux'" },
     { name = "validate-docbr", marker = "sys_platform == 'linux'" },
@@ -355,7 +354,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.13" },
     { name = "limits", specifier = ">=3.13" },
     { name = "num2words", specifier = ">=0.5" },
-    { name = "pocket-tts", extras = ["audio"], specifier = "==2.1.0" },
+    { name = "pocket-tts", extras = ["audio", "quantize"], specifier = "==2.1.0" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "python-dateutil", specifier = ">=2.8" },
@@ -363,7 +362,6 @@ requires-dist = [
     { name = "python-ulid", specifier = ">=2.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "torch", specifier = ">=2.5.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchao", specifier = ">=0.16" },
     { name = "typer", specifier = ">=0.12,<0.25" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "validate-docbr", specifier = ">=2.0" },
@@ -1058,6 +1056,9 @@ wheels = [
 [package.optional-dependencies]
 audio = [
     { name = "soundfile", marker = "sys_platform == 'linux'" },
+]
+quantize = [
+    { name = "torchao", marker = "sys_platform == 'linux'" },
 ]
 
 [[package]]

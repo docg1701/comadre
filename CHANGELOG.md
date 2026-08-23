@@ -5,6 +5,27 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.6] — 2026-08-23
+
+### Changed
+
+- **Over-engineering cleanup (repo audit round 2)** — zero behavior change:
+  - CLI clock seam consolidated: `resolve_today_in_tz()` moved from the
+    single-function `keys/cli/_clock.py` module into `timeutil.py` (already
+    the stdlib-only bottom of the import graph); `_clock.py` deleted.
+  - `torchao` is now pulled via pocket-tts's own `quantize` extra
+    (`pocket-tts[audio,quantize]==2.1.0`) instead of a duplicate direct
+    pin — same resolution, one authoritative declaration.
+- **New `docs/voice-reference-script.md`** — a pt-BR read-aloud script for
+  recording cloning reference audio, engineered for phonetic coverage
+  (nasals, strong/tap rhotics, palatals, clusters) and prosody variety,
+  with recording checklist and upload instructions.
+
+### Removed
+
+- Stray `usuario-teste.txt` from the repo root (contained a live test API
+  key in plaintext; now gitignored so it can never be committed).
+
 ## [3.0.5] — 2026-08-23
 
 ### Fixed
