@@ -71,3 +71,42 @@ def test_normalize_numbers_expands_thousands_dot_groups() -> None:
     out = normalize_numbers("Vendemos 1.234 unidades")
     assert "." not in out
     assert "mil" in out.lower()
+
+
+def test_normalize_times_handles_h_suffix() -> None:
+    """'9h30' -> 'nove e trinta'; bare '9h' -> 'nove horas'."""
+    assert "nove e trinta" in normalize_text("Reunião às 9h30")
+    assert "nove horas" in normalize_text("Reunião às 9h")
+
+
+def test_normalize_percent_expands() -> None:
+    out = normalize_text("Desconto de 50% no total")
+    assert "%" not in out
+    assert "cinquenta por cento" in out
+
+
+def test_normalize_round_the_clock_idiom() -> None:
+    out = normalize_text("Atendemos 24/7")
+    assert "/" not in out
+    assert "vinte e quatro por sete" in out
+
+
+def test_normalize_short_dates() -> None:
+    out = normalize_text("Promoção até 12/05")
+    assert "doze de maio" in out
+    # Implausible month falls through to the slash sanitizer.
+    out2 = normalize_text("Placar 5/13 no jogo")
+    assert "/" not in out2
+
+
+def test_normalize_phones_digit_by_digit() -> None:
+    out = normalize_text("Ligue (11) 99999-8888")
+    assert "(" not in out and "-" not in out
+    assert "um um" in out
+    assert "nove nove nove nove nove" in out
+
+
+def test_sanitize_strips_emoji_urls_and_slashes() -> None:
+    out = normalize_text("Confira: https://x.com/a-b 😊 e/ou ok")
+    assert "http" not in out and "😊" not in out and "/" not in out
+    assert "e ou" in out

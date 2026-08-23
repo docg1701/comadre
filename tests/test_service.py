@@ -103,9 +103,9 @@ def test_generate_speech_rejects_oversize_empty_and_unsupported_format(
         with pytest.raises(InvalidRequestError):
             engine.generate_speech(bad, "pocket/rafael", "wav")
 
-    # mp3 → 400 (only wav and ogg are supported).
+    # flac → 400 (only ogg, mp3 and wav are supported).
     with pytest.raises(InvalidRequestError):
-        engine.generate_speech("hello", "pocket/rafael", "mp3")
+        engine.generate_speech("hello", "pocket/rafael", "flac")
 
     engine._model.generate_audio.assert_not_called()  # type: ignore[union-attr]
 
@@ -262,3 +262,38 @@ def test_load_model_passes_eos_threshold(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     assert captured["eos_threshold"] == -2.0
     assert captured["temp"] == 0.7
+
+
+def test_generate_speech_passes_temperature_and_seed(
+    engine: PocketEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """seed pins the torch RNG and temperature overrides the model attribute
+    before generate_audio runs — same seed reproduces identical sampling."""
+    import torch
+
+    seen: dict[str, object] = {}
+    mock_model = engine._model
+    original_temp = getattr(mock_model, "temp", 0.7)
+    mock_model.temp = 0.7
+
+    def _capture(state, text, copy_state=True):
+        seen["temp"] = mock_model.temp
+        seen["rand"] = torch.randn(1).item()
+        return torch.zeros(1, 24000)
+
+    mock_model.generate_audio.side_effect = _capture
+    monkeypatch.setattr("comadre.service._apply_pipeline", lambda *a, **k: b"processed")
+
+    first = engine.generate_speech(
+        "oi", "pocket/rafael", "wav", temperature=0.4, seed=99
+    )
+    rand_first = seen["rand"]
+    assert seen["temp"] == 0.4
+
+    second = engine.generate_speech(
+        "oi", "pocket/rafael", "wav", temperature=0.4, seed=99
+    )
+    assert seen["rand"] == rand_first  # same seed -> identical sampling
+    assert first == b"processed" == second
+    assert rand_first != 0.0  # sanity: RNG actually sampled
+    mock_model.temp = original_temp

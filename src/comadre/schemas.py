@@ -23,6 +23,24 @@ class SpeechRequest(BaseModel):
     voice: str | None = None
     response_format: ResponseFormat = ResponseFormat.ogg
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
+    temperature: float | None = Field(
+        default=None,
+        ge=0.1,
+        le=2.0,
+        description=(
+            "Sampling temperature override; lower sounds more consistent, "
+            "higher more expressive. Omitted = engine default (0.7)."
+        ),
+    )
+    seed: int | None = Field(
+        default=None,
+        ge=0,
+        le=2**31 - 1,
+        description=(
+            "RNG seed for reproducible generation — same text, voice and "
+            "seed produce identical prosody. Omitted = random."
+        ),
+    )
     raw: bool = Field(
         default=False,
         description="Skip audio post-processing (EQ, compression, noise mixing)",

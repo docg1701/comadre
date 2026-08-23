@@ -196,13 +196,15 @@ class PocketEngine:
         *,
         raw: bool = False,
         key_id: str | None = None,
+        temperature: float | None = None,
+        seed: int | None = None,
     ) -> bytes:
         """Generate speech via pocket-tts.
 
         Args:
             text: Input text to synthesize.
             voice_name: Voice identifier as pocket/<name>.
-            response_format: Output format — wav or ogg.
+            response_format: Output format — ogg, mp3 or wav.
             noise_dir: Directory containing room/hiss noise WAV files.
             speed: Playback speed multiplier (1.0 = normal). Applied for
                 ALL voices as an ffmpeg atempo chain in post-processing
@@ -211,6 +213,12 @@ class PocketEngine:
                 noise/tempo) — still encodes to the requested format.
             key_id: Registry key id, used to resolve the callers
                 ephemeral clones.
+            temperature: Sampling temperature override (None = model
+                default). Lower values sound more consistent, higher more
+                expressive. Generation runs under the FIFO lock, so the
+                per-request mutation of the shared model attribute is safe.
+            seed: Torch RNG seed for reproducible generation; same text +
+                voice + seed yields bit-identical prosody.
 
         Returns:
             Audio bytes in the requested format.
@@ -221,10 +229,10 @@ class PocketEngine:
             VoiceNotFoundError: unknown voice name.
             GenerationError: model failure.
         """
-        if response_format not in ("wav", "ogg"):
+        if response_format not in ("wav", "ogg", "mp3"):
             raise InvalidRequestError(
                 message=f"Unsupported response format: {response_format!r}",
-                hint="Supported formats: wav, ogg.",
+                hint="Supported formats: ogg, mp3, wav.",
             )
 
         if not text.strip():
@@ -260,6 +268,10 @@ class PocketEngine:
         )
 
         try:
+            if temperature is not None:
+                self._model.temp = float(temperature)
+            if seed is not None:
+                torch.manual_seed(seed)
             audio = self._model.generate_audio(state, normalized, copy_state=True)
             samples = audio.detach().cpu().numpy()
             wav_bytes = _samples_to_wav(samples, self.sample_rate)

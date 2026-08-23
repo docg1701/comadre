@@ -86,6 +86,8 @@ async def generate_speech(
                         speed=body.speed,
                         raw=body.raw,
                         key_id=key_id,
+                        temperature=body.temperature,
+                        seed=body.seed,
                     ),
                     timeout=120.0,
                 )
