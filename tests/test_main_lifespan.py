@@ -54,7 +54,6 @@ def _stub_engine_init(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main_module, "PocketEngine", _StubEngine)
     monkeypatch.setattr(main_module, "VoiceRegistry", _StubRegistry)
     monkeypatch.setattr(main_module, "ensure_pocket_models", lambda **_: None)
-    monkeypatch.setattr(main_module, "set_active_registry", lambda _r: None)
 
 
 @pytest.fixture()

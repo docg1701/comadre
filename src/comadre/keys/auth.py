@@ -32,7 +32,7 @@ from comadre.exceptions import (
     AuthenticationError,
     KeyRegistryError,
 )
-from comadre.keys.billing import ManualBillingProvider
+from comadre.keys.billing import is_payment_current
 from comadre.keys.cache import AuthCache
 from comadre.keys.db import lookup_key_auth
 from comadre.keys.models import ApiKeyRecord, AuthPayload
@@ -55,9 +55,6 @@ _DUMMY_HASH = hash_api_key("__dummy_for_timing_equalisation__")
 # enforces the URL-safe base64 charset on the suffix so Unicode or
 # whitespace-padded tokens are rejected before any cache or DB lookup.
 _VALID_TOKEN_RE = re.compile(rf"\A{re.escape(API_KEY_PREFIX)}[A-Za-z0-9_-]{{43}}\Z")
-
-# Shared billing provider instance. MVP has exactly one implementation.
-_billing = ManualBillingProvider()
 
 
 def _today_in_billing_tz(settings: RegistrySettings) -> date:
@@ -169,7 +166,7 @@ async def verify_api_key_registry(request: Request, token: str) -> None:
 
     record = _payload_to_record(payload)
     try:
-        paid = _billing.is_payment_current(record, today=_today_in_billing_tz(settings))
+        paid = is_payment_current(record, today=_today_in_billing_tz(settings))
     except ValueError as exc:
         _logger.error(
             "Malformed paid_until in registry for key_id=%s; failing closed",
@@ -209,7 +206,7 @@ async def verify_api_key_registry(request: Request, token: str) -> None:
 
 
 def _payload_to_record(payload: AuthPayload) -> ApiKeyRecord:
-    """Adapt ``AuthPayload`` to ``ApiKeyRecord`` for ``ManualBillingProvider``.
+    """Adapt ``AuthPayload`` to ``ApiKeyRecord`` for :func:`is_payment_current`.
 
     Only ``billing_mode`` and ``paid_until`` are consumed by the provider;
     other fields carry placeholder values — this record never persists and

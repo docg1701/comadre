@@ -35,6 +35,7 @@ from comadre.keys.db import (
     get_last_sweep_timestamp,
 )
 from comadre.keys.formatters import format_seconds_ago
+from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 Severity = Literal["ok", "info", "warn", "fail"]
 
@@ -99,13 +100,6 @@ def _format_size(size_bytes: int) -> str:
     if size_bytes < 1024 * 1024 * 1024:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
-
-
-def _parse_iso_utc(value: str) -> datetime | None:
-    try:
-        return datetime.strptime(value, _ISO_UTC_FORMAT).replace(tzinfo=UTC)
-    except (ValueError, TypeError):
-        return None
 
 
 def _check_db_path(db_path: Path) -> HealthCheck:

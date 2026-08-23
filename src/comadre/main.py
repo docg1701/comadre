@@ -39,7 +39,7 @@ from comadre.rate_limit import (
     check_health_per_ip_rate_limit,
     get_client_ip,
 )
-from comadre.service import PocketEngine, VoiceRegistry, set_active_registry
+from comadre.service import PocketEngine, VoiceRegistry
 
 logger = get_logger("startup")
 
@@ -219,7 +219,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry = VoiceRegistry(engine=engine, voices_dir=voices_dir, settings=settings)
     engine.attach_registry(registry)
     registry.start_sweeper(asyncio.get_running_loop())
-    set_active_registry(registry)
 
     # Phase 8: Ready
     app.state.engine = engine

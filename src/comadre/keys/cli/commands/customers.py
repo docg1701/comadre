@@ -14,7 +14,6 @@ Exit-code contract (UX-DR10):
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import sqlite3
@@ -34,6 +33,7 @@ from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import filter_forbidden_keys, get_cli_actor
 from comadre.keys.cli import _clock
+from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
@@ -64,13 +64,11 @@ from comadre.keys.crypto import (
 from comadre.keys.db import (
     CorrectTaxIdResult,
     UpdateCustomerResult,
-    _apply_migrations,
     backfill_tax_id_lookup_if_needed,
     correct_customer_tax_id,
     count_tombstones,
     delete_customer_hard,
     generate_customer_id,
-    get_connection,
     get_customer,
     get_customer_with_cipher,
     insert_customer,
@@ -264,14 +262,8 @@ def create_customer(
         deleted_at=None,
     )
 
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
-    try:
+    with open_registry(settings) as conn:
         try:
-            _apply_migrations(conn)
             backfill_tax_id_lookup_if_needed(
                 conn, encryption_key=settings.key_registry_encryption_key
             )
@@ -292,9 +284,6 @@ def create_customer(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     _logger.info(
         "Customer created | id=%s | tax_id_kind=%s", record.id, record.tax_id_kind
@@ -376,25 +365,11 @@ def list_customers_cmd(
 
     # 3. Open DB + apply migrations + read rows. Close in finally + suppress
     # (listings are pure reads — close errors here have nothing to protect).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         rows = list_customers(conn, include_deleted=deleted)
         first_run = is_first_run(conn) if not rows else False
         tombstone_total = count_tombstones(conn) if not deleted and not rows else 0
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     _logger.info("Listed customers | count=%d | include_deleted=%s", len(rows), deleted)
 
@@ -604,21 +579,10 @@ def show_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations + resolve target + fetch events.
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
     result_kind: str = "not_found"
     events: list[AuditEventRow] | None = None
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         resolved = resolve_show_target(conn, target, today=today)
         result_kind = resolved.kind
 
@@ -647,9 +611,6 @@ def show_cmd(
                 key_row = cast(KeyDetailRow, resolved.value)
                 target_ids = [key_row.id]
             events = list_audit_events(conn, target_ids, limit=audit_tail)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # Story 2.3 — per-key last-24h stats. Key-target-only (AC14); the
     # customer-target aggregate is future work. Stats are only loaded when
@@ -966,20 +927,9 @@ def update_customer_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 5. Open DB + migrations + mutation. Close in finally + suppress.
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
     result: UpdateCustomerResult | None
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         try:
             result = update_customer(
                 conn,
@@ -999,9 +949,6 @@ def update_customer_cmd(
             # the DB-file-unreachable path. All three map to exit 5.
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     if result is None:
         render_error(
@@ -1165,19 +1112,8 @@ def export_customer_cmd(
         raise typer.Exit(code=6)
 
     # 4. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 5. Fetch the export row (+ associated keys).
         try:
             row = get_customer_with_cipher(conn, customer_id)
@@ -1226,9 +1162,6 @@ def export_customer_cmd(
             except (sqlite3.Error, OSError, RuntimeError) as exc:
                 render_error("Database error", str(exc))
                 raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # 6. Decrypt + format (exit 5 on InvalidToken / non-UTF8 plaintext /
     # wrong-length canonical — env-var swap or ciphertext tampering are the
@@ -1475,22 +1408,11 @@ def correct_tax_id_cmd(
     # without ever encrypting the operator-supplied tax-ID into a Fernet
     # ciphertext that would otherwise sit in process memory for an aborted
     # operation. LGPD memory-residence-window minimisation (review-pass).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
-
     result: CorrectTaxIdResult | None = None
-    try:
-        try:
-            _apply_migrations(conn)
-            backfill_tax_id_lookup_if_needed(
-                conn, encryption_key=settings.key_registry_encryption_key
-            )
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
+    with open_registry(settings) as conn:
+        backfill_tax_id_lookup_if_needed(
+            conn, encryption_key=settings.key_registry_encryption_key
+        )
 
         # 6. Pre-fetch the customer for the tombstone check + the
         # confirmation prompt's identifier; exit 3 on missing.
@@ -1560,9 +1482,6 @@ def correct_tax_id_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     if result is None:
         # Customer was tombstoned between the pre-fetch and the helper
@@ -1675,19 +1594,8 @@ def delete_customer_cmd(
         raise typer.Exit(code=6)
 
     # 4. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 5. Pre-flight lookup — exit 3 BEFORE prompting. Confirming
         # deletion of a nonexistent row is worse UX than a clean
         # not-found.
@@ -1752,9 +1660,6 @@ def delete_customer_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     if result is None:
         # Concurrent tombstone between pre-flight and helper — unreachable

@@ -5,6 +5,31 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] — 2026-08-23
+
+### Changed
+
+- **Over-engineering cleanup (repo audit)** — net −870 lines, zero behavior
+  change:
+  - CLI verbs share one `open_registry()` contextmanager (connection +
+    migrations + close, exit 5) instead of 20 hand-copied try/finally blocks.
+  - `BillingProvider` ABC collapsed to a plain `is_payment_current()`;
+    the never-called `on_key_issued`/`on_key_revoked` no-op hooks are gone
+    (add the abstraction when a PSP adapter exists).
+  - Dead code removed: module-level `set_active_registry`/
+    `available_voices()`/`engine_status()` wrappers in service.py, the
+    unused `apply_migrations` public alias, and the voice response models
+    (`VoiceListItem`/`VoiceListResponse`/`VoiceCreateResponse`) that no
+    route or test referenced.
+  - ISO-UTC helpers consolidated into `comadre.timeutil`
+    (`utc_now_iso` / `parse_iso_utc`) — was 3 divergent copies of each.
+  - `first_charge_date()` drops the accepted-but-unused `tz` parameter.
+- **Removed Portuguese duplicate cost report** —
+  `docs/relatorio-comparativo-custos.{md,pdf}` duplicated
+  `cost-comparison-report.md` verbatim and violated the English-only
+  language policy; the migration plan's v2-era annotation list now points
+  at the English original only.
+
 ## [3.0.3] — 2026-08-23
 
 ### Fixed

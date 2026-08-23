@@ -43,6 +43,7 @@ from comadre.exceptions import (
 )
 from comadre.logging import get_logger
 from comadre.preprocessing import expand_siglas, normalize_text
+from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -63,15 +64,6 @@ def _now_utc() -> datetime:
 
 def _iso_utc(dt: datetime) -> str:
     return dt.isoformat().replace("+00:00", "Z")
-
-
-def _parse_iso_utc(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _audio_duration_seconds(path: Path) -> float:
@@ -984,26 +976,3 @@ class VoiceRegistry:
 
 def _meta_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
-
-
-_active_registry: VoiceRegistry | None = None
-
-
-def set_active_registry(registry: VoiceRegistry) -> None:
-    """Register the live VoiceRegistry for module-level health helpers."""
-    global _active_registry
-    _active_registry = registry
-
-
-def available_voices() -> list[str]:
-    """Module-level wrapper kept for health.py compatibility."""
-    if _active_registry is None:
-        return []
-    return _active_registry.available_voices()
-
-
-def engine_status() -> dict[str, dict[str, object]]:
-    """Module-level wrapper kept for health.py compatibility."""
-    if _active_registry is None:
-        return {}
-    return _active_registry.engine_status()

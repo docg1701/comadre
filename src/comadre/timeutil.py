@@ -1,0 +1,33 @@
+"""Shared UTC timestamp helpers — single source for every ISO-UTC surface.
+
+Lives at the bottom of the import graph (stdlib only) so service,
+counters, keys/db, keys/audit, and keys/health can all consume it without
+creating lateral or upward deps.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+
+def utc_now_iso() -> str:
+    """Return now as ``YYYY-MM-DDTHH:MM:SSZ`` (UTC, second precision)."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso_utc(value: object) -> datetime | None:
+    """Parse an ISO 8601 UTC timestamp; ``None`` on any failure.
+
+    Tolerates both ``Z`` and ``+HH:MM`` suffixes; naive values are coerced
+    to UTC. Accepts ``object`` so JSON-decoded scalars can be passed
+    directly.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed

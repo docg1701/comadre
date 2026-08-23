@@ -54,6 +54,7 @@ from comadre.counters import (
 )
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.cli import _clock
+from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
@@ -70,8 +71,6 @@ from comadre.keys.cli.output import (
 )
 from comadre.keys.db import (
     _SCHEMA_VERSION,
-    _apply_migrations,
-    get_connection,
     list_api_keys,
     rotate_encryption_keys,
     run_suspension_sweep,
@@ -244,19 +243,8 @@ def suspend_sweep_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from exc
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         if dry_run:
             _suspend_sweep_dry_run(conn, today)
             return
@@ -268,9 +256,6 @@ def suspend_sweep_cmd(
         except (sqlite3.Error, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # 4. Structured INFO log — PII-austere aggregate (NFR15).
     with contextlib.suppress(Exception):
@@ -380,21 +365,9 @@ def health_cmd(
         raise typer.Exit(code=6)
     settings, _billing_tz = loaded
 
-    # 3. Open DB + migrations (exit 5). ``from exc`` preserves the
-    # original traceback per Story 3.3 code-review patch contract.
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from exc
+    # 3. Open DB + migrations (exit 5).
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from exc
-
+    with open_registry(settings) as conn:
         # 4. Resolve marker / backup paths and collect.
         db_path = settings.key_registry_db_path
         cron_marker_path = f"{db_path}.cron-installed"
@@ -411,9 +384,6 @@ def health_cmd(
         except (sqlite3.Error, OSError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from exc
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # 5. PII-austere INFO log — counts only (NFR15).
     with contextlib.suppress(Exception):
@@ -484,21 +454,9 @@ def rotate_encryption_key_cmd(
         raise typer.Exit(code=6)
     settings, _billing_tz = loaded
 
-    # 3. Open DB + migrations (exit 5). ``from exc`` preserves the
-    # original traceback per the Story 3.3 code-review patch contract.
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from exc
+    # 3. Open DB + migrations (exit 5).
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from exc
-
+    with open_registry(settings) as conn:
         # 4. Pre-flight count for the confirmation prompt — so the
         # operator sees scope BEFORE committing. The race window between
         # this count and the helper's materialisation is a non-issue on
@@ -572,9 +530,6 @@ def rotate_encryption_key_cmd(
             # ``with conn:`` has already rolled back on any exception.
             render_error("Unexpected rotation failure", str(exc))
             raise typer.Exit(code=5) from exc
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # 7. PII-austere INFO log (NFR15). Never the new key, never the
     # old key, never any decrypted tax ID — only structural counts.

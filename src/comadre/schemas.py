@@ -1,6 +1,5 @@
-"""Request and response schemas for Comadre API."""
+"""Request schemas for Comadre API."""
 
-from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -27,30 +26,3 @@ class SpeechRequest(BaseModel):
         default=False,
         description="Skip audio post-processing (EQ, compression, noise mixing)",
     )
-
-
-class VoiceListItem(BaseModel):
-    """One voice in the GET /v1/voices listing."""
-
-    voice: str
-    display_name: str | None
-    persisted: bool
-    created_at: datetime | None
-    expires_at: datetime | None
-
-
-class VoiceListResponse(BaseModel):
-    """Response body for GET /v1/voices."""
-
-    voices: list[VoiceListItem]
-
-
-class VoiceCreateResponse(BaseModel):
-    """Response body for POST /v1/voices (API spec section 2.1)."""
-
-    voice: str
-    display_name: str | None
-    persisted: bool
-    duration_s: float
-    sample_rate: int
-    expires_at: datetime | None

@@ -502,7 +502,7 @@ delete if engine-related. `noise/` stays (pipeline still uses it).
 | `docs/monetization.md` | LGPD section: clones = biometric data; `export-customer` `voices` array; `delete-customer --hard` purge; consent requirement on upload |
 | `docs/rate-limiting.md` | Note: uploads consume the same per-key bucket |
 | `docs/local-testing-guide.md` | Local dev with `uv sync`, `HF_TOKEN`, download-on-boot, spike script usage |
-| `docs/replica-scaling-report.md` + `docs/cost-comparison-report.md` + `docs/relatorio-comparativo-custos.md` | Annotate as v2-era; after Phase 4 add a v3 addendum with the new capacity/cost numbers |
+| `docs/replica-scaling-report.md` + `docs/cost-comparison-report.md` | Annotate as v2-era; after Phase 4 add a v3 addendum with the new capacity/cost numbers |
 | `CHANGELOG.md` | v3.0.0 entry: engine swap, cloning endpoints, breaking voice names, speed semantics, config surface, LGPD voice coverage, deletions |
 | `AGENTS.md` | Rewrite: Overview (single engine + cloning); Architecture (voice format, VoiceRegistry, upload path, `u_` prefix, `RegistrySettings.voices_dir` exception); Key File Locations (delete qwen3-tts-cli/espeak entries; add `deploy/pocket-tts/*.yaml`, `voice_storage.py`, `voices_api.py`); Gotchas: REPLACE misaki/espeak-ng, Qwen3 `-l pt`, 4-core sweet spot, kokoclone, qwen build, GGUF prebuilt with NEW: gated weights + `HF_TOKEN` + pinned revisions, `torch.set_num_threads(1)` upstream override, `copy_state=True` deepcopy semantics, model-hash state regen, `u_` reserved prefix, torch CPU index in pyproject, image size, rafael embedding revision pin. Ansible runbook section: bootstrap `HF_TOKEN`/env changes. |
 | `docs/pocket-tts-migration-feasibility.md` | Status → `DECIDED — see migration plan` |

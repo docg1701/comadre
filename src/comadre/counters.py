@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from comadre.logging import get_logger
+from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 _logger = get_logger("counters")
 
@@ -340,22 +341,6 @@ def _atomic_write(path: Path, payload: str) -> None:
 # ``comadre-keys show --audit-tail``. Kept in this module so the CLI-side
 # code stays DRY and the stdlib-only import rule still holds (no new deps).
 # ---------------------------------------------------------------------------
-
-
-def _parse_iso_utc(raw: str) -> datetime | None:
-    """Parse an ISO 8601 UTC timestamp, tolerating both ``Z`` and ``+HH:MM`` forms.
-
-    Naive results are coerced to UTC (a future writer variant that emits
-    naive timestamps shouldn't crash the reader). Returns ``None`` on any
-    parse failure.
-    """
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 def _read_one_snapshot(path: Path) -> tuple[dict[str, Any], int] | None:

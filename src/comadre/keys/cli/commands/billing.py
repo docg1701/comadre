@@ -35,6 +35,7 @@ from dateutil.relativedelta import (  # type: ignore[import-untyped]
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.billing import first_charge_date
 from comadre.keys.cli import _clock
+from comadre.keys.cli._db import open_registry
 from comadre.keys.cli.commands.keys import (
     _key_row_to_json,
     _truncate_ident,
@@ -52,9 +53,7 @@ from comadre.keys.cli.output import (
     stdout_console,
 )
 from comadre.keys.db import (
-    _apply_migrations,
     earliest_audit_date,
-    get_connection,
     list_api_keys,
     mark_key_paid,
     reactivate_key,
@@ -245,19 +244,8 @@ def mark_paid_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 4. Resolve prefix → KeyDetailRow (exit 3 / 2 on non-key branches).
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
@@ -324,9 +312,6 @@ def mark_paid_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # ``result`` is not None — resolve_key_target already confirmed the row.
     # Explicit check (not ``assert``) so ``python -O`` cannot strip it and
@@ -441,19 +426,8 @@ def suspend_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 3. Resolve prefix → KeyDetailRow.
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
@@ -484,9 +458,6 @@ def suspend_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # Explicit check (not ``assert``) so ``python -O`` cannot strip it.
     if result is None:
@@ -533,19 +504,8 @@ def reactivate_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 3. Resolve prefix → KeyDetailRow.
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
@@ -575,9 +535,6 @@ def reactivate_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # Explicit check (not ``assert``) so ``python -O`` cannot strip it.
     if result is None:
@@ -828,19 +785,8 @@ def at_risk_cmd(
     cutoff = today + timedelta(days=window_days)
 
     # 4. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 5. Enumerate the full active-manual set. Trial-window (NULL
         # paid_until) rows are filtered in Python — the SQL
         # paid_until_lte filter matches NULL-OR-lte which is the opposite
@@ -850,9 +796,6 @@ def at_risk_cmd(
             status="active",
             billing_mode="manual",
         )
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # 6. Filter: today <= paid_until <= cutoff. NULL excluded.
     in_window: list[tuple[ApiKeyListRow, int]] = []
@@ -993,23 +936,11 @@ def revenue_cmd(
     next_charge = first_charge_date(
         today=month_last,
         billing_day=settings.billing_day,
-        tz=settings.billing_timezone,
     )
 
     # 5. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 6. Enumerate the whole row set; bucketize in Python.
         if as_of_date is not None:
             # Lower-bound check needs the audit MIN — do it now that the
@@ -1031,9 +962,6 @@ def revenue_cmd(
             all_rows = reconstruct_key_state_at(conn, as_of_date, tz=billing_tz)
         else:
             all_rows = list_api_keys(conn)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     paid, pending, suspended, complimentary = _bucketize_for_revenue(
         all_rows, month_first=month_first

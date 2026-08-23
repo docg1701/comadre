@@ -40,6 +40,7 @@ from comadre.keys.models import (
     KeyDetailRow,
     TaxIdKind,
 )
+from comadre.timeutil import utc_now_iso as _utcnow_iso
 
 _logger = logging.getLogger(__name__)
 
@@ -248,11 +249,6 @@ class ShowTarget:
 _SCHEMA_VERSION = 3
 
 
-def _utcnow_iso() -> str:
-    """Return current UTC time as ISO 8601 seconds (Z suffix, no microseconds)."""
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def generate_customer_id() -> str:
     """Return a fresh `cust_<26-char-lowercase-ULID>` identifier."""
     return f"cust_{str(ULID()).lower()}"
@@ -387,11 +383,6 @@ def get_connection(path: str | Path) -> sqlite3.Connection:
         conn.close()
         raise
     return conn
-
-
-def apply_migrations(conn: sqlite3.Connection) -> None:
-    """Apply pending migrations. Idempotent. Public alias of `_apply_migrations`."""
-    _apply_migrations(conn)
 
 
 _MIGRATION_FILES: tuple[tuple[int, str], ...] = (

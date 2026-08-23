@@ -21,7 +21,8 @@ import os
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+
+from comadre.timeutil import utc_now_iso as _utcnow_iso
 
 _FORBIDDEN_DETAIL_KEYS = frozenset(
     {
@@ -83,10 +84,6 @@ def filter_forbidden_keys(payload: Mapping[str, object]) -> dict[str, object]:
             continue
         out[key] = _filter_forbidden_value(value)
     return out
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 _ACTOR_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")

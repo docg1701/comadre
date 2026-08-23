@@ -25,8 +25,9 @@ from pydantic import ValidationError
 
 from comadre.config import RegistrySettings, get_registry_settings
 from comadre.keys.audit import get_cli_actor
-from comadre.keys.billing import ManualBillingProvider, days_until, first_charge_date
+from comadre.keys.billing import days_until, first_charge_date
 from comadre.keys.cli import _clock
+from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
     LIST_FORMAT_CHOICES,
@@ -42,9 +43,7 @@ from comadre.keys.cli.output import (
 from comadre.keys.db import (
     RotateKeyResult,
     UpdateKeyResult,
-    _apply_migrations,
     generate_key_id,
-    get_connection,
     get_customer,
     insert_api_key,
     is_first_run_for_keys,
@@ -267,19 +266,8 @@ def issue_key(
     #    syntactically invalid ids (e.g., ``cust_nope``) yield exit 3
     #    "Customer not found" rather than exit 2 "usage error" — the
     #    operator sees the actionable message (AC3).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         customer_record = get_customer(conn, customer)
         if customer_record is None:
             render_error(
@@ -320,7 +308,6 @@ def issue_key(
             fc_date = first_charge_date(
                 today=today_local,
                 billing_day=settings.billing_day,
-                tz=settings.billing_timezone,
             )
             fc_iso: str | None = fc_date.isoformat()
             fc_days_free: int | None = days_until(fc_date, from_date=today_local)
@@ -379,14 +366,6 @@ def issue_key(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-
-        # 10. Billing hook (MVP no-op).
-        ManualBillingProvider().on_key_issued(record)
-    finally:
-        # Suppress close errors post-commit — the row is already durable and
-        # a surfaced close error would make a successful issuance look failed.
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # 11. Structured INFO log — NEVER plaintext, NEVER hash, NEVER customer_name.
     _logger.info(
@@ -567,19 +546,8 @@ def list_keys_cmd(
             resolved_paid = parsed.isoformat()
 
     # 4. Open DB + apply migrations + read rows.
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         rows = list_api_keys(
             conn,
             status=cast(CustomerStatus | None, status),
@@ -601,9 +569,6 @@ def list_keys_cmd(
                 )
 
         first_run = is_first_run_for_keys(conn) if not rows else False
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     _logger.info(
         "Listed keys | count=%d | status=%s | billing_mode=%s | "
@@ -880,19 +845,8 @@ def update_key_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 6. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 7. Resolve prefix → KeyDetailRow (exit 3 / 2 on non-key branches).
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
@@ -938,9 +892,6 @@ def update_key_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     # ``result`` is not None — ``resolve_show_target`` already confirmed the row.
     assert result is not None
@@ -999,21 +950,10 @@ def rotate_key_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 2. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
     result: RotateKeyResult | None = None
     new_plaintext: str | None = None
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 3. Resolve prefix → KeyDetailRow.
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
@@ -1087,9 +1027,6 @@ def rotate_key_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     assert result is not None
     assert new_plaintext is not None
@@ -1183,19 +1120,8 @@ def revoke_key_cmd(
     today = _clock.resolve_today_in_tz(billing_tz)
 
     # 3. Open DB + migrations (exit 5).
-    try:
-        conn = get_connection(settings.key_registry_db_path)
-    except (sqlite3.Error, OSError, RuntimeError) as exc:
-        render_error("Database error", str(exc))
-        raise typer.Exit(code=5) from None
 
-    try:
-        try:
-            _apply_migrations(conn)
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            render_error("Database error", str(exc))
-            raise typer.Exit(code=5) from None
-
+    with open_registry(settings) as conn:
         # 4. Resolve prefix → KeyDetailRow.
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
@@ -1243,9 +1169,6 @@ def revoke_key_cmd(
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             render_error("Database error", str(exc))
             raise typer.Exit(code=5) from None
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
 
     assert result is not None
 
