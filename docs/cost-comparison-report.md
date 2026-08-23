@@ -34,36 +34,57 @@ minutes.
 ## Cost basis
 
 Comadre cost = fixed VPS + operator time. Reference Hetzner shared-vCPU
-pricing: ~$7/mo (4 vCPU/8 GB), ~$21/mo (8 vCPU/16 GB). Self-hosted on
+pricing: ~$7/mo (4 vCPU/8 GB), ~$21/mo (8 vCPU/16 GB); the operator's actual
+reference budget is **R$ 50/mo for a 4 vCPU / 8 GB VM**. Self-hosted on
 existing hardware: electricity only. Marginal cost per audio: zero.
 
 Competitors charge per credit because GPU inference costs money per request.
 That pricing model is Comadre's moat: the same spend buys fixed capacity,
 not metered usage.
 
+**ElevenLabs (verified against elevenlabs.io/pricing, Aug 2026):** credits
+replaced "characters" with unchanged value; per-model burn differs —
+Flash/Turbo models cost 0.5 credit/char, Multilingual v2 / Eleven v3 cost
+1 credit/char. Independent measurement: ~826–915 credits per finished minute.
+Plans: Starter $6/30k · Creator $22/121k · Pro $99/600k · Scale $299/1.8M ·
+Business $990/6M. No self-serve plan covers saturated single-replica volume:
+670k audios/mo × ~110 credits ≈ 74M credits/mo — Enterprise-only territory.
+
+**AI33.pro (aggregator):** the site is a login-gated app; two dated data
+points — (a) repo survey Apr 2026: $10 / 2.1M credit packs, measured burn
+90 credits per 12 s Edge-tier audio and 140–190 credits at the
+ElevenLabs/MiniMax tier; (b) third-party listing 2026 (Cliptude):
+~1M credits for ~$11/mo subscription — if current, credits got ~4.5× more
+expensive than the pack model. Confirm in-account before quoting customers.
+
 ## Cost comparison
 
-Assumptions: avg message 109 chars ≈ 7 s audio (~1,000 chars/min).
-ElevenLabs: Scale $330/mo incl. 2M chars + $0.18/1k chars overage.
-AI33.pro aggregator: $10 / 2.1M credits (~$0.0005/audio at ElevenLabs/MiniMax
-tier). Both figures from the v2 survey; published prices, not re-quoted.
+Assumptions: avg WhatsApp message ≈ 110 chars ≈ 7 s audio (~110–150 credits
+on ElevenLabs quality tier); FX R$ 5.40/USD.
 
-| Usage profile | Audios/mo | Audio min/mo | Comadre (4 vCPU) | ElevenLabs Scale+ | AI33.pro |
-|---|---|---|---|---|---|
-| Light (500 msgs) | 500 | 58 | **~$7** | $22 (Creator) | $0.25 |
-| Medium (2k msgs) | 2,000 | 233 | **~$7** | $99 (Pro) | $1.00 |
-| Heavy (10k msgs) | 10,000 | 1,167 | **~$7** | $359 | $5.00 |
-| Intensive (50k msgs) | 50,000 | 5,833 | **~$7** | $1,380 | $25.00 |
-| Saturated 1r @ 4 vCPU | ~670k | ~7,700 | **~$7** | ~$16,300 | ~$335 |
+| Source | Cost per 7 s audio | Vs. Comadre (working-day) |
+|---|---|---|
+| **Comadre**, R$ 50/mo flat | R$ 0.00007 (saturated) – R$ 0.00031 | — |
+| AI33.pro premium tier (Apr 2026 packs) | R$ 0.0014–0.0026 ($0.00026–0.00048) | ~8× |
+| AI33.pro premium tier (2026 listing) | R$ 0.005–0.009 (~$0.001–0.0017) | ~20–35× |
+| ElevenLabs Flash tier (0.5 credit/char, plan blend) | ~R$ 0.05 (~$0.009) | ~200× |
+| ElevenLabs quality tier (1 credit/char, plan blend) | ~R$ 0.10 (~$0.018) | ~400–1,500× |
+
+Monthly totals at saturation (~670k audios/mo, beyond any self-serve plan):
+Comadre **R$ 50** · AI33.pro premium R$ 940–6,000 (depending on which price
+list holds) · ElevenLabs quality tier **R$ 70k+** and unavailable without an
+Enterprise contract.
 
 Reading:
 
-- Below ~275 msgs/month an ElevenLabs Starter plan is cheaper — irrelevant
-  volume for a business chatbot.
-- From there Comadre wins at every scale, and the gap grows linearly with
-  volume because Comadre's curve is flat.
-- AI33.pro's Edge-tier credits undercut everyone on price but offer neither
-  cloning nor quality parity; their EL/MM tier is the fair comparison above.
+- Even the cheapest credible competitor (AI33 Edge, no cloning, lower
+  quality) is one to two orders of magnitude more expensive at working
+  volumes.
+- The gap grows linearly with volume because Comadre's curve is flat while
+  every credit model scales linearly.
+- Competitor prices move frequently — re-verify both pages before renewing
+  customer-facing pricing commitments; this report's competitor figures are
+  snapshots, not contracts.
 
 ## Quality & feature position
 
@@ -91,3 +112,15 @@ Reading:
    your own, and voice quality below ElevenLabs' best models — compensated
    by unlimited volume, privacy, and two orders of magnitude of cost
    difference at scale.
+
+## Sources (accessed 2026-08-23)
+
+- <https://elevenlabs.io/pricing> — live plan/credit table
+- <https://help.elevenlabs.io/hc/en-us/articles/27562020846481> — credits vs
+  characters, per-model burn
+- toolproven.com/blog/elevenlabs-pricing — verified Jul 19 2026;
+  826–915 credits/min measured
+- aistackpicks.com/reviews/elevenlabs-pricing-2026 — verified May 24 2026
+- cliptude.com/docs/eleven-labs-alternatives — AI33.pro listing, 2026
+- Repo survey Apr 2026 (`git log` on this file) — AI33.pro pack pricing and
+  measured credit burn
