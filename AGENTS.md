@@ -72,9 +72,15 @@ gh release list --repo docg1701/comadre                     # published releases
 
 Release flow: bump versions → ensure `CHANGELOG.md` has the `## [X.Y.Z]`
 section → commit → push master → **wait for CI green** → `git tag vX.Y.Z`
-→ push the tag → **watch the Release job publish**. Re-pointing a pushed
-tag re-triggers the flow (`git push origin :refs/tags/vX.Y.Z`, then
-re-tag and push again).
+→ push the tag → **watch the Release job publish** → **run
+`playbooks/update.yml` so the VPS runs the tagged code, and verify
+`/health` reports the new version**. Re-pointing a pushed tag re-triggers
+the flow (`git push origin :refs/tags/vX.Y.Z`, then re-tag and push
+again).
+
+Every fix merged to master ships as a patch tag in the same cycle — no
+fix rides unreleased: version bump + `## [X.Y.Z]` CHANGELOG section +
+`vX.Y.Z` tag + VPS update, every time.
 
 ## Architecture — What You Must Know
 
