@@ -75,31 +75,27 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
 
 ## How It Works
 
-```text
-POST /v1/audio/speech  { "input": "...", "voice": "pocket/<name>" }
-    |
-resolve voice (filesystem state LRU or ephemeral clone)
-    |
-normalize_text() [+ expand_siglas()] — pocket-tts chunks internally
-    |
-generate_audio(state, text, copy_state=True) -> 24 kHz float32
-    |
-_samples_to_wav() -> ffmpeg pipeline (EQ/compression/noise + atempo speed)
-    |
-OGG Opus 24 kbps 16 kHz mono (or WAV 24 kHz)
+**Speech synthesis — `POST /v1/audio/speech`**
 
-POST /v1/voices (multipart upload)
-    |
-auth -> per-IP gate -> per-key RPM -> FIFO lock (shared with speech)
-    |
-size/duration/format validation (3-30 s, <= 10 MB, wav/mp3)
-    |
-get_state_for_audio_prompt(tmp, truncate=True)
-    |
-[persist] export_model_state -> /voices/pocket/u_<ULID>.safetensors + .wav + .json
-    |  (else: ephemeral in-memory clone with TTLs)
-201 { voice, display_name, persisted, duration_s, sample_rate, expires_at }
-```
+1. The request carries the text (`input`) and a `voice` such as `pocket/rafael`.
+2. The server resolves that voice: a stored clone from disk (LRU-cached) or an
+   ephemeral in-memory one.
+3. The text is normalized (currency, dates, numbers) and acronyms are spaced
+   out; pocket-tts handles long texts by chunking them internally.
+4. pocket-tts generates raw audio at 24 kHz.
+5. An ffmpeg pass applies EQ, compression and loudness normalization (and
+   speed adjustment when `speed != 1.0`).
+6. The result is returned as OGG Opus 24 kbps mono (or WAV if requested).
+
+**Voice cloning — `POST /v1/voices` (multipart upload)**
+
+1. The uploaded audio is authenticated, rate-limited, then validated: WAV or
+   MP3, 3–30 s, up to 10 MB.
+2. A voice embedding is extracted from the sample.
+3. If `persist=true`, the clone is saved to `/voices/pocket/u_<ULID>/`
+   (`.safetensors` state + reference `.wav` + metadata `.json`); otherwise it
+   lives only in memory and expires after a few hours.
+4. The response returns the new voice name plus duration and sample rate.
 
 ## Voices (v3)
 
