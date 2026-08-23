@@ -33,6 +33,12 @@ _TIME_RE = re.compile(r"(?<!/)\b(\d{1,2}):(\d{2})\b")
 # Ordinals: 3º, 1ª, 10º
 _ORDINAL_RE = re.compile(r"(\d+)[ºª]")
 
+# Thousands-grouped integers: 1.234 / 12.345.678 (currency consumed earlier)
+_THOUSANDS_RE = re.compile(r"\b(\d{1,3}(?:\.\d{3})+)\b")
+
+# Decimals with Brazilian comma: 10,5 / 10,50 (currency consumed earlier)
+_DECIMAL_RE = re.compile(r"\b(\d+),(\d+)\b")
+
 # Standalone integers (not part of dates, times, or currency already processed)
 _NUMBER_RE = re.compile(r"\b(\d+)\b")
 
@@ -93,7 +99,12 @@ def normalize_times(text: str) -> str:
 
 
 def normalize_numbers(text: str) -> str:
-    """Replace standalone ordinals and integers with pt-BR words."""
+    """Replace ordinals, decimals, thousands groups and integers with words.
+
+    Decimal commas and dot-grouped thousands MUST become words here;
+    leaving them glued ("dez,cinquenta", "um.duzentos...") feeds the TTS
+    out-of-distribution punctuation and stalls generation.
+    """
 
     def _replace_ordinal(match: re.Match[str]) -> str:
         result = _n2w(int(match.group(1)), to="ordinal")
@@ -101,7 +112,20 @@ def normalize_numbers(text: str) -> str:
             result = result[:-1] + "a"
         return result
 
+    def _replace_thousands(match: re.Match[str]) -> str:
+        return _n2w(int(match.group(1).replace(".", "")))
+
+    def _replace_decimal(match: re.Match[str]) -> str:
+        # Fractional digits read as an integer ("10,50" -> "dez vírgula
+        # cinquenta"), the colloquial pt-BR reading; num2words(float)
+        # would drop the trailing zero.
+        integer_words = _n2w(int(match.group(1)))
+        fraction_words = _n2w(int(match.group(2)))
+        return f"{integer_words} vírgula {fraction_words}"
+
     text = _ORDINAL_RE.sub(_replace_ordinal, text)
+    text = _THOUSANDS_RE.sub(_replace_thousands, text)
+    text = _DECIMAL_RE.sub(_replace_decimal, text)
 
     def _replace_number(match: re.Match[str]) -> str:
         return _n2w(int(match.group(1)))

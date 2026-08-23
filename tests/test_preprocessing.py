@@ -55,3 +55,19 @@ def test_normalize_text_pipeline_applies_currency_and_numbers() -> None:
     out = normalize_text("Pague R$ 100,00 até o 1º dia de janeiro.")
     assert "100,00" not in out  # currency expanded
     assert "1º" not in out  # ordinal expanded
+
+
+def test_normalize_numbers_expands_decimal_comma() -> None:
+    """Regression: '10,50' used to become glued 'dez,cinquenta' — the comma
+    must be consumed and the decimal read as one number (2026-08-23)."""
+    out = normalize_numbers("Pese 10,50 gramas")
+    assert "," not in out
+    assert "dez" in out.lower()
+    assert "cinquenta" in out.lower()
+
+
+def test_normalize_numbers_expands_thousands_dot_groups() -> None:
+    """Regression: '1.234' used to become glued 'um.duzentos...' (2026-08-23)."""
+    out = normalize_numbers("Vendemos 1.234 unidades")
+    assert "." not in out
+    assert "mil" in out.lower()

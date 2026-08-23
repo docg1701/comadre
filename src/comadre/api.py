@@ -60,10 +60,13 @@ async def generate_speech(
     key_id: str | None = getattr(auth_payload, "key_id", None)
 
     # Determine media type
-    media_type = (
-        "audio/ogg" if body.response_format == ResponseFormat.ogg else "audio/wav"
-    )
+    media_type = {
+        ResponseFormat.ogg: "audio/ogg",
+        ResponseFormat.mp3: "audio/mpeg",
+        ResponseFormat.wav: "audio/wav",
+    }[body.response_format]
     extension = body.response_format.value
+    voice_slug = voice.removeprefix("pocket/").replace("/", "_")
 
     start = time.monotonic()
 
@@ -111,6 +114,8 @@ async def generate_speech(
         content=audio_bytes,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="speech.{extension}"',
+            "Content-Disposition": (
+                f'attachment; filename="comadre-{voice_slug}.{extension}"'
+            ),
         },
     )

@@ -57,6 +57,10 @@ _VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _UPLOAD_VOICE_RE = re.compile(r"^u_[0-9A-HJKMNP-TV-Z]{26}$")
 _VOICE_PREFIX = "pocket/"
 
+# Lead silence prepended to every generated audio: pocket-tts clips the
+# first phoneme without it (operator-reported, 2026-08-23).
+_LEAD_SILENCE_MS = 500
+
 
 def _now_utc() -> datetime:
     return datetime.now(UTC)
@@ -363,7 +367,7 @@ def _apply_pipeline(
 
     Stage 1: Audio effects (EQ, compression, saturation, loudnorm) plus
     the optional atempo speed chain. Stage 2: noise mixing + final
-    encoding (OGG Opus or WAV). Constants carried over from the v2
+    encoding (OGG Opus, MP3 or WAV). Constants carried over from the v2
     radio_warm chain (Phase 0 starting point; re-tune via
     scripts/spike_pocket_tts.py against the v2 baselines).
     """
@@ -470,10 +474,25 @@ def _apply_noise_and_encode(
     room_volume: float = 0.45,
     hiss_volume: float = 0.24,
 ) -> bytes:
-    """Mix noise and encode to final format (OGG Opus or WAV)."""
+    """Mix noise and encode to final format (OGG Opus, MP3 or WAV)."""
     if response_format == "ogg":
-        codec_args = ["-c:a", "libopus", "-b:a", "24k", "-ar", "16000", "-ac", "1"]
+        # -ar 48000 BEFORE libopus: WhatsApp's player ignores Opus streams
+        # whose OpusHead input-sample-rate is non-standard (16 kHz files
+        # attach as silent audio); 48 kHz is the canonical Opus rate.
+        codec_args = ["-c:a", "libopus", "-b:a", "24k", "-ar", "48000", "-ac", "1"]
         fmt = "ogg"
+    elif response_format == "mp3":
+        codec_args = [
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+        ]
+        fmt = "mp3"
     else:
         codec_args = ["-ar", "24000", "-ac", "1"]
         fmt = "wav"
@@ -482,6 +501,7 @@ def _apply_noise_and_encode(
         f"[1:a]volume={room_volume}[room];"
         f"[2:a]volume={hiss_volume}[hiss];"
         "[0:a][room][hiss]amix=inputs=3:duration=shortest,"
+        f"adelay={_LEAD_SILENCE_MS}:all=1,"
         "loudnorm=I=-17:TP=-1.5:LRA=7"
     )
 
@@ -528,19 +548,37 @@ def _apply_noise_and_encode(
 def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
     """Encode processed WAV to final format without noise mixing.
 
-    Applies the final loudnorm pass (-17 LUFS) that would normally come
-    after noise mixing, then encodes to the requested format.
+    Prepends _LEAD_SILENCE_MS of silence (pocket-tts clips the first
+    phoneme otherwise), applies the final loudnorm pass (-17 LUFS) that
+    would normally come after noise mixing, then encodes to the requested
+    format.
     """
     if response_format == "wav":
         codec_args = ["-ar", "24000", "-ac", "1", "-f", "wav"]
+    elif response_format == "mp3":
+        codec_args = [
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            "-f",
+            "mp3",
+        ]
     else:
+        # -ar 48000 BEFORE libopus: WhatsApp's player ignores Opus streams
+        # whose OpusHead input-sample-rate is non-standard (16 kHz files
+        # attach as silent audio); 48 kHz is the canonical Opus rate.
         codec_args = [
             "-c:a",
             "libopus",
             "-b:a",
             "24k",
             "-ar",
-            "16000",
+            "48000",
             "-ac",
             "1",
             "-f",
@@ -555,7 +593,7 @@ def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
         "-i",
         "pipe:0",
         "-af",
-        "loudnorm=I=-17:TP=-1.5:LRA=7",
+        f"adelay={_LEAD_SILENCE_MS}:all=1,loudnorm=I=-17:TP=-1.5:LRA=7",
         *codec_args,
         "pipe:1",
     ]

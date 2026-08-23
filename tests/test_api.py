@@ -51,7 +51,7 @@ async def test_speech_happy_path_ogg_and_wav(
         assert response.headers["content-type"] == ctype
         assert (
             response.headers["content-disposition"]
-            == f'attachment; filename="speech.{fmt}"'
+            == f'attachment; filename="comadre-rafael.{fmt}"'
         )
         assert response.content == b"fake-audio-bytes"
 
@@ -111,7 +111,7 @@ async def test_speech_validation_messages_are_field_specific(
             "out of range",
         ),
         (
-            {"input": "hi", "voice": "pocket/rafael", "response_format": "mp3"},
+            {"input": "hi", "voice": "pocket/rafael", "response_format": "flac"},
             "invalid value",
         ),
     ]

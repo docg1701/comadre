@@ -9,6 +9,7 @@ class ResponseFormat(StrEnum):
     """Supported audio output formats."""
 
     ogg = "ogg"
+    mp3 = "mp3"
     wav = "wav"
 
 
