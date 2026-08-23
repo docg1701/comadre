@@ -5,6 +5,19 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.5] — 2026-08-23
+
+### Fixed
+
+- **`/health` reported a stale version after release bumps** — v3.0.4
+  shipped with `version: "3.0.3"` in `/health` because
+  `comadre/__init__.py` carried a hardcoded copy of the version string
+  that the pyproject bump missed (dual source of truth).
+  `__version__` now derives from installed package metadata
+  (`importlib.metadata.version("comadre")`), which `uv sync --frozen`
+  generates from `pyproject.toml` at image build — the hardcoded copy
+  can no longer drift. Regression test pins metadata == pyproject.
+
 ## [3.0.4] — 2026-08-23
 
 ### Changed
