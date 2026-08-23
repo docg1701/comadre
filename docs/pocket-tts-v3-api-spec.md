@@ -35,7 +35,7 @@ stored on the server for future requests.
 
 | Field | Type | Required | Constraints |
 |---|---|---|---|
-| `file` | file | yes | wav or mp3 (anything libsndfile/soundfile reads is accepted; docs advertise wav/mp3); ≤ `VOICE_UPLOAD_MAX_MB` (10 MB) |
+| `file` | file | yes | anything libsndfile/soundfile reads: WAV, MP3, OGG (Vorbis/Opus), FLAC; ≤ `VOICE_UPLOAD_MAX_MB` (10 MB) |
 | `display_name` | string | no | ≤ 64 chars; no NUL/CR/LF; alphanumeric, spaces, `-_'` allowed |
 | `persist` | bool | no | default `false`. Values `true/false/1/0` |
 
@@ -123,9 +123,9 @@ is the quality/cost sweet spot), hard maximum **30 s** (server truncates at
   e.g. 0.25 → `0.5,0.5`; 4.0 → `2.0,2.0`; 1.0 → no filter).
 - `raw=true`: skips the post-processing pipeline (no EQ/compression/noise/
   tempo) — still encodes to the requested format.
-- `response_format`: `ogg` (Opus 24 kbps, 16 kHz mono) or `wav`
-  (24 kHz mono). Same headers as v2 (`Content-Disposition:
-  attachment; filename="speech.<fmt>"`).
+- `response_format`: `ogg` (Opus 24 kbps, 48 kHz mono — WhatsApp-compatible),
+  `mp3` (64 kbps, 24 kHz mono) or `wav` (24 kHz mono). Headers:
+  `Content-Disposition: attachment; filename="comadre-<voice-slug>.<fmt>"`.
 
 ### 2.5 `GET /health` — same contract, new engine key
 

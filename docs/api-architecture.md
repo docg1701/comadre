@@ -46,8 +46,11 @@ POST /v1/audio/speech
 `_apply_pipeline` (single pipeline, ex radio_warm): stage-1 ffmpeg filter
 (highpass/bass/EQ/acompressor/asoftclip/lowpass/loudnorm) + the `atempo`
 chain for `speed != 1.0` (factors in [0.5, 2.0] whose product equals
-speed) → stage-2 noise mix (room/hiss WAVs from `noise_dir`) → encode
-(OGG Opus 24 kbps 16 kHz mono or WAV 24 kHz).
+speed) → stage-2 noise mix (room/hiss WAVs from `noise_dir`) → 500 ms
+lead silence (`adelay`, masks the engine's clipped first phoneme) →
+encode (OGG Opus 24 kbps 48 kHz mono — OpusHead input rate MUST be the
+canonical 48000 or WhatsApp plays it silent — MP3 64 kbps, or WAV
+24 kHz).
 
 ## Clone path
 

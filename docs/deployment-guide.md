@@ -92,16 +92,10 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `pocket_hf_token` | No | HF token for the one-time gated-model download (reads `HF_TOKEN` env). Unset after first boot. |
 | `pocket_model_local` / `pocket_tokenizer_local` / `pocket_rafael_local` | No | Air-gapped deploy paths (empty = auto-download). |
 | `voices_local_dir` | No | Local directory containing a `pocket/` subdirectory with voice files (empty to skip). See [voice-management.md](voice-management.md). |
-| `kokoro_model_url` | No | URL to download Kokoro ONNX model on first start (default: GitHub release URL) |
-| `kokoro_voices_url` | No | URL to download Kokoro voices binary on first start (default: GitHub release URL) |
-| `qwen3_model_url` | No | URL to download Qwen3 GGUF model on first start (default: HuggingFace URL). Empty string skips download. |
-| `qwen3_tokenizer_url` | No | URL to download Qwen3 tokenizer GGUF on first start (default: HuggingFace URL). Empty string skips download. |
 | `backup_passphrase` | Yes | Passphrase for AES-256-GCM encryption of backup archives (reads from `COMADRE_BACKUP_PASSPHRASE` env var). Minimum 16 characters. Maps to `BACKUP_PASSPHRASE` inside the container. |
 | `backup_retention_days` | No | Days to retain backup archives before pruning (default: 14) |
 | `backup_hour` | No | Hour (0-23) the nightly backup cron fires in `billing_timezone` (default: 2) |
 | `key_registry_db_path` | No | In-container path of the SQLite key registry (default: `/var/lib/comadre/registry.db`). Must be an absolute path at least two levels deep. |
-| `qwen3_model_local` | No | Local path to pre-converted Qwen3 GGUF model for SCP deployment (empty to skip — auto-download used instead) |
-| `qwen3_tokenizer_local` | No | Local path to pre-converted Qwen3 tokenizer GGUF for SCP deployment (empty to skip — auto-download used instead) |
 
 ## Complete Deployment Flow
 
@@ -160,8 +154,8 @@ After these four steps, the service is fully operational and ready to authentica
 | Playbook | Purpose | Requires sudo |
 |----------|---------|---------------|
 | `bootstrap.yml` | First-time VPS setup (Docker, UFW, build, start) | Yes |
-| `deploy-voices.yml` | Copy voice files to VPS (Kokoro .npy, Qwen3 .wav) | No |
-| `deploy-models.yml` | Copy Qwen3 GGUF models via SCP (air-gapped only) | No |
+| `deploy-voices.yml` | Copy voice files to the VPS (`pocket/` WAVs) | No |
+| `deploy-models.yml` | Copy pocket-tts model artifacts via SCP (air-gapped only) | No |
 | `update.yml` | Pull latest code, rebuild image, restart services | No |
 | `health.yml` | Operational-state assertion (DB perms, cron, UFW, backups) | No¹ |
 | `backup-keys.yml` | Encrypted snapshot of the key registry | No |
@@ -213,8 +207,8 @@ ansible-playbook playbooks/bootstrap.yml -i inventory/production.yml \
 ```
 
 If using SSH key auth, omit `ansible_password`. First-run wall-clock: expect
-30-45 minutes (Kokoro ~350 MB + Qwen3 ~1.6 GB model downloads on container
-start, then up to 30 min of health-check polling).
+30–45 minutes (gated pocket-tts model download on container start, then up
+to 30 min of health-check polling).
 
 **Expected output on success:**
 
@@ -225,7 +219,7 @@ Comadre TTS Service -- Bootstrap Complete
 ============================================
 
 Service Status:  healthy
-Loaded Voices:   kokoro/pf_dora, kokoro/pm_alex, kokoro/pm_santa, qwen/female, qwen/galvani
+Loaded Voices:   pocket/rafael
 Endpoint URL:    https://YOUR_VPS_DOMAIN
 ============================================
 ```
@@ -236,7 +230,7 @@ Endpoint URL:    https://YOUR_VPS_DOMAIN
 curl -sk -X POST https://YOUR_VPS_DOMAIN/v1/audio/speech \
   -H "Authorization: Bearer cmdr_live_YOUR_PLAINTEXT" \
   -H "Content-Type: application/json" \
-  -d '{"input":"Ola mundo", "voice":"kokoro/pm_santa"}' \
+  -d '{"input":"Ola mundo", "voice":"pocket/rafael"}' \
   --output test.ogg
 file test.ogg   # must report: "Ogg data, Opus audio"
 ```
@@ -292,7 +286,6 @@ Read-only diagnostic tool for troubleshooting. Never modifies anything.
 
 - Memory usage above 5 GB
 - Disk usage above 80%
-- Qwen3 engine not loaded (missing GGUF models or voice files)
 
 **Run:**
 
@@ -407,7 +400,8 @@ Voices are discovered from the filesystem at runtime. No environment variable co
 
 **Deploy voices via Ansible:**
 
-1. Set `voices_local_dir` in inventory to a local directory containing `kokoro/` and/or `qwen/` subdirectories:
+1. Set `voices_local_dir` in inventory to a local directory containing a
+   `pocket/` subdirectory:
 
     ```yaml
     voices_local_dir: "/path/to/my-voices"
@@ -417,10 +411,9 @@ Voices are discovered from the filesystem at runtime. No environment variable co
 
     ```text
     /path/to/my-voices/
-      kokoro/          # .npy voice profiles (optional)
-      qwen/            # .wav reference audio (optional)
-        galvani.wav
-        female.wav
+      pocket/          # .wav reference audio (operator voices)
+        marca-a.wav
+        marca-b.wav
     ```
 
 2. Run bootstrap (for first deploy) or the `deploy-voices.yml` playbook:
@@ -432,13 +425,13 @@ Voices are discovered from the filesystem at runtime. No environment variable co
 
 3. Voices are available immediately -- no restart needed.
 
-**Requirements for Qwen3 reference WAVs:**
+**Requirements for operator reference WAVs:**
 
-- Duration: 3-10 seconds
-- Format: WAV, mono, 16kHz or higher sample rate
-- Content: clear speech in the target voice, minimal background noise
-
-**Seed reproducibility:** Qwen3-TTS supports seed values for consistent voice characteristics across generations. The same seed + reference WAV produces similar voice quality.
+- Duration: 5–20 seconds recommended (3–30 accepted)
+- Format: WAV/MP3/OGG-Opus/FLAC, mono preferred
+- Content: clear speech in the target voice, minimal background noise —
+  [voice-reference-script.md](voice-reference-script.md) has a ready-to-read
+  pt-BR script engineered for clone quality
 
 ## HTTPS via Caddy
 
@@ -809,7 +802,10 @@ Caddy load-balances across all healthy replicas using the `dynamic a` upstream r
 | RAM      | 6 GB      | 12 GB      | 18 GB      |
 | Disk     | Shared (models + voices volumes) | Same | Same |
 
-Memory breakdown per replica: Python process with Kokoro loaded ~4.2 GB peak RSS + Qwen3 subprocess ~1.5 GB peak during inference = ~5.7 GB combined. The 6 GB limit provides ~300 MB headroom. Qwen3 has a 4-core sweet spot — beyond 4 cores per replica, diminishing returns (<2% gain).
+Memory breakdown per replica: pocket-tts peak RSS ~1.5–2 GB; the 6 GB
+per-replica limit leaves ample headroom. CPU is the binding constraint —
+measured ceilings and scaling factors in
+[replica-scaling-report.md](replica-scaling-report.md).
 
 ### What is shared vs per-instance
 

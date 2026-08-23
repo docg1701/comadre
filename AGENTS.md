@@ -119,7 +119,10 @@ fix rides unreleased: version bump + `## [X.Y.Z]` CHANGELOG section +
 - **Post-processing**: one pipeline (`_apply_pipeline`, ex radio_warm):
   stage-1 ffmpeg EQ/compression/loudnorm chain (+ atempo chain for
   `speed != 1.0`, factors in [0.5, 2.0]) then noise mix + encode. OGG Opus
-  24 kbps 16 kHz mono (default) or WAV 24 kHz.
+  24 kbps 48 kHz mono (default — OpusHead input rate must stay at the
+  canonical 48000 or WhatsApp plays the file silent), MP3 64 kbps, or WAV
+  24 kHz. A 500 ms lead silence (`adelay`) masks the engine's clipped
+  first phoneme.
 - **Module boundaries enforced**: no HTTP concerns in `service.py`, no
   business logic in `api.py` / `voices_api.py`, no raw `os.environ` (use
   pydantic-settings), no raw `HTTPException` (use `ComadreError`
@@ -184,9 +187,9 @@ fix rides unreleased: version bump + `## [X.Y.Z]` CHANGELOG section +
   config YAMLs baked into the image (`/models/pocket-tts/<lang>` paths;
   `weights_path_without_voice_cloning` deliberately omitted — fail fast,
   never silently degrade to the no-cloning model)
-- `docs/` — technical research docs (pocket-tts feasibility + migration
-  plan, API reference/architecture, config reference, voice management,
-  deployment guide, troubleshooting, monetization, rate limiting)
+- `docs/` — API reference/architecture, v3 API spec, config reference, voice
+  management, deployment guide, troubleshooting, monetization, rate
+  limiting, preprocessing fix plan, measured cost & scaling reports
 - `scripts/spike_pocket_tts.py` — the permanent tuning harness (34 sigla
   phrases + WhatsApp corpus, RTF sweep, sigla-spacing A/B, clone timing)
 - `src/comadre/keys/cli/` — `comadre-keys` CLI (Typer app). Commands:

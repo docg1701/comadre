@@ -228,10 +228,10 @@ empty — that is intentional; the default path is auto-download).
   offline boot, torch/RAM, state regen, upload validation errors
 - [docs/api-architecture.md](docs/api-architecture.md) — Internal design,
   queue architecture, VoiceRegistry/LRU, pipelines
-- [docs/pocket-tts-migration-feasibility.md](docs/pocket-tts-migration-feasibility.md) —
-  Why pocket-tts (v3 decision analysis)
-- [docs/pocket-tts-v3-migration-plan.md](docs/pocket-tts-v3-migration-plan.md) —
-  The executed migration plan (with the Phase 0 spike record)
+- [docs/pocket-tts-v3-api-spec.md](docs/pocket-tts-v3-api-spec.md) —
+  The v3 API contract (endpoints, schemas, voice naming)
+- [docs/preprocessing-fix-plan.md](docs/preprocessing-fix-plan.md) —
+  pt-BR preprocessing audit against pocket-tts internals + fix roadmap
 - [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — Measured
   pocket-tts scaling matrix (1 vs 2 replicas × 4 vs 8 vCPU host)
 - [docs/cost-comparison-report.md](docs/cost-comparison-report.md) — Measured

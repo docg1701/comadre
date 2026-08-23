@@ -116,8 +116,11 @@ destination paths (or the HF cache).
 **Resolution:**
 
 1. Check available voices via health endpoint: `curl -k https://localhost/health | jq .voices`
-2. Voice names use the `engine/name` format: `kokoro/pm_santa`, `kokoro/pf_dora`, `kokoro/pm_alex`, `qwen/female`, `qwen/galvani`, etc.
-3. Voice names are case-sensitive. The engine prefix (`kokoro/` or `qwen/`) is required. See [voice-management.md](voice-management.md) for the full list of available voices and how to add new ones.
+2. Voice names use the `pocket/name` format: `pocket/rafael` (catalog),
+   `pocket/<operator-voice>` or `pocket/u_<ULID>` (clones).
+3. Voice names are case-sensitive. The `pocket/` prefix is required. See
+   [voice-management.md](voice-management.md) for the full list of available
+   voices and how to add new ones.
 
 ### 429 rate limit exceeded
 
