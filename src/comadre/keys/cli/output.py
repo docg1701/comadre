@@ -732,11 +732,6 @@ def _format_uptime(seconds: int) -> str:
     return f"{hours}h {remaining_minutes:02d}m"
 
 
-def _format_decimal(value: float, *, places: int = 1) -> str:
-    """Return ``value`` with fixed decimal places. Used for hit-rate / avg rpm."""
-    return f"{value:.{places}f}"
-
-
 def render_cache_status(status: AggregatedCacheStatus | None) -> None:
     """Story 2.3 AC9 — emit the cache-status table output.
 
@@ -784,8 +779,7 @@ def render_cache_status(status: AggregatedCacheStatus | None) -> None:
         highlight=False,
     )
     console.print(
-        f"  Hit rate:  {_format_decimal(hit_rate_pct)}% "
-        f"({status.hits} hits / {lookups} lookups)",
+        f"  Hit rate:  {hit_rate_pct:.1f}% ({status.hits} hits / {lookups} lookups)",
         markup=False,
         highlight=False,
     )
