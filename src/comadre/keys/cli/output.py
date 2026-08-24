@@ -51,12 +51,6 @@ _LABEL_WIDTH = 13
 # message). Hosted here so both command modules agree on the tuple identity.
 LIST_FORMAT_CHOICES: tuple[str, ...] = ("table", "json")
 
-# Story 4.1 — export-customer accepts only JSON (default, machine-readable)
-# or YAML (human-readable, LGPD deliverable). Table mode is deliberately
-# excluded: LGPD access responses are data-subject deliverables, not
-# operator monitoring surfaces.
-EXPORT_FORMAT_CHOICES: tuple[str, ...] = ("json", "yaml")
-
 
 _USER_TEXT_MAX_LEN = 200
 """Cap for stored ``name`` / ``email`` / ``notes`` / ``customer_name`` echoes.
@@ -1000,41 +994,6 @@ def render_export_json(payload: dict[str, object]) -> None:
     from the caller's dict insertion order (Python 3.7+ / CPython 3.6+).
     """
     stdout_console().print_json(data=payload, indent=2)
-
-
-def render_export_yaml(payload: dict[str, object]) -> None:
-    """Story 4.1 — emit the export payload as YAML 1.1 (safe subset) to stdout.
-
-    Key-order preserved from the ``payload`` dict's insertion order so
-    the AC1 field-ordering contract holds on YAML output too. Unicode
-    passes through verbatim (names / notes with accented characters).
-
-    Written directly to the underlying console file rather than through
-    ``console.print`` so rich markup parsing cannot eat bracketed
-    substrings in operator-supplied notes (``[urgent]`` etc.).
-
-    ``yaml.safe_dump`` is the chosen surface — never ``yaml.dump`` —
-    because it caps at YAML 1.1 standard types and never emits the
-    ``!!python/object`` tag that ``yaml.load`` would honor on the
-    consumer side.
-    """
-    import yaml
-
-    file = stdout_console().file
-    file.write(
-        yaml.safe_dump(
-            payload,
-            allow_unicode=True,
-            sort_keys=False,
-            default_flow_style=False,
-        )
-    )
-    # Flush explicitly: ``Console.print_json`` routes through Rich's buffer
-    # flush, but the direct ``file.write`` above skips that discipline.
-    # Without this, a SIGPIPE from a short-reading downstream (e.g. ``| head``)
-    # can abort the interpreter before the at-exit flush, leaving the LGPD
-    # deliverable truncated on disk.
-    file.flush()
 
 
 def _reset_for_tests() -> None:

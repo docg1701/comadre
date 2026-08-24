@@ -292,7 +292,7 @@ wheels = [
 
 [[package]]
 name = "comadre"
-version = "3.1.10"
+version = "3.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools", marker = "sys_platform == 'linux'" },
@@ -307,7 +307,6 @@ dependencies = [
     { name = "pydantic-settings", marker = "sys_platform == 'linux'" },
     { name = "python-multipart", marker = "sys_platform == 'linux'" },
     { name = "python-ulid", marker = "sys_platform == 'linux'" },
-    { name = "pyyaml", marker = "sys_platform == 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'" },
     { name = "typer", marker = "sys_platform == 'linux'" },
     { name = "uvicorn", extra = ["standard"], marker = "sys_platform == 'linux'" },
@@ -324,7 +323,6 @@ dev = [
     { name = "pytest", marker = "sys_platform == 'linux'" },
     { name = "pytest-asyncio", marker = "sys_platform == 'linux'" },
     { name = "ruff", marker = "sys_platform == 'linux'" },
-    { name = "types-pyyaml", marker = "sys_platform == 'linux'" },
 ]
 lint = [
     { name = "pre-commit", marker = "sys_platform == 'linux'" },
@@ -341,7 +339,6 @@ test = [
 ]
 type-check = [
     { name = "mypy", marker = "sys_platform == 'linux'" },
-    { name = "types-pyyaml", marker = "sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -358,7 +355,6 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-ulid", specifier = ">=2.2" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "torch", specifier = ">=2.5.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "typer", specifier = ">=0.12,<0.25" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
@@ -375,7 +371,6 @@ dev = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "ruff", specifier = ">=0.9" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20260408" },
 ]
 lint = [
     { name = "pre-commit", specifier = ">=4.0" },
@@ -388,10 +383,7 @@ test = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
 ]
-type-check = [
-    { name = "mypy", specifier = ">=1.14" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20260408" },
-]
+type-check = [{ name = "mypy", specifier = ">=1.14" }]
 
 [[package]]
 name = "coverage"
@@ -1526,15 +1518,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/b8/9ebb531b6c2d377af08ac6746a5df3425b21853a5d2260876919b58a2a4a/typer-0.24.2.tar.gz", hash = "sha256:ec070dcfca1408e85ee203c6365001e818c3b7fffe686fd07ff2d68095ca0480", size = 119849, upload-time = "2026-04-22T17:45:34.413Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/39/d1/9484b497e0a0410b901c12b8251c3e746e1e863f7d28419ffe06f7892fda/typer-0.24.2-py3-none-any.whl", hash = "sha256:b618bc3d721f9a8d30f3e05565be26416d06e9bcc29d49bc491dc26aba674fa8", size = 55977, upload-time = "2026-04-22T17:45:33.055Z" },
-]
-
-[[package]]
-name = "types-pyyaml"
-version = "6.0.12.20260815"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9f/72/b56089aeee6c496d969bac42376bedb6e3eeab4682e1018fa3137122f94b/types_pyyaml-6.0.12.20260815.tar.gz", hash = "sha256:28764110c9cf35846e733da32d8d734df7473c5dde9ef67c3b7332ec0e819858", size = 18545, upload-time = "2026-08-15T02:41:51.532Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/52/eefeba09be4ef2a1eb989eb92934561e8e502a6ee3c32654996e4be7e399/types_pyyaml-6.0.12.20260815-py3-none-any.whl", hash = "sha256:6f332212b7e191f3afd5016a713c510b6340593b7ebec573c7d5d20aa5386d3b", size = 21148, upload-time = "2026-08-15T02:41:50.555Z" },
 ]
 
 [[package]]

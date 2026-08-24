@@ -35,6 +35,7 @@ from comadre.keys.db import (
     get_last_sweep_timestamp,
 )
 from comadre.keys.formatters import format_seconds_ago
+from comadre.timeutil import now_utc, utc_now_iso
 from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 Severity = Literal["ok", "info", "warn", "fail"]
@@ -43,17 +44,6 @@ Severity = Literal["ok", "info", "warn", "fail"]
 # fires daily at 00:30 operator-TZ; a 48 h threshold tolerates one missed
 # run without flipping to warn, which absorbs ordinary ops noise.
 _SWEEP_STALENESS_WARN_SECONDS = 48 * 3600
-
-_ISO_UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-def _utcnow() -> datetime:
-    """Clock seam — monkeypatched in tests to freeze time."""
-    return datetime.now(UTC)
-
-
-def _utcnow_iso() -> str:
-    return _utcnow().strftime(_ISO_UTC_FORMAT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,7 +265,7 @@ def _check_last_sweep(
                 "staleness_warn_seconds": staleness_warn_seconds,
             },
         )
-    delta = int((_utcnow() - parsed).total_seconds())
+    delta = int((now_utc() - parsed).total_seconds())
     age_label = format_seconds_ago(delta)
     # Future timestamp — clock skew between host and container, audit-log
     # tamper, or a TZ misconfig writing local time as UTC. Surface as warn
@@ -415,7 +405,7 @@ def _marker_install_age_seconds(marker_path: Path) -> int | None:
         mtime = marker_path.stat().st_mtime
     except OSError:
         return None
-    return int(_utcnow().timestamp() - mtime)
+    return int(now_utc().timestamp() - mtime)
 
 
 def _check_billing_timezone_drift(
@@ -660,8 +650,9 @@ def _check_last_backup(
         )
     newest, newest_mtime = max(survivors, key=lambda item: item[1])
     mtime_epoch = int(newest_mtime)
-    mtime_iso = datetime.fromtimestamp(mtime_epoch, UTC).strftime(_ISO_UTC_FORMAT)
-    age = int((_utcnow() - datetime.fromtimestamp(mtime_epoch, UTC)).total_seconds())
+    mtime_dt = datetime.fromtimestamp(mtime_epoch, UTC)
+    mtime_iso = mtime_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    age = int((now_utc() - mtime_dt).total_seconds())
     if age > staleness_warn_seconds:
         return HealthCheck(
             label="Last backup",
@@ -818,7 +809,7 @@ def collect_health_report(
     return HealthReport(
         checks=checks,
         is_healthy=is_healthy,
-        generated_at=_utcnow_iso(),
+        generated_at=utc_now_iso(),
     )
 
 

@@ -34,7 +34,6 @@ from comadre.keys.cli._db import open_registry
 from comadre.keys.cli._errors import first_error_msg
 from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
-    EXPORT_FORMAT_CHOICES,
     LIST_FORMAT_CHOICES,
     confirm_or_abort,
     render_audit_tail,
@@ -44,7 +43,6 @@ from comadre.keys.cli.output import (
     render_empty_state,
     render_error,
     render_export_json,
-    render_export_yaml,
     render_json,
     render_key_detail,
     render_last_24h_stats,
@@ -907,7 +905,6 @@ _EXPORT_BAD_ID_HINT = (
     "Customer IDs have the shape cust_<26-char-ULID>. "
     "Use list-customers to find the right id."
 )
-_EXPORT_FORMAT_HINT = "Valid values: json, yaml."
 _EXPORT_DECRYPT_HINT = (
     "Check KEY_REGISTRY_ENCRYPTION_KEY matches the deployment-time key. "
     "If the key has changed, restore the previous value or run "
@@ -962,15 +959,6 @@ def export_customer_cmd(
             "Example: cust_01j8xr3e4c5m7kn9p2qt8vwy."
         ),
     ),
-    format: str = typer.Option(
-        "json",
-        "--format",
-        help=(
-            "Output format: json (default, machine-readable) or yaml "
-            "(human-readable for data-subject access response). "
-            "Example: --format yaml."
-        ),
-    ),
     include_audit: bool = typer.Option(
         False,
         "--include-audit",
@@ -985,17 +973,8 @@ def export_customer_cmd(
     """Export a customer's stored data to stdout for LGPD Art. 18 II/V response.
 
     Example: comadre-keys export-customer cust_01j8xr3e4c5m7kn9p2qt8vwy
-             comadre-keys export-customer cust_01j8xr3e4c5m7kn9p2qt8vwy --format yaml
     """
-    # 1. Literal flag validation.
-    if format not in EXPORT_FORMAT_CHOICES:
-        render_error(
-            "Usage error: --format must be json or yaml",
-            _EXPORT_FORMAT_HINT,
-        )
-        raise typer.Exit(code=2)
-
-    # 2. Customer ID shape validation — pre-DB so typos / pasted secrets
+    # 1. Customer ID shape validation — pre-DB so typos / pasted secrets
     # never open a connection.
     if not _CUSTOMER_ID_PATTERN.match(customer_id):
         render_error(
@@ -1004,16 +983,16 @@ def export_customer_cmd(
         )
         raise typer.Exit(code=2)
 
-    # 3. Settings ladder (exit 6).
+    # 2. Settings ladder (exit 6).
     loaded = load_settings_and_tz()
     if loaded is None:
         raise typer.Exit(code=6)
     settings, _billing_tz = loaded
 
-    # 4. Open DB + migrations (exit 5).
+    # 3. Open DB + migrations (exit 5).
 
     with open_registry(settings) as conn:
-        # 5. Fetch the export row (+ associated keys).
+        # 4. Fetch the export row (+ associated keys).
         try:
             row = get_customer_with_cipher(conn, customer_id)
         except (sqlite3.Error, OSError, RuntimeError) as exc:
@@ -1062,7 +1041,7 @@ def export_customer_cmd(
                 render_error("Database error", str(exc))
                 raise typer.Exit(code=5) from None
 
-    # 6. Decrypt + format (exit 5 on InvalidToken / non-UTF8 plaintext /
+    # 5. Decrypt + format (exit 5 on InvalidToken / non-UTF8 plaintext /
     # wrong-length canonical — env-var swap or ciphertext tampering are the
     # only operational causes). The decrypted string lives only in the local
     # scope until it is embedded in the payload dict below.
@@ -1078,7 +1057,7 @@ def export_customer_cmd(
         )
         raise typer.Exit(code=5) from None
 
-    # 7. Build the export payload. Insertion order is the AC1 field-order
+    # 6. Build the export payload. Insertion order is the AC1 field-order
     # contract: id → name → email → tax_id_kind → tax_id → registered_at
     # → notes → keys.
     payload: dict[str, object] = {
@@ -1132,20 +1111,16 @@ def export_customer_cmd(
         payload["audit_events_total"] = audit_events_total
         payload["audit_events_truncated"] = audit_events_total > len(audit_events)
 
-    # 8. PII-austere INFO log. Never tax_id / name / email / ciphertext.
+    # 7. PII-austere INFO log. Never tax_id / name / email / ciphertext.
     _logger.info(
-        "Customer exported | id=%s | key_count=%d | format=%s | include_audit=%s",
+        "Customer exported | id=%s | key_count=%d | include_audit=%s",
         row.id,
         len(keys),
-        format,
         include_audit,
     )
 
-    # 9. Render branch.
-    if format == "json":
-        render_export_json(payload)
-    else:
-        render_export_yaml(payload)
+    # 8. Render.
+    render_export_json(payload)
 
 
 # ---------------------------------------------------------------------------

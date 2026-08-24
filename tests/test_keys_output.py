@@ -7,7 +7,7 @@ helpers. What remains here is what ONLY a render-layer test can check:
 * CustomerDetailRow does not leak ciphertext.
 * Operator-supplied free-form fields (notes, customer_name, health value)
   cannot break out of Rich markup escape (F24 hardening).
-* JSON / YAML export round-trip + insertion order — LGPD export is a
+* JSON export round-trip + insertion order — LGPD export is a
   machine contract, not human UX.
 """
 
@@ -17,14 +17,12 @@ import json
 from io import StringIO
 
 import pytest
-import yaml
 from rich.console import Console
 
 import comadre.keys.cli.output as output_mod
 from comadre.keys.cli.output import (
     render_customer_detail,
     render_export_json,
-    render_export_yaml,
     render_health_report,
     render_revenue_report,
     render_suspend_sweep_preview,
@@ -129,7 +127,7 @@ def test_renderers_escape_markup_in_operator_supplied_fields(
     assert "[red]evil[/]" in buf.getvalue()  # literal escape preserved
 
 
-def test_render_export_json_and_yaml_round_trip_preserving_order(
+def test_render_export_json_round_trip_preserving_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """LGPD export is a machine contract: parse + key order are part of it."""
@@ -157,9 +155,3 @@ def test_render_export_json_and_yaml_round_trip_preserving_order(
     parsed_json = json.loads(buf.getvalue())
     assert parsed_json == payload
     assert list(parsed_json.keys()) == expected_keys
-
-    buf = _capture(monkeypatch)
-    render_export_yaml(payload)
-    parsed_yaml = yaml.safe_load(buf.getvalue())
-    assert parsed_yaml == payload
-    assert list(parsed_yaml.keys()) == expected_keys

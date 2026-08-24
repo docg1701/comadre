@@ -132,9 +132,8 @@ LGPD Art. 18 II/V guarantees the data subject the right to confirm processing ex
 # 1. Identify the customer from the email / tax-ID they provided in the request.
 comadre-keys list-customers  # pick the row whose email matches; note the cust_... ID
 
-# 2. Export in JSON (machine-readable) or YAML (human-readable deliverable).
-comadre-keys export-customer cust_01HG7... --format json > /tmp/customer-export.json
-comadre-keys export-customer cust_01HG7... --format yaml > /tmp/customer-export.yaml
+# 2. Export the JSON envelope (machine-readable).
+comadre-keys export-customer cust_01HG7... > /tmp/customer-export.json
 
 # 3. Deliver via the agreed channel (signed email reply, client portal, etc.).
 #    The export is non-mutating — no DB rows change, no audit row is written.

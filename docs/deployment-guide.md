@@ -548,9 +548,7 @@ Brazilian LGPD (Art. 18) gives customers the right to access the personal data C
 **Data-subject access request (Art. 18 II / V).** Emit a machine-readable document with the customer's name, email, decrypted tax ID (formatted), notes, and associated key prefixes:
 
 ```bash
-comadre-keys export-customer <cust_id> --format json > /tmp/export.json
-# or for a human-readable deliverable:
-comadre-keys export-customer <cust_id> --format yaml > /tmp/export.yaml
+comadre-keys export-customer <cust_id> > /tmp/export.json
 ```
 
 The export is non-mutating — no DB rows change, no audit row is written. Forward the resulting document to the subject via the agreed channel (email, client portal, etc.).

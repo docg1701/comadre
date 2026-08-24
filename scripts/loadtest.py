@@ -323,34 +323,6 @@ async def validate_audio(
 
 
 # ---------------------------------------------------------------------------
-# Health monitor
-# ---------------------------------------------------------------------------
-
-
-async def health_monitor(
-    client: httpx.AsyncClient,
-    base_url: str,
-    samples: list[HealthSample],
-    stop: asyncio.Event,
-) -> None:
-    while not stop.is_set():
-        try:
-            r = await client.get(f"{base_url}/health", timeout=5)
-            data = r.json()
-            samples.append(
-                HealthSample(
-                    timestamp=time.time(),
-                    queue_depth=data.get("queue_depth", -1),
-                    memory_mb=data.get("memory_mb", -1),
-                )
-            )
-        except Exception:
-            pass
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), timeout=1.0)
-
-
-# ---------------------------------------------------------------------------
 # Shared state for live queue depth reading
 # ---------------------------------------------------------------------------
 

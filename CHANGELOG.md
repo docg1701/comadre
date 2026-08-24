@@ -5,6 +5,23 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.11] — 2026-08-24
+
+### Removed
+
+- **YAML export format** — `export-customer --format yaml` and the
+  `pyyaml` runtime dep (+ `types-pyyaml` dev stub) cut: JSON is the sole
+  export surface (default already). Docs examples updated.
+- **Dead code** — uncalled `health_monitor()` coroutine dropped from
+  `scripts/loadtest.py` (`HealthSample`/`LiveState` remain in use).
+
+### Changed
+
+- **Clock helpers deduplicated** — `keys/health.py` `_utcnow()` /
+  `_utcnow_iso()` replaced by the shared `timeutil.now_utc()` /
+  `timeutil.utc_now_iso()`; local `_ISO_UTC_FORMAT` constant inlined at its
+  single remaining call site.
+
 ## [3.1.10] — 2026-08-24
 
 ### Removed
