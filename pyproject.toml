@@ -1,6 +1,6 @@
 [project]
 name = "comadre"
-version = "3.1.1"
+version = "3.1.2"
 description = "Comadre Manda Áudio Direto, Rápido e Eficiente — pocket-tts TTS API with native voice cloning"
 readme = "README.md"
 license = "MIT"

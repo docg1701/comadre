@@ -5,6 +5,31 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] — 2026-08-23
+
+### Fixed
+
+- **WhatsApp Web OGG mute** — encoding corrected to `-ar 16000 -application voip`
+  (verified byte-for-byte against genuine WhatsApp PTT: 16 kHz declared rate,
+  `VO` `vendor` handling, code-3 multi-frame packing is *not* required for
+  Web import; the noisy repacketer was discarded — direct voip16k passes).
+  MP3 bumped to 44.1 kHz for universal player compatibility.
+- **Phone number pacing** — digit groups now separated by sentence boundaries
+  (periods) to prevent blending and rushing; e.g. `(11) 99999-8888` reads
+  as measured groups verified via Whisper digit-sequence checks.
+
+### Removed
+
+- **Deadcode `expand_siglas` / `POCKET_SIGLA_SPACING`** — intact siglas won
+  the A/B decisively; no opt-in, no fallback, no backward-compat.
+- **Useless `salva` badge** from Minhas Vozes (kept delete button only).
+
+### Changed
+
+- **Landing format selector** now marks verified WhatsApp-compatible formats:
+  `OGG Opus (compatível com WhatsApp)` / `MP3 (compatível com WhatsApp)`.
+  Until 3.1.1 no format was compatible.
+
 ## [3.1.1] — 2026-08-23
 
 ### Changed

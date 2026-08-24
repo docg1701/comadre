@@ -48,8 +48,8 @@ POST /v1/audio/speech
 chain for `speed != 1.0` (factors in [0.5, 2.0] whose product equals
 speed) → stage-2 noise mix (room/hiss WAVs from `noise_dir`) → 500 ms
 lead silence (`adelay`, masks the engine's clipped first phoneme) →
-encode (OGG Opus 24 kbps 48 kHz mono — OpusHead input rate MUST be the
-canonical 48000 or WhatsApp plays it silent — MP3 64 kbps, or WAV
+encode (OGG Opus 24 kbps 16 kHz mono `-application voip` — verified
+against genuine WhatsApp PTT structure — MP3 64 kbps 44.1 kHz mono, or WAV
 24 kHz).
 
 ## Clone path

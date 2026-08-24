@@ -37,7 +37,7 @@ JSON body:
 |---|---|---|---|
 | `input` | string | yes | 1-1000 chars |
 | `voice` | string | no | `pocket/<name>`; default `pocket/rafael` |
-| `response_format` | string | no | `ogg` (Opus 24 kbps, 48 kHz mono — WhatsApp-compatible) or `mp3` (64 kbps, 24 kHz mono) or `wav` (24 kHz mono) |
+| `response_format` | string | no | `ogg` (Opus 24 kbps, 16 kHz mono `-application voip` — WhatsApp-compatible) or `mp3` (64 kbps, 44.1 kHz mono — WhatsApp-compatible) or `wav` (24 kHz mono) |
 | `speed` | float | no | 0.25-4.0, applied as an ffmpeg `atempo` chain (factors in [0.5, 2.0]) |
 | `raw` | bool | no | skip EQ/compression/noise/tempo (still encodes to the format) |
 

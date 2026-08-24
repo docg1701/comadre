@@ -120,8 +120,8 @@ fix rides unreleased: version bump + `## [X.Y.Z]` CHANGELOG section +
 - **Post-processing**: one pipeline (`_apply_pipeline`, ex radio_warm):
   stage-1 ffmpeg EQ/compression/loudnorm chain (+ atempo chain for
   `speed != 1.0`, factors in [0.5, 2.0]) then noise mix + encode. OGG Opus
-  24 kbps 48 kHz mono (default — OpusHead input rate must stay at the
-  canonical 48000 or WhatsApp plays the file silent), MP3 64 kbps, or WAV
+  24 kbps 16 kHz mono `-application voip` (default — verified against
+  genuine WhatsApp PTT structure), MP3 64 kbps 44.1 kHz mono, or WAV
   24 kHz. A 500 ms lead silence (`adelay`) masks the engine's clipped
   first phoneme.
 - **Module boundaries enforced**: no HTTP concerns in `service.py`, no
