@@ -470,6 +470,38 @@ def _find_noise_file(noise_dir: Path | None, kind: str) -> Path | None:
     return None
 
 
+def _codec_and_fmt(
+    response_format: str, *, mp3_rate: str = "24000"
+) -> tuple[list[str], str]:
+    """Return (codec_args, fmt) for the given response_format.
+
+    mp3_rate selects the sample rate for MP3 (24 kHz for noise-mixed path,
+    44.1 kHz for direct encode — the only call-site difference).
+    """
+    if response_format == "ogg":
+        return (
+            [
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "24k",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-application",
+                "voip",
+            ],
+            "ogg",
+        )
+    if response_format == "mp3":
+        return (
+            ["-c:a", "libmp3lame", "-b:a", "64k", "-ar", mp3_rate, "-ac", "1"],
+            "mp3",
+        )
+    return (["-ar", "24000", "-ac", "1"], "wav")
+
+
 def _apply_noise_and_encode(
     processed_wav: bytes,
     room_noise: Path,
@@ -479,35 +511,7 @@ def _apply_noise_and_encode(
     hiss_volume: float = 0.24,
 ) -> bytes:
     """Mix noise and encode to final format (OGG Opus, MP3 or WAV)."""
-    if response_format == "ogg":
-        codec_args = [
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "24k",
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-application",
-            "voip",
-        ]
-        fmt = "ogg"
-    elif response_format == "mp3":
-        codec_args = [
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "64k",
-            "-ar",
-            "24000",
-            "-ac",
-            "1",
-        ]
-        fmt = "mp3"
-    else:
-        codec_args = ["-ar", "24000", "-ac", "1"]
-        fmt = "wav"
+    codec_args, fmt = _codec_and_fmt(response_format)
 
     filter_complex = (
         f"[1:a]volume={room_volume}[room];"
@@ -565,36 +569,7 @@ def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
     would normally come after noise mixing, then encodes to the requested
     format.
     """
-    if response_format == "wav":
-        codec_args = ["-ar", "24000", "-ac", "1", "-f", "wav"]
-    elif response_format == "mp3":
-        codec_args = [
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "64k",
-            "-ar",
-            "44100",
-            "-ac",
-            "1",
-            "-f",
-            "mp3",
-        ]
-    else:
-        codec_args = [
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "24k",
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-application",
-            "voip",
-            "-f",
-            "ogg",
-        ]
+    codec_args, fmt = _codec_and_fmt(response_format, mp3_rate="44100")
 
     cmd = [
         "ffmpeg",
@@ -606,6 +581,8 @@ def _encode_final(processed_wav: bytes, response_format: str) -> bytes:
         "-af",
         f"adelay={_LEAD_SILENCE_MS}:all=1,loudnorm=I=-17:TP=-1.5:LRA=7",
         *codec_args,
+        "-f",
+        fmt,
         "pipe:1",
     ]
 

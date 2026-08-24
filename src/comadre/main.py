@@ -260,20 +260,7 @@ _GENERIC_VALIDATION_HINT = (
 
 
 def _format_validation_error(exc: RequestValidationError) -> tuple[str, str]:
-    """Translate the first pydantic error into a (message, hint) pair (B20).
-
-    Operators reading the API response shouldn't need to read the raw
-    pydantic error envelope to know whether the input was empty, oversized,
-    or wrong shape. This helper inspects the first error's ``type`` (the
-    pydantic v2 stable identifier — ``string_too_short``,
-    ``string_too_long``, ``missing``, ``string_type``, etc.) and emits a
-    field-specific message.
-
-    Falls back to the legacy generic message when the error shape is
-    unfamiliar (e.g. the ``model_validator`` raises a ``ValueError`` with
-    a custom message — those already carry a useful ``msg`` we surface
-    verbatim).
-    """
+    """Translate the first pydantic error into a (message, hint) pair (B20)."""
     errors = exc.errors()
     if not errors:
         return "Invalid request body", _GENERIC_VALIDATION_HINT
@@ -282,79 +269,60 @@ def _format_validation_error(exc: RequestValidationError) -> tuple[str, str]:
     loc = first.get("loc") or ()
     field = next((str(p) for p in loc if p != "body"), "request body")
     raw_msg = str(first.get("msg") or "").strip()
+    ctx = first.get("ctx") or {}
 
     if err_type == "string_too_short":
-        return (
-            f"Field '{field}' must not be empty",
-            f"Provide a non-empty {field}.",
-        )
+        return f"Field '{field}' must not be empty", f"Provide a non-empty {field}."
     if err_type == "string_too_long":
-        ctx = first.get("ctx") or {}
         max_len = ctx.get("max_length")
-        max_clause = f" (max {max_len} chars)" if max_len is not None else ""
+        clause = f" (max {max_len} chars)" if max_len is not None else ""
         return (
-            f"Field '{field}' exceeds the allowed length{max_clause}",
-            f"Trim {field}{max_clause} or fewer.",
+            f"Field '{field}' exceeds the allowed length{clause}",
+            f"Trim {field}{clause} or fewer.",
         )
     if err_type == "missing":
-        return (
-            f"Field '{field}' is required",
-            _GENERIC_VALIDATION_HINT,
-        )
+        return f"Field '{field}' is required", _GENERIC_VALIDATION_HINT
     if err_type in {"string_type", "int_type", "float_type", "bool_type"}:
-        expected = err_type.removesuffix("_type")
         return (
-            f"Field '{field}' must be a {expected}",
+            f"Field '{field}' must be a {err_type.removesuffix('_type')}",
             _GENERIC_VALIDATION_HINT,
         )
     if err_type == "enum":
-        ctx = first.get("ctx") or {}
         expected = ctx.get("expected", "")
-        return (
-            f"Field '{field}' has an invalid value",
-            f"Allowed values: {expected}." if expected else _GENERIC_VALIDATION_HINT,
-        )
+        hint = f"Allowed values: {expected}." if expected else _GENERIC_VALIDATION_HINT
+        return f"Field '{field}' has an invalid value", hint
     if err_type in {
         "greater_than",
         "greater_than_equal",
         "less_than",
         "less_than_equal",
     }:
-        ctx = first.get("ctx") or {}
-        bound_label = {
+        labels = {
             "greater_than": "greater than",
             "greater_than_equal": "≥",
             "less_than": "less than",
             "less_than_equal": "≤",
-        }[err_type]
-        bound_value = ctx.get(
-            {
-                "greater_than": "gt",
-                "greater_than_equal": "ge",
-                "less_than": "lt",
-                "less_than_equal": "le",
-            }[err_type]
+        }
+        keys = {
+            "greater_than": "gt",
+            "greater_than_equal": "ge",
+            "less_than": "lt",
+            "less_than_equal": "le",
+        }
+        bound = ctx.get(keys[err_type])
+        clause = f" {labels[err_type]} {bound}" if bound is not None else ""
+        hint = (
+            f"Provide a value{clause} for '{field}'."
+            if bound is not None
+            else f"Provide a valid value for '{field}'."
         )
-        clause = f" {bound_label} {bound_value}" if bound_value is not None else ""
-        return (
-            f"Field '{field}' is out of range{clause}",
-            (
-                f"Provide a value{clause} for '{field}'."
-                if bound_value is not None
-                else f"Provide a valid value for '{field}'."
-            ),
-        )
+        return f"Field '{field}' is out of range{clause}", hint
     if err_type in {"dict_type", "model_attributes_type"}:
-        return (
-            "Request body must be a JSON object",
-            _GENERIC_VALIDATION_HINT,
-        )
+        return "Request body must be a JSON object", _GENERIC_VALIDATION_HINT
     if err_type == "value_error":
-        # ``model_validator`` ValueErrors — already carry a tailored msg
-        # (e.g. a char-limit message). Surface verbatim.
         return raw_msg or "Invalid request body", _GENERIC_VALIDATION_HINT
     if err_type == "json_invalid":
-        return ("Malformed JSON body", _GENERIC_VALIDATION_HINT)
+        return "Malformed JSON body", _GENERIC_VALIDATION_HINT
     return "Invalid request body", _GENERIC_VALIDATION_HINT
 
 

@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from comadre.logging import get_logger
+from comadre.timeutil import iso_utc_ms as _iso_utc_ms
 from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 _logger = get_logger("counters")
@@ -51,15 +52,6 @@ _logger = get_logger("counters")
 SNAPSHOT_SCHEMA_VERSION = 1
 DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 15
 WINDOW_SECONDS = 60
-
-
-def _iso_utc_ms(dt: datetime) -> str:
-    """Return ``dt`` as ``YYYY-MM-DDTHH:MM:SS.sssZ`` (UTC, millisecond precision).
-
-    Mirrors the shape used throughout the snapshot schema so consumer code
-    can parse every timestamp with a single grammar.
-    """
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 def default_replica_id() -> str:

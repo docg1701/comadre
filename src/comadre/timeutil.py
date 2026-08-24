@@ -53,6 +53,16 @@ def iso_utc_or_none(dt: datetime | None) -> str | None:
     return iso_utc(dt)
 
 
+def iso_utc_ms(dt: datetime) -> str:
+    """Return ``dt`` as ``YYYY-MM-DDTHH:MM:SS.sssZ`` (UTC, ms precision)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return (
+        dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.")
+        + f"{dt.microsecond // 1000:03d}Z"
+    )
+
+
 def now_utc() -> datetime:
     """Return ``now`` as aware UTC datetime. Test seam for service sweep."""
     return datetime.now(UTC)

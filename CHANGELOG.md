@@ -5,6 +5,14 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.8] — 2026-08-24
+
+### Changed
+
+- **AGENTS.md enxuto** — 548 → 110 lines (−80%). Keeps every load-bearing invariant (gotchas, module boundaries, CI flow, ansible runbook) in 1-line bullets; removes story-number prose and repeated rationale. The verbose prior version duplicated code comments and was itself flagged by ponytail-audit.
+- **Ponytail audit cleanup (round 6)** — centralize `iso_utc_ms` in `timeutil.py` (removes duplicate `_iso_utc_ms` in `counters.py`), dedupe ffmpeg codec args in `service.py` (`_codec_and_fmt` helper — single OGG/MP3/WAV map, `mp3_rate` param for the 24 kHz vs 44.1 kHz paths), and shrink `_format_validation_error` in `main.py` to dict-style dispatch (80 → 35 lines, same messages). Net −45 lines, zero behavior change. Remaining audit findings (exception hierarchy, TTLCache wrapper, counters IPC snapshot, `pyyaml`/`cachetools`/`validate-docbr`/`num2words` deps, Row dataclasses, table renderers) are intentional per module-boundary contract and retained.
+- **Docs version sync** — bump `README.md` badge and 6 doc headers from 3.1.7 → 3.1.8.
+
 ## [3.1.7] — 2026-08-24
 
 ### Changed
