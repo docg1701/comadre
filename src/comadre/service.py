@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import hashlib
 import io
-import re
 import subprocess
 import wave
 from collections import OrderedDict
@@ -51,10 +50,6 @@ if TYPE_CHECKING:
 logger = get_logger("request")
 startup_logger = get_logger("startup")
 
-# Voice name must be safe for filesystem paths: alphanumeric, hyphens,
-# underscores. API uploads additionally match u_<ULID> (26 Crockford chars).
-_VOICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-_UPLOAD_VOICE_RE = re.compile(r"^u_[0-9A-HJKMNP-TV-Z]{26}$")
 _VOICE_PREFIX = "pocket/"
 
 # Lead silence prepended to every generated audio: pocket-tts clips the

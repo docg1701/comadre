@@ -1,4 +1,4 @@
-# Local Testing Guide (v3.1.3)
+# Local Testing Guide (v3.1.4)
 
 How to run Comadre end-to-end on your machine with all features working.
 

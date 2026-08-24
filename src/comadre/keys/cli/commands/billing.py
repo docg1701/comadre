@@ -28,9 +28,6 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import typer
-from dateutil.relativedelta import (  # type: ignore[import-untyped]
-    relativedelta,
-)
 
 from comadre import timeutil
 from comadre.keys.audit import get_cli_actor
@@ -164,6 +161,14 @@ def _quantize_price(raw: float) -> Decimal:
     return quantized
 
 
+def _add_months(anchor: date, months: int) -> date:
+    """Add ``months`` calendar months to ``anchor`` (ponytail: stdlib ``calendar``)."""
+    year = anchor.year + (anchor.month - 1 + months) // 12
+    month = (anchor.month - 1 + months) % 12 + 1
+    day = min(anchor.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 @app.command("mark-paid")
 def mark_paid_cmd(
     key_prefix: str = typer.Argument(
@@ -273,7 +278,7 @@ def mark_paid_cmd(
                 if current_paid_until is not None and current_paid_until >= today
                 else today
             )
-            until_iso = (anchor + relativedelta(months=months)).isoformat()
+            until_iso = _add_months(anchor, months).isoformat()
             audit_extra: dict[str, object] = {"mode": "months", "months": months}
         else:
             assert until_iso_from_flag is not None  # CLI-validated above

@@ -5,6 +5,23 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.4] — 2026-08-24
+
+### Changed
+
+- **Ponytail audit cleanup (round 2)** — drop `python-dateutil` (single
+  `relativedelta(months=N)` call in `mark-paid --months` replaced by
+  stdlib `calendar.monthrange` helper `_add_months` — month-end clamping
+  preserved: Jan 31 + 1 month → Feb 28/29). Remove dead `re` import +
+  duplicate `_VOICE_NAME_RE`/`_UPLOAD_VOICE_RE` constants from
+  `service.py` (already delegated to `voice_storage.is_valid_voice_name`).
+  Net −1 dependency, −10 lines. Remaining audit findings (exception
+  hierarchy, TTLCache wrapper, counters IPC, `pyyaml`/`cachetools`/
+  `validate-docbr`/`num2words`) are load-bearing per `AGENTS.md` and
+  intentionally retained.
+- **Docs version sync** — bump `README.md` badge and 5 doc headers
+  from 3.1.3 → 3.1.4.
+
 ## [3.1.3] — 2026-08-24
 
 ### Changed

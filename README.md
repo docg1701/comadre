@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-3.1.3-blue" alt="Version 3.1.3">
+  <img src="https://img.shields.io/badge/version-3.1.4-blue" alt="Version 3.1.4">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-pocket--tts-ff6f00" alt="pocket-tts">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
