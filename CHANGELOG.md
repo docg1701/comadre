@@ -5,6 +5,17 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] — 2026-08-23
+
+### Changed
+
+- **Siglas read intact by default** — `POCKET_SIGLA_SPACING` now defaults to
+  `false`. The 2026-08-23 A/B (same voice, same seed) showed pocket-tts's
+  sentencepiece reads intact siglas (`ABS`, `CNPJ`) more naturally than
+  letter-spaced ones — spacing was Kokoro-era tuning. Operators with an
+  explicit `POCKET_SIGLA_SPACING=true` in `.env` keep the old behavior;
+  remove the line or set it to `false` to adopt the new default.
+
 ## [3.1.0] — 2026-08-23
 
 ### Added

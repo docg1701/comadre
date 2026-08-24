@@ -241,10 +241,12 @@ class Settings(RegistrySettings):
         ),
     )
     pocket_sigla_spacing: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Apply expand_siglas (spaced letters, e.g. CNPJ -> C N P J) "
-            "before generation. The sigla pronunciation lever for pocket-tts."
+            "before generation. Off by default: pocket-tts's sentencepiece "
+            "reads intact siglas more naturally than letter-spaced ones "
+            "(A/B 2026-08-23, docs/preprocessing-fix-plan.md)."
         ),
     )
     voice_upload_max_mb: int = Field(

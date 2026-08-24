@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-3.1.0-blue" alt="Version 3.1.0">
+  <img src="https://img.shields.io/badge/version-3.1.1-blue" alt="Version 3.1.1">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-pocket--tts-ff6f00" alt="pocket-tts">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
@@ -121,9 +121,11 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
   `portuguese` (deploy-time `portuguese_24l` variant available).
 - **Native voice cloning** — upload 5-20 s of audio and speak with that voice
   in the same session or store it for future requests (LGPD consent required).
-- **Sigla preprocessing** — `normalize_text()` (currency/dates/times/numbers) +
-  `expand_siglas()` spaced letters (`CNPJ` → `C N P J`), toggled by
-  `POCKET_SIGLA_SPACING`.
+- **Smart pt-BR preprocessing** — `normalize_text()` reads currency, dates
+  (full + short), times (`14:00`, `9h30`), phones, percent and the `24/7`
+  idiom naturally, strips emoji/URLs/stray slashes. Sigla letter-spacing is
+  available but off by default (`POCKET_SIGLA_SPACING`) — intact siglas
+  sound better on pocket-tts.
 - **OpenAI-compatible API** (`POST /v1/audio/speech`) — works with any HTTP
   client or workflow tool (n8n: JSON for speech, Form-Data for cloning).
 - **Network-isolated runtime** — downloads happen once on first boot with
