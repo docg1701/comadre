@@ -83,7 +83,7 @@ def test_normalize_phones_digit_by_digit() -> None:
     out = normalize_text("Ligue (11) 99999-8888")
     assert "(" not in out and "-" not in out
     assert "um um" in out
-    assert "nove nove nove nove nove" in out
+    assert "nove nove nove nove nove." in out
 
 
 def test_sanitize_strips_emoji_urls_and_slashes() -> None:

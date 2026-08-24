@@ -114,14 +114,23 @@ def normalize_times(text: str) -> str:
 
 
 def normalize_phones(text: str) -> str:
-    """Read masked phone numbers digit-by-digit with group pauses."""
+    """Read masked phone numbers digit-by-digit, one period-separated group
+
+    per chunk boundary: periods force the engine to generate each group as
+    its own sentence, which keeps the pace measured and stops adjacent
+    digits from blending into neighboring words ("para um um" -> "prum").
+    """
 
     def _replace(match: re.Match[str]) -> str:
         digits = re.sub(r"\D", "", match.group(0))
-        # Split DDD (2 digits) from the subscriber number when present.
-        groups = [digits[:2], digits[2:]] if len(digits) >= 10 else [digits]
-        spoken = ", ".join(" ".join(_DIGIT_WORDS_PT[d] for d in g) for g in groups)
-        return f"{spoken}"
+        if len(digits) > 9:
+            groups = [digits[:2], digits[2:-4], digits[-4:]]
+        elif len(digits) >= 8:
+            groups = [digits[:-4], digits[-4:]]
+        else:
+            groups = [digits]
+        spoken = ". ".join(" ".join(_DIGIT_WORDS_PT[d] for d in g) for g in groups)
+        return f"{spoken}."
 
     return _PHONE_RE.sub(_replace, text)
 
@@ -230,6 +239,7 @@ def sanitize_text(text: str) -> str:
     text = re.sub(r"https?://\S+", " ", text)
     text = _EMOJI_RE.sub(" ", text)
     text = text.replace("/", " ")
+    text = re.sub(r"\.{2,}", ".", text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
