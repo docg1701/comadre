@@ -35,7 +35,6 @@ from comadre.keys.billing import first_charge_date
 from comadre.keys.cli._db import open_registry
 from comadre.keys.cli.commands.keys import (
     _key_row_to_json,
-    _truncate_ident,
     load_settings_and_tz,
     resolve_key_target,
 )
@@ -57,6 +56,7 @@ from comadre.keys.db import (
     reconstruct_key_state_at,
     suspend_key,
 )
+from comadre.keys.formatters import truncate_ident as _truncate_ident
 from comadre.keys.models import ApiKeyListRow, RevenueReport
 from comadre.logging import get_logger
 

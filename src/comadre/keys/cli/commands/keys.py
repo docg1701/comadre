@@ -53,6 +53,7 @@ from comadre.keys.db import (
     rotate_api_key,
     update_api_key,
 )
+from comadre.keys.formatters import truncate_ident as _truncate_ident
 from comadre.keys.models import (
     ApiKeyCreate,
     ApiKeyListRow,
@@ -87,8 +88,6 @@ _MISSING_KEY_HINT = (
 
 _KEY_RPM_MAX = 10_000
 _KEY_NOTES_MAX = 1024
-_KEY_IDENT_ECHO_MAX = 80  # AC7 — truncate operator input in error titles
-
 _UPDATE_KEY_NEITHER_HINT = (
     'Provide --rpm N, --price R$, or --notes "text" (any combination).'
 )
@@ -142,19 +141,6 @@ _REVOKE_KEY_REASON_OVERSIZE_HINT = (
     "Revocation reasons are capped at 1024 characters. Summarize or store "
     "the detail in customer notes."
 )
-
-
-def _truncate_ident(raw: str) -> str:
-    """Return ``raw`` or its first-80-char-plus-ellipsis truncation.
-
-    Closes the Story 1.2 deferred-work item "Raw ``--customer`` string
-    interpolated into error title with no length cap" for every command
-    that echoes the operator's positional argument. A multi-KB paste
-    would otherwise blow up the red ErrorDisplay panel title.
-    """
-    if len(raw) <= _KEY_IDENT_ECHO_MAX:
-        return raw
-    return raw[:_KEY_IDENT_ECHO_MAX] + "\u2026"
 
 
 @app.command("issue-key")

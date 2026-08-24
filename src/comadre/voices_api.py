@@ -11,7 +11,6 @@ import asyncio
 import re
 import tempfile
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -31,6 +30,7 @@ from comadre.keys.auth import verify_api_key
 from comadre.logging import get_logger
 from comadre.rate_limit import check_rate_limit, check_speech_per_ip_rate_limit
 from comadre.service import VoiceInfo, VoiceRegistry
+from comadre.timeutil import iso_utc_or_none as _iso_utc_or_none
 
 logger = get_logger("request")
 
@@ -40,15 +40,6 @@ voices_router = APIRouter()
 _DISPLAY_NAME_RE = re.compile(r"^[A-Za-z0-9 _'\-]{0,64}$")
 _VOICE_PREFIX = "pocket/"
 _CLONE_TIMEOUT_SECONDS = 120.0
-
-
-def _iso_utc_or_none(dt: datetime | None) -> str | None:
-    """RFC 3339 UTC timestamp (Z suffix) or None."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _voice_list_json(voices: list[VoiceInfo]) -> dict[str, object]:

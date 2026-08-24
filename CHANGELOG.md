@@ -5,6 +5,23 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.7] — 2026-08-24
+
+### Changed
+
+- **Ponytail audit cleanup (round 5)** — unify ISO-UTC helpers through
+  `timeutil.py` (`iso_utc`, `iso_utc_or_none`, `now_utc` — single source
+  replaces `service._iso_utc`/`_now_utc` and `voices_api._iso_utc_or_none`)
+  and centralize `truncate_ident` in `keys/formatters.py` (shared by
+  `keys` + `billing` commands, removes cross-module private import).
+  Net −18 lines, zero behavior change. Remaining audit findings (exception
+  hierarchy, TTLCache/filesystem sentinel, counters IPC snapshot,
+  `pyyaml`/`cachetools`/`validate-docbr`/`num2words` deps, Row dataclasses,
+  table renderers) are load-bearing per `AGENTS.md` module boundaries
+  and intentionally retained.
+- **Docs version sync** — bump `README.md` badge and 5 doc headers
+  from 3.1.6 → 3.1.7.
+
 ## [3.1.6] — 2026-08-24
 
 ### Changed

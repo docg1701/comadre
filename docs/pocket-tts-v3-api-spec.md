@@ -1,6 +1,6 @@
 # Pocket TTS v3 — API Specification (target contract)
 
-**Version:** Comadre 3.1.6
+**Version:** Comadre 3.1.7
 **Status:** NORMATIVE — implement exactly as written. `docs/api-reference.md` is
 regenerated from this document during Phase 5.
 **Engine:** kyutai-labs/pocket-tts 2.1.0, language `portuguese` (sole engine).
@@ -15,7 +15,7 @@ regenerated from this document during Phase 5.
 | `speed` honored natively only by Kokoro | honored for ALL voices via ffmpeg `atempo` post-processing (0.25–4.0) |
 | no voice upload | new `/v1/voices` endpoints (clone from uploaded audio) |
 | `/health` `engines: {kokoro, qwen3}` | `engines: {pocket}` |
-| `__version__ == "2.1.1"` | `__version__ == "3.1.6"` |
+| `__version__ == "2.1.1"` | `__version__ == "3.1.7"` |
 
 ## 2. Endpoints
 
@@ -139,7 +139,7 @@ is the quality/cost sweet spot), hard maximum **30 s** (server truncates at
   "queue_depth": 0,
   "uptime_seconds": 1234,
   "memory_mb": 1520,
-  "version": "3.1.6"
+  "version": "3.1.7"
 }
 ```
 

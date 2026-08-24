@@ -20,7 +20,7 @@ import subprocess
 import wave
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +42,8 @@ from comadre.exceptions import (
 )
 from comadre.logging import get_logger
 from comadre.preprocessing import normalize_text
+from comadre.timeutil import iso_utc as _iso_utc
+from comadre.timeutil import now_utc as _now_utc
 from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 if TYPE_CHECKING:
@@ -55,14 +57,6 @@ _VOICE_PREFIX = "pocket/"
 # Lead silence prepended to every generated audio: pocket-tts clips the
 # first phoneme without it (operator-reported, 2026-08-23).
 _LEAD_SILENCE_MS = 500
-
-
-def _now_utc() -> datetime:
-    return datetime.now(UTC)
-
-
-def _iso_utc(dt: datetime) -> str:
-    return dt.isoformat().replace("+00:00", "Z")
 
 
 def _audio_duration_seconds(path: Path) -> float:

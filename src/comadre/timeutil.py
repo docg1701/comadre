@@ -37,3 +37,22 @@ def parse_iso_utc(value: object) -> datetime | None:
 def resolve_today_in_tz(tz: ZoneInfo) -> date:
     """Return today's date resolved in ``tz``. Thin seam for tests."""
     return datetime.now(tz).date()
+
+
+def iso_utc(dt: datetime) -> str:
+    """Return ``dt`` as ``YYYY-MM-DDTHH:MM:SSZ`` (UTC). Naive → UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def iso_utc_or_none(dt: datetime | None) -> str | None:
+    """``iso_utc`` or ``None`` — for nullable timestamp columns."""
+    if dt is None:
+        return None
+    return iso_utc(dt)
+
+
+def now_utc() -> datetime:
+    """Return ``now`` as aware UTC datetime. Test seam for service sweep."""
+    return datetime.now(UTC)

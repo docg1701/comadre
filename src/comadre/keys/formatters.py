@@ -55,3 +55,13 @@ def format_seconds_ago(seconds: int) -> str:
         return f"{hours}h {remaining_minutes:02d}m ago"
     days, remaining_hours = divmod(hours, 24)
     return f"{days}d {remaining_hours:02d}h ago"
+
+
+_KEY_IDENT_ECHO_MAX = 80
+
+
+def truncate_ident(raw: str, *, max_len: int = _KEY_IDENT_ECHO_MAX) -> str:
+    """Cap operator-supplied identifier for error display (panel title)."""
+    if len(raw) <= max_len:
+        return raw
+    return raw[:max_len] + "\u2026"
