@@ -1,4 +1,4 @@
-# Comadre API Reference (v3.0.0)
+# Comadre API Reference (v3.1.2)
 
 Normative contract: `docs/pocket-tts-v3-api-spec.md`. Engine: kyutai-labs
 pocket-tts 2.1.0, language `portuguese` (sole engine).
@@ -13,7 +13,7 @@ pocket-tts 2.1.0, language `portuguese` (sole engine).
 | `speed` native only on kokoro | honored for ALL voices via ffmpeg `atempo` post-processing (0.25-4.0) |
 | no voice upload | `POST/GET/DELETE /v1/voices` (voice cloning) |
 | `/health` `engines: {kokoro, qwen3}` | `engines: {pocket}` |
-| `__version__ == "2.1.1"` | `__version__ == "3.0.0"` |
+| `__version__ == "2.1.1"` | `__version__ == "3.1.2"` |
 
 ## 2. Authentication
 
@@ -30,7 +30,7 @@ JSON body:
 
 ```json
 {"input": "Bom dia!", "voice": "pocket/rafael",
- "response_format": "ogg", "speed": 1.0, "raw": false}
+ "response_format": "ogg", "speed": 1.0, "temperature": 0.7, "seed": 42, "raw": false}
 ```
 
 | Field | Type | Required | Constraints |
@@ -39,7 +39,9 @@ JSON body:
 | `voice` | string | no | `pocket/<name>`; default `pocket/rafael` |
 | `response_format` | string | no | `ogg` (Opus 24 kbps, 16 kHz mono `-application voip` — WhatsApp-compatible) or `mp3` (64 kbps, 44.1 kHz mono — WhatsApp-compatible) or `wav` (24 kHz mono) |
 | `speed` | float | no | 0.25-4.0, applied as an ffmpeg `atempo` chain (factors in [0.5, 2.0]) |
-| `raw` | bool | no | skip EQ/compression/noise/tempo (still encodes to the format) |
+| `temperature` | float | no | 0.1-2.0; sampling temperature — lower = more consistent, higher = more expressive (default 0.7) |
+| `seed` | int | no | 0-2147483647; RNG seed for reproducible prosody — same text+voice+seed → identical audio |
+| `raw` | bool | no | skip EQ/compression/noise/tempo/lead-silence (still encodes to the format) |
 
 Response: audio bytes with `Content-Disposition: attachment;
 `attachment; filename="comadre-<voice-slug>.<fmt>"` and `audio/ogg`,
@@ -124,7 +126,7 @@ filesystem.
  "voices": ["pocket/rafael", "pocket/u_01J2K4M6N8P0Q2R4S6"],
  "engines": {"pocket": {"loaded": true, "voices": ["pocket/rafael", "..."]}},
  "queue_depth": 0, "uptime_seconds": 1234, "memory_mb": 1520,
- "version": "3.0.0"}
+ "version": "3.1.2"}
 ```
 
 Unauthenticated callers get only `{status, voices}`. Ephemeral voices are

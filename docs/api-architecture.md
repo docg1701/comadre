@@ -1,4 +1,4 @@
-# Comadre API Architecture (v3.0.0)
+# Comadre API Architecture (v3.1.2)
 
 Single-engine design: kyutai-labs/pocket-tts 2.1.0 (language `portuguese`)
 with native voice cloning. The v2 dual-engine (Kokoro + Qwen3) architecture
@@ -34,10 +34,10 @@ rate_limit → api (speech) / voices_api (clones) → main
 POST /v1/audio/speech
    verify_ready -> per-IP gate (600/min) -> verify_api_key -> per-key RPM
    -> FIFO asyncio.Lock (queue_depth++ / --)
-   -> PocketEngine.generate_speech(text, voice, fmt, noise_dir, speed, raw, key_id)
-        normalize_text()
+   -> PocketEngine.generate_speech(text, voice, fmt, noise_dir, speed, raw, key_id, temperature, seed)
+        normalize_text()   # currency/dates/times/phones/percent/numbers → ", " prefix warm-up
         registry.resolve(name, key_id)   # ephemeral first, then filesystem LRU
-        model.generate_audio(state, text, copy_state=True) -> [1, N] f32 @ 24 kHz
+        model.generate_audio(state, ", " + text, copy_state=True, frames_after_eos=6) -> [1, N] f32 @ 24 kHz
         _samples_to_wav() -> mono 16-bit WAV bytes
         raw ? _encode_final(...) : _apply_pipeline(wav, fmt, noise_dir, speed)
    -> Response(audio bytes, Content-Disposition)
@@ -108,6 +108,6 @@ the single-lock-per-replica design (active connections ≈ queue depth).
 2. Model check: `HF_HUB_OFFLINE=1` → verify files exist (fail fast),
    else `ensure_pocket_models()` (HF download, pinned revisions).
 3. Noise dir + voices dir checks (`/voices/pocket`).
-4. `PocketEngine.load_model(config, threads, quantize, temperature)` and warm-up with the rafael state.
+4. `PocketEngine.load_model(config, threads, quantize, temperature)` and warm-up with the rafael state (seed/temperature are per-request overrides via `torch.manual_seed` / `model.temp`).
 5. `VoiceRegistry` build (scan + model_hash) + ephemeral sweeper task
    (cancelled on shutdown) + default-voice validation.

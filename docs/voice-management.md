@@ -1,4 +1,4 @@
-# Voice Management (v3.0.0)
+# Voice Management (v3.1.2)
 
 Single voice format: `pocket/<name>`. Voices live in `/voices/pocket/`
 (the `comadre-voices` volume, mounted `rw` so the app can write uploads).
@@ -35,7 +35,7 @@ rewritten — model upgrades never orphan a voice.
 
 ### v2 migration note
 
-Existing v2 Qwen3 reference WAVs (`qwen/*.wav`) are reused **verbatim** as
+Existing pre-v3 reference WAVs are reused **verbatim** as
 `pocket/*.wav` — pocket-tts consumes them as voice-conditioning audio and
 states materialize lazily on first request. Copy them into the `pocket/`
 subdirectory of `voices_local_dir` and run `deploy-voices.yml`.

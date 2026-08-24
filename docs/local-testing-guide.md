@@ -1,4 +1,4 @@
-# Local Testing Guide (v3.0.0)
+# Local Testing Guide (v3.1.2)
 
 How to run Comadre end-to-end on your machine with all features working.
 
@@ -88,12 +88,11 @@ docker compose exec tts-service comadre-keys issue-key \
 ```bash
 uv run python scripts/spike_pocket_tts.py \
   --config models/pocket-tts-config/portuguese.yaml \
-  --output-dir tmp/spike --threads 4 --sigla-spacing on
+  --output-dir tmp/spike --threads 4
 
 # variant sweep + clone-encode timing
 uv run python scripts/spike_pocket_tts.py --config ... --quantize
 uv run python scripts/spike_pocket_tts.py --config ... --clone-timing
-uv run python scripts/spike_pocket_tts.py --config ... --baseline-dir tmp/v2-baseline
 ```
 
 Note: a local config YAML with local paths lives at

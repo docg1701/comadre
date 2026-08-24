@@ -80,12 +80,18 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
 1. The request carries the text (`input`) and a `voice` such as `pocket/rafael`.
 2. The server resolves that voice: a stored clone from disk (LRU-cached) or an
    ephemeral in-memory one.
-3. The text is normalized (currency, dates, numbers) and acronyms are spaced
-   out; pocket-tts handles long texts by chunking them internally.
-4. pocket-tts generates raw audio at 24 kHz.
-5. An ffmpeg pass applies EQ, compression and loudness normalization (and
-   speed adjustment when `speed != 1.0`).
-6. The result is returned as OGG Opus 24 kbps mono (or WAV if requested).
+3. The text is normalized (currency, dates, times, phones, percent, numbers;
+   emoji/URLs stripped; siglas read intact) — pocket-tts handles long texts
+   by chunking them internally.
+4. pocket-tts generates raw audio at 24 kHz (seed/temperature control the
+   sampling when provided; a leading comma warm-up prevents the first
+   syllable being swallowed).
+5. An ffmpeg pass applies EQ, compression and loudness normalization, a
+   500 ms lead silence (masks the clipped first phoneme) and speed
+   adjustment when `speed != 1.0`.
+6. The result is returned as OGG Opus 24 kbps 16 kHz mono `-application voip`
+   (compatível com WhatsApp), MP3 64 kbps 44.1 kHz mono (compatível), or WAV
+   24 kHz mono — filename `comadre-<voice>.<fmt>`.
 
 **Voice cloning — `POST /v1/voices` (multipart upload)**
 
