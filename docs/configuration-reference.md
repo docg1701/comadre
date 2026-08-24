@@ -25,7 +25,6 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `POCKET_QUANTIZE` | `false` | int8 quantization of attention + FFN layers (torchao). Phase 0 spike measured +26% RTF on the distilled model — opt-in per host. | `true` |
 | `POCKET_TEMPERATURE` | `0.7` | Generation temperature (≥0). | `0.7` |
 | `POCKET_EOS_THRESHOLD` | `-2.0` | EOS detection threshold. Upstream default (`-4.0`) truncates short pt-BR phrases to ~0.5 s (EOS fires early); `-2.0` verified on production (full audio, quiet tails). | `-2.0` |
-| `POCKET_SIGLA_SPACING` | `false` | Apply `expand_siglas` (spaced letters, `CNPJ` → `C N P J`). **Off by default**: the 2026-08-23 A/B showed pocket-tts reads intact siglas more naturally than letter-spaced ones. | `false` |
 | `VOICE_UPLOAD_MAX_MB` | `10` | Upload size cap for voice-clone audio (1-50). Caddy rejects `/v1/voices` bodies over **11 MiB** (this value + multipart overhead) before they reach the app — raise both together. | `10` |
 | `VOICE_REF_MIN_SECONDS` | `3` | Minimum reference-audio duration (≥1); below → 400 `too_short`. | `3` |
 | `VOICE_REF_MAX_SECONDS` | `30` | Maximum reference-audio duration (≥ min); above → 400 `too_long`. The library truncates at 30 s. | `30` |
@@ -103,4 +102,4 @@ tts-service:
 
 The canonical template lives at [`.env.example`](../.env.example) in the repository root — read that file directly instead of this doc; a transcription here would drift.
 
-Advanced engine/threading overrides (`POCKET_LANGUAGE`, `POCKET_THREADS`, `POCKET_QUANTIZE`, `POCKET_TEMPERATURE`, `POCKET_EOS_THRESHOLD`, `POCKET_SIGLA_SPACING`, `VOICE_*`, `NOISE_DIR`, `VOICES_DIR`, `PORT`) accept the defaults in the table above and can be set in `.env` only when a deployment needs to deviate.
+Advanced engine/threading overrides (`POCKET_LANGUAGE`, `POCKET_THREADS`, `POCKET_QUANTIZE`, `POCKET_TEMPERATURE`, `POCKET_EOS_THRESHOLD`, `VOICE_*`, `NOISE_DIR`, `VOICES_DIR`, `PORT`) accept the defaults in the table above and can be set in `.env` only when a deployment needs to deviate.

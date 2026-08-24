@@ -112,11 +112,11 @@ fix rides unreleased: version bump + `## [X.Y.Z]` CHANGELOG section +
   in `Caddyfile` (re-resolves Docker DNS every 5s, `least_conn` policy —
   queue-depth-aware, exploits the single-FIFO-lock-per-replica design).
 - **Preprocessing**: `normalize_text()` (currency/dates/times/phones/
-  percent/numbers + symbol sanitizer). `expand_siglas()` (spaced letters,
-  `CNPJ` → `C N P J`) is OFF by default — the 2026-08-23 A/B showed
-  pocket-tts reads intact siglas more naturally; opt in via
-  `POCKET_SIGLA_SPACING=true` only for legacy tuning. The library chunks
-  text internally — `chunk_text()` was deleted. Single char limit: 1000.
+  percent/numbers + symbol sanitizer). `expand_siglas()` and
+  `POCKET_SIGLA_SPACING` were removed entirely — the 2026-08-23 A/B showed
+  pocket-tts reads intact siglas (`ABS`, `CNPJ`) more naturally than
+  letter-spaced ones. The library chunks text internally —
+  `chunk_text()` was deleted. Single char limit: 1000.
 - **Post-processing**: one pipeline (`_apply_pipeline`, ex radio_warm):
   stage-1 ffmpeg EQ/compression/loudnorm chain (+ atempo chain for
   `speed != 1.0`, factors in [0.5, 2.0]) then noise mix + encode. OGG Opus

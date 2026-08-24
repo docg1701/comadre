@@ -203,7 +203,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             threads=settings.pocket_threads,
             quantize=settings.pocket_quantize,
             temperature=settings.pocket_temperature,
-            sigla_spacing=settings.pocket_sigla_spacing,
             eos_threshold=settings.pocket_eos_threshold,
         )
 

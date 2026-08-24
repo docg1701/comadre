@@ -99,7 +99,6 @@ all:
     pocket_threads: 4
     pocket_quantize: false
     pocket_temperature: 0.7
-    pocket_sigla_spacing: true
 
     # HF token for the one-time first-boot model download (gated weights).
     pocket_hf_token: "{{ lookup('env', 'HF_TOKEN') | default('') }}"

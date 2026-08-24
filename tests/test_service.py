@@ -47,34 +47,6 @@ def engine() -> PocketEngine:
     return svc
 
 
-def test_generate_speech_applies_normalize_and_sigla_spacing(
-    engine: PocketEngine,
-) -> None:
-    """normalize_text + expand_siglas run before generation;
-    copy_state=True reaches the model call."""
-    with patch("comadre.service._apply_pipeline", return_value=b"processed"):
-        result = engine.generate_speech(
-            "CNPJ 21/03/2026", "pocket/rafael", "wav", speed=1.0
-        )
-    assert result == b"processed"
-    mock_model = engine._model
-    mock_model.generate_audio.assert_called_once()  # type: ignore[union-attr]
-    args, kwargs = mock_model.generate_audio.call_args  # type: ignore[union-attr]
-    assert kwargs["copy_state"] is True
-    text = args[1]
-    assert "C N P J" in text  # sigla spaced
-    assert "vinte e um" in text  # date normalized
-
-
-def test_generate_speech_sigla_spacing_off(engine: PocketEngine) -> None:
-    """POCKET_SIGLA_SPACING=false skips expand_siglas."""
-    engine._sigla_spacing = False
-    with patch("comadre.service._apply_pipeline", return_value=b"x"):
-        engine.generate_speech("CNPJ", "pocket/rafael", "wav")
-    text = engine._model.generate_audio.call_args.args[1]  # type: ignore[union-attr]
-    assert "CNPJ" in text and "C N P J" not in text
-
-
 def test_generate_speech_raw_bypasses_pipeline(engine: PocketEngine) -> None:
     """raw=True skips _apply_pipeline and uses _encode_final."""
     with (
@@ -257,7 +229,6 @@ def test_load_model_passes_eos_threshold(monkeypatch: pytest.MonkeyPatch) -> Non
         threads=2,
         quantize=False,
         temperature=0.7,
-        sigla_spacing=True,
         eos_threshold=-2.0,
     )
     assert captured["eos_threshold"] == -2.0
@@ -276,7 +247,7 @@ def test_generate_speech_passes_temperature_and_seed(
     original_temp = getattr(mock_model, "temp", 0.7)
     mock_model.temp = 0.7
 
-    def _capture(state, text, copy_state=True):
+    def _capture(state, text, copy_state=True, **kwargs):
         seen["temp"] = mock_model.temp
         seen["rand"] = torch.randn(1).item()
         return torch.zeros(1, 24000)

@@ -42,7 +42,7 @@ from comadre.exceptions import (
     VoiceUploadError,
 )
 from comadre.logging import get_logger
-from comadre.preprocessing import expand_siglas, normalize_text
+from comadre.preprocessing import normalize_text
 from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 if TYPE_CHECKING:
@@ -112,7 +112,6 @@ class PocketEngine:
     def __init__(self) -> None:
         self._model: TTSModel | None = None
         self._registry: VoiceRegistry | None = None
-        self._sigla_spacing = True
 
     @property
     def is_loaded(self) -> bool:
@@ -137,7 +136,6 @@ class PocketEngine:
         quantize: bool,
         temperature: float,
         *,
-        sigla_spacing: bool = True,
         eos_threshold: float = -2.0,
     ) -> None:
         """Load the pocket-tts model from a local config YAML.
@@ -146,7 +144,6 @@ class PocketEngine:
         we override with the operator-configured thread count AFTER the
         import, per decision D15.
         """
-        self._sigla_spacing = sigla_spacing
         torch.set_num_threads(threads)
         startup_logger.info(
             "Loading pocket-tts model (config=%s, threads=%d, quantize=%s, "
@@ -259,9 +256,6 @@ class PocketEngine:
             )
 
         normalized = normalize_text(text)
-        if self._sigla_spacing:
-            normalized = expand_siglas(normalized)
-
         state = self._registry.resolve(name, key_id=key_id)
         logger.info(
             "Generating speech for %d characters (voice=%s)", len(text), voice_name
@@ -272,7 +266,16 @@ class PocketEngine:
                 self._model.temp = float(temperature)
             if seed is not None:
                 torch.manual_seed(seed)
-            audio = self._model.generate_audio(state, normalized, copy_state=True)
+            # Leading ", " warms up the flow-LM: without it the first word
+            # is frequently swallowed ("Consulte" -> "sulte") or tiny inputs
+            # come out as noise (whisper-verified A/B, 2026-08-23). The comma
+            # absorbs the under-formed early frames as an audible micro-pause.
+            audio = self._model.generate_audio(
+                state,
+                ", " + normalized,
+                copy_state=True,
+                frames_after_eos=6,
+            )
             samples = audio.detach().cpu().numpy()
             wav_bytes = _samples_to_wav(samples, self.sample_rate)
         except (InvalidRequestError, GenerationError):

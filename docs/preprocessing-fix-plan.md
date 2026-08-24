@@ -26,7 +26,7 @@ siglas like ABS garble output.
 | `normalize_dates` | keep | dd/mm/yyyy correct; short forms still open (below) |
 | `normalize_times` | keep | HH:MM correct; `9h30` form still open (below) |
 | `normalize_numbers` | **fixed this cycle** | Was integer-only: `10,50` → glued `dez,cinquenta`, `1.234` → `um.duzentos…`. Now decimals read as "dez vírgula cinquenta", thousands groups as one number |
-| `expand_siglas` | **needs A/B before changing** | Letter-spacing was Kokoro-era tuning; pocket-tts's sentencepiece may handle intact siglas better. Decide via scripts/spike_pocket_tts.py A/B (ABS/CNPJ/CPF with spacing on/off), not by inspection |
+| `expand_siglas` | **removed** | Letter-spacing was Kokoro-era tuning. The 2026-08-23 A/B (same voice, same seed) showed pocket-tts reads intact siglas (`ABS`, `CNPJ`) more naturally — the routine and its `POCKET_SIGLA_SPACING` flag were deleted. |
 
 ## Remaining fixes (planned, in priority order)
 
@@ -42,12 +42,10 @@ siglas like ABS garble output.
    reading with pauses ("onze, nove nove nove oito oito...").
 6. **Emoji/symbol stripping** — strip emoji, dingbats and stray punctuation
    runs before generation; they tokenize as garbage.
-7. **Sigla A/B harness run** — extend spike_pocket_tts.py corpus with the
-   operator's failing cases (ABS inside a sentence), record WER/RTF +
-   subjective quality, then either keep letter-spacing, invert the default,
-   or drop expand_siglas entirely.
+7. **Sigla A/B — RESOLVED 2026-08-23**: intact siglas won decisively;
+   `expand_siglas()` and `POCKET_SIGLA_SPACING` were removed entirely.
 
 Items 1–6 are mechanical regex work behind the existing pipeline order
 (currency → dates → times → numbers → siglas) plus a final sanitize pass;
 each lands with its own regression test in tests/test_preprocessing.py.
-Item 7 is empirical and gates any change to expand_siglas.
+Item 7 is resolved: siglas are read intact everywhere.

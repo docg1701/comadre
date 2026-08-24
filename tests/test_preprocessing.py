@@ -9,30 +9,10 @@ audio output (scripts/spike_pocket_tts.py).
 from __future__ import annotations
 
 from comadre.preprocessing import (
-    expand_siglas,
     normalize_currency,
     normalize_numbers,
     normalize_text,
 )
-
-
-def test_expand_siglas_spells_unknowns_keeps_word_siglas() -> None:
-    """Spelled siglas (CNPJ, CPF, FGTS) get spaced for engine reading;
-    word-shaped siglas (SUS, PIX, LOAS, DETRAN, MEI, COVID) stay verbatim
-    so the engine pronounces them as words."""
-    text = "O CNPJ é necessário para o SUS e PIX, mais o CPF para o FGTS."
-    out = expand_siglas(text)
-    assert "C N P J" in out
-    assert "C P F" in out
-    assert "F G T S" in out
-    assert "SUS" in out and "PIX" in out  # word-siglas preserved
-
-
-def test_expand_siglas_does_not_match_lowercase_or_single_letter() -> None:
-    """Only ALL-CAPS multi-letter runs trigger spelling; lowercase or
-    single letters are left alone (avoid false positives)."""
-    assert "cnpj" in expand_siglas("cnpj minúsculo")  # unchanged
-    assert "I" in expand_siglas("I went home")  # unchanged
 
 
 def test_normalize_numbers_expands_integers_and_ordinals() -> None:

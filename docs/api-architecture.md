@@ -13,7 +13,7 @@ config / logging
     ↓
 exceptions / schemas
     ↓
-preprocessing  (normalize_text, expand_siglas)
+preprocessing  (normalize_text)
     ↓
 service (PocketEngine + VoiceRegistry)   voice_storage (pure file ops)
     ↓
@@ -35,7 +35,7 @@ POST /v1/audio/speech
    verify_ready -> per-IP gate (600/min) -> verify_api_key -> per-key RPM
    -> FIFO asyncio.Lock (queue_depth++ / --)
    -> PocketEngine.generate_speech(text, voice, fmt, noise_dir, speed, raw, key_id)
-        normalize_text() [+ expand_siglas() if POCKET_SIGLA_SPACING]
+        normalize_text()
         registry.resolve(name, key_id)   # ephemeral first, then filesystem LRU
         model.generate_audio(state, text, copy_state=True) -> [1, N] f32 @ 24 kHz
         _samples_to_wav() -> mono 16-bit WAV bytes
@@ -108,6 +108,6 @@ the single-lock-per-replica design (active connections ≈ queue depth).
 2. Model check: `HF_HUB_OFFLINE=1` → verify files exist (fail fast),
    else `ensure_pocket_models()` (HF download, pinned revisions).
 3. Noise dir + voices dir checks (`/voices/pocket`).
-4. `PocketEngine.load_model(config, threads, quantize, temperature, sigla_spacing)` and warm-up with the rafael state.
+4. `PocketEngine.load_model(config, threads, quantize, temperature)` and warm-up with the rafael state.
 5. `VoiceRegistry` build (scan + model_hash) + ephemeral sweeper task
    (cancelled on shutdown) + default-voice validation.

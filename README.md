@@ -123,9 +123,8 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
   in the same session or store it for future requests (LGPD consent required).
 - **Smart pt-BR preprocessing** — `normalize_text()` reads currency, dates
   (full + short), times (`14:00`, `9h30`), phones, percent and the `24/7`
-  idiom naturally, strips emoji/URLs/stray slashes. Sigla letter-spacing is
-  available but off by default (`POCKET_SIGLA_SPACING`) — intact siglas
-  sound better on pocket-tts.
+  idiom naturally, strips emoji/URLs/stray slashes. Siglas are read
+  intact — letter-spacing was removed after A/B testing.
 - **OpenAI-compatible API** (`POST /v1/audio/speech`) — works with any HTTP
   client or workflow tool (n8n: JSON for speech, Form-Data for cloning).
 - **Network-isolated runtime** — downloads happen once on first boot with

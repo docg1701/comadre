@@ -61,7 +61,6 @@ all:
     pocket_threads: 4
     pocket_quantize: false
     pocket_temperature: 0.7
-    pocket_sigla_spacing: true
     pocket_hf_token: "{{ lookup('env', 'HF_TOKEN') | default('') }}"
     pocket_model_local: ""
     pocket_tokenizer_local: ""
@@ -88,7 +87,7 @@ For Oracle Cloud Ampere A1 (aarch64) deployments, use `deploy/ansible/inventory/
 | `domain` | No | Domain for Caddy HTTPS (default: `localhost` for self-signed). Set to a real domain for Let's Encrypt auto-cert. |
 | `landing_enabled` | No | Deploy the public landing page at the root URL (default: `true`). When false, Caddy uses `Caddyfile-no-landing` which proxies all paths to the API. The API endpoints (`/v1/*`, `/health`, etc.) are always available regardless. |
 | `pocket_language` | No | Language variant: `portuguese` (default) or `portuguese_24l`. |
-| `pocket_threads` / `pocket_quantize` / `pocket_temperature` / `pocket_sigla_spacing` | No | Engine tuning (defaults: 4 / false / 0.7 / true). |
+| `pocket_threads` / `pocket_quantize` / `pocket_temperature` | No | Engine tuning (defaults: 4 / false / 0.7). |
 | `pocket_hf_token` | No | HF token for the one-time gated-model download (reads `HF_TOKEN` env). Unset after first boot. |
 | `pocket_model_local` / `pocket_tokenizer_local` / `pocket_rafael_local` | No | Air-gapped deploy paths (empty = auto-download). |
 | `voices_local_dir` | No | Local directory containing a `pocket/` subdirectory with voice files (empty to skip). See [voice-management.md](voice-management.md). |

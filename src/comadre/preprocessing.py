@@ -1,4 +1,4 @@
-"""pt-BR text normalization (currency, dates, times, numbers, siglas)."""
+"""pt-BR text normalization (currency, dates, times, phones, numbers)."""
 
 from __future__ import annotations
 
@@ -177,63 +177,6 @@ _DIGIT_WORDS_PT = {
     "8": "oito",
     "9": "nove",
 }
-
-# Word siglas that are pronounced as words, not spelled out.
-# All-caps words NOT in this set get letter-spaced (e.g., CNPJ -> "C N P J").
-WORD_SIGLAS: frozenset[str] = frozenset(
-    {
-        # Healthcare / Social
-        "SUS",
-        "SAMU",
-        "ANVISA",
-        "CRAS",
-        "LOAS",
-        # Financial / Employment
-        "PIX",
-        "PIS",
-        "PASEP",
-        "MEI",
-        "FIES",
-        # Education
-        "ENEM",
-        "PROUNI",
-        "PRONATEC",
-        "SENAI",
-        "SENAC",
-        "SESI",
-        "SEBRAE",
-        # Government / Infrastructure
-        "CEP",
-        "DETRAN",
-        "SINE",
-        # General word-pronounced
-        "TV",
-        "OK",
-        "COVID",
-        "ONG",
-        "ONU",
-        "UNESCO",
-        "FIFA",
-    }
-)
-
-_SIGLA_RE = re.compile(r"\b([A-Z]{2,})\b")
-
-
-def expand_siglas(text: str) -> str:
-    """Convert spelled siglas to spaced format for engine pronunciation.
-
-    Spelled siglas (CNPJ, CPF, FGTS) become "C N P J", "C P F", "F G T S".
-    Word siglas (SUS, PIX, LOAS) are kept as-is.
-    """
-
-    def _replace(match: re.Match[str]) -> str:
-        sigla = match.group(1)
-        if sigla in WORD_SIGLAS:
-            return sigla
-        return " ".join(sigla)
-
-    return _SIGLA_RE.sub(_replace, text)
 
 
 # Percent: 50% / 50 %

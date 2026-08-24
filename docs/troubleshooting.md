@@ -166,16 +166,14 @@ destination paths (or the HF cache).
 instead of pronounced correctly.
 
 **Cause:** pocket-tts tokenizes text literally — there is no phoneme
-control. Siglas are read intact by default; `POCKET_SIGLA_SPACING=true`
-opts into letter-spacing (legacy Kokoro-era tuning, usually worse on
-pocket-tts).
+control. Siglas are read intact; letter-spacing (`expand_siglas` /
+`POCKET_SIGLA_SPACING`) was removed — the 2026-08-23 A/B showed intact
+reads more naturally on pocket-tts.
 
 **Resolution:**
 
-1. Keep `POCKET_SIGLA_SPACING=false` (default).
-2. If a specific deployment prefers spaced letters, A/B with the tuning
-   harness: `uv run python scripts/spike_pocket_tts.py --sigla-spacing on|off`.
-3. Quality regressions beyond the accepted floor → try the 24-layer
+1. Nothing to configure — intact reading is the engine behavior.
+2. Quality regressions beyond the accepted floor → try the 24-layer
    variant (`POCKET_LANGUAGE=portuguese_24l`).
 
 ### State regenerating on every request

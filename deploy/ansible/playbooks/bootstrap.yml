@@ -351,7 +351,6 @@
           POCKET_THREADS={{ pocket_threads | default(4) }}
           POCKET_QUANTIZE={{ pocket_quantize | default(false) | string | lower }}
           POCKET_TEMPERATURE={{ pocket_temperature | default(0.7) }}
-          POCKET_SIGLA_SPACING={{ pocket_sigla_spacing | default(false) | string | lower }}
           VOICE_UPLOAD_MAX_MB={{ voice_upload_max_mb | default(10) }}
           VOICE_STORED_MAX_PER_CUSTOMER={{ voice_stored_max_per_customer | default(20) }}
           HF_TOKEN={{ pocket_hf_token | default('') }}
