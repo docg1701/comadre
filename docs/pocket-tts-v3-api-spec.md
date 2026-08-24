@@ -1,6 +1,6 @@
 # Pocket TTS v3 — API Specification (target contract)
 
-**Version:** Comadre 3.1.3
+**Version:** Comadre 3.1.2
 **Status:** NORMATIVE — implement exactly as written. `docs/api-reference.md` is
 regenerated from this document during Phase 5.
 **Engine:** kyutai-labs/pocket-tts 2.1.0, language `portuguese` (sole engine).
@@ -15,7 +15,7 @@ regenerated from this document during Phase 5.
 | `speed` honored natively only by Kokoro | honored for ALL voices via ffmpeg `atempo` post-processing (0.25–4.0) |
 | no voice upload | new `/v1/voices` endpoints (clone from uploaded audio) |
 | `/health` `engines: {kokoro, qwen3}` | `engines: {pocket}` |
-| `__version__ == "2.1.1"` | `__version__ == "3.1.3"` |
+| `__version__ == "2.1.1"` | `__version__ == "3.1.2"` |
 
 ## 2. Endpoints
 
@@ -111,7 +111,7 @@ is the quality/cost sweet spot), hard maximum **30 s** (server truncates at
 
 ```json
 {"input": "Bom dia!", "voice": "pocket/rafael",
- "response_format": "ogg", "speed": 1.0, "raw": false}
+ "response_format": "ogg", "speed": 1.0, "temperature": 0.7, "seed": 42, "raw": false}
 ```
 
 - `voice`: `pocket/<name>`; omitting it uses `DEFAULT_VOICE`
@@ -121,6 +121,8 @@ is the quality/cost sweet spot), hard maximum **30 s** (server truncates at
 - `speed`: 0.25–4.0, applied post-generation as an ffmpeg `atempo` filter
   chain (chain of factors in `[0.5, 2.0]` whose product equals `speed`:
   e.g. 0.25 → `0.5,0.5`; 4.0 → `2.0,2.0`; 1.0 → no filter).
+- `temperature`: 0.1–2.0 sampling temperature — lower = more consistent, higher = more expressive (default 0.7).
+- `seed`: 0–2147483647 RNG seed for reproducible prosody — same text+voice+seed → identical audio.
 - `raw=true`: skips the post-processing pipeline (no EQ/compression/noise/
   tempo) — still encodes to the requested format.
 - `response_format`: `ogg` (Opus 24 kbps, 16 kHz mono `-application voip` — WhatsApp-compatible),
@@ -137,7 +139,7 @@ is the quality/cost sweet spot), hard maximum **30 s** (server truncates at
   "queue_depth": 0,
   "uptime_seconds": 1234,
   "memory_mb": 1520,
-  "version": "3.1.3"
+  "version": "3.1.2"
 }
 ```
 

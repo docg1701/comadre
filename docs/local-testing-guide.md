@@ -20,7 +20,7 @@ How to run Comadre end-to-end on your machine with all features working.
 | Noise WAVs | `noise/` | hiss + room tone for post-processing |
 | pocket config YAMLs | `deploy/pocket-tts/` | baked image configs (production paths) |
 | Spike harness | `scripts/spike_pocket_tts.py` | tuning corpus + RTF sweep |
-| Operator voice | `voices/pocket/female.wav` | reference WAV (ex v2) |
+| Operator voice | `voices/pocket/*.wav` | reference WAVs (e.g. `rafael` catalog voice) |
 
 ## What must be obtained separately
 
