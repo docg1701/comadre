@@ -11,9 +11,12 @@ NO_COLOR compliance — rich respects the env var automatically. We do NOT set
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, date, datetime
 from typing import Literal
 
+import click
+import typer
 from rich import box
 from rich.console import Console
 from rich.markup import escape as _rich_escape
@@ -108,6 +111,25 @@ def stderr_console() -> Console:
 def render_error(message: str, hint: str) -> None:
     """UX-DR6: red-bordered Panel on stderr. Caller decides the exit code."""
     stderr_console().print(Panel(hint, title=message, border_style="red", expand=False))
+
+
+def confirm_or_abort(prompt: str, *, yes: bool, tty_hint: str | None = None) -> None:
+    """UX-DR11 destructive-action confirmation gate shared by all mutating verbs.
+
+    ``--yes`` skips the prompt (scripting contract). On abort prints
+    ``Aborted.`` and exits 2 (usage tier per UX-DR10); when stdin is not a
+    TTY also prints ``tty_hint`` so nohup / systemd / docker-exec callers
+    learn about ``--yes`` instead of dying on a bare message.
+    """
+    if yes:
+        return
+    try:
+        typer.confirm(prompt, default=False, abort=True, err=True)
+    except click.exceptions.Abort:
+        stderr_console().print("Aborted.")
+        if tty_hint is not None and not sys.stdin.isatty():
+            stderr_console().print(tty_hint)
+        raise typer.Exit(code=2) from None
 
 
 def render_confirmation(message: str) -> None:

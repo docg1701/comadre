@@ -5,6 +5,25 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.9] — 2026-08-24
+
+### Changed
+
+- **Ponytail audit cleanup (round 7)** — extract `load_registry_settings`
+  in `commands/keys.py` and route all five duplicated exit-6 settings
+  ladders through it (`create-customer`, `list-customers`,
+  `export-customer`, `correct-tax-id`, `delete-customer` now share the
+  same surface as their sibling verbs, including BILLING_TIMEZONE
+  validation); add shared `confirm_or_abort` gate to `output.py`
+  (replaces four hand-rolled typer.confirm + TTY-hint blocks);
+  replace five hand-written JSON serializers with `dataclasses.asdict`
+  (field order = model order, AC4/AC8 shapes unchanged). Net −170 lines,
+  zero behavior change on valid input.
+- **Drop unused `openai-whisper` optional dep** — never imported anywhere;
+  removes whisper/tiktoken/triton from the dev lock graph.
+- **Docs version sync** — bump README badge and 7 doc headers from
+  3.1.8 → 3.1.9.
+
 ## [3.1.8] — 2026-08-24
 
 ### Changed

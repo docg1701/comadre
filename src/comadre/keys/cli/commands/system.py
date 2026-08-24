@@ -39,15 +39,13 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
 import typer
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from comadre import timeutil
-from comadre.config import get_registry_settings
 from comadre.counters import (
     WINDOW_SECONDS,
     aggregate_cache_status,
@@ -55,7 +53,6 @@ from comadre.counters import (
 )
 from comadre.keys.audit import get_cli_actor
 from comadre.keys.cli._db import open_registry
-from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
     CACHE_STATUS_BOUND_MESSAGE,
@@ -82,12 +79,6 @@ _logger = get_logger("keys.cli")
 
 app = typer.Typer(
     help="System observability and operational commands.", no_args_is_help=True
-)
-
-_MISSING_KEY_HINT = (
-    "Generate one with: python -c 'from cryptography.fernet import "
-    "Fernet; print(Fernet.generate_key().decode())' and add it to "
-    ".env. Restart the service if monetization is enabled there too."
 )
 
 _CACHE_TTL_SECONDS = WINDOW_SECONDS
@@ -129,40 +120,13 @@ def cache_status_cmd(
         raise typer.Exit(code=2)
 
     # 2. Settings + tz validation (exit 6). Even though this command does
-    # not touch the DB, the encryption-key presence check keeps the error
-    # surface consistent across every ``comadre-keys`` verb — operators
-    # don't have to remember which commands require which env vars.
-    try:
-        settings = get_registry_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _MISSING_KEY_HINT,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _MISSING_KEY_HINT,
-        )
+    # not touch the DB, the full config check keeps the error surface
+    # consistent across every ``comadre-keys`` verb — operators don't have
+    # to remember which commands require which env vars.
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
-
-    try:
-        ZoneInfo(settings.billing_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        render_error(
-            "Configuration error: BILLING_TIMEZONE is not a valid IANA timezone",
-            f"Set BILLING_TIMEZONE to a valid zone (e.g., America/Sao_Paulo). "
-            f"Got: {settings.billing_timezone}",
-        )
-        raise typer.Exit(code=6) from None
+    settings, _billing_tz = loaded
 
     # 3. Read every per-replica snapshot and aggregate. ``read_all_snapshots``
     # globs ``{db_path}.counters.*.json`` so a multi-replica deployment

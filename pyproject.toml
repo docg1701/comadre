@@ -1,6 +1,6 @@
 [project]
 name = "comadre"
-version = "3.1.8"
+version = "3.1.9"
 description = "Comadre Manda Áudio Direto, Rápido e Eficiente — pocket-tts TTS API with native voice cloning"
 readme = "README.md"
 license = "MIT"
@@ -30,11 +30,6 @@ dependencies = [
 
 [project.scripts]
 comadre-keys = "comadre.keys.cli.app:main"
-
-[project.optional-dependencies]
-dev = [
-    "openai-whisper>=20250625",
-]
 
 [build-system]
 requires = ["uv_build>=0.8.3,<0.9.0"]

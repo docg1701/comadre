@@ -17,27 +17,26 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import sys
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-import click
 import typer
 from cryptography.fernet import InvalidToken
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from comadre import timeutil, voice_storage
-from comadre.config import get_registry_settings
 from comadre.counters import aggregate_key_stats, read_all_snapshots
 from comadre.exceptions import InvalidTaxIdError
 from comadre.keys.audit import filter_forbidden_keys, get_cli_actor
 from comadre.keys.cli._db import open_registry
-from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
+from comadre.keys.cli._errors import first_error_msg
 from comadre.keys.cli.commands.keys import load_settings_and_tz
 from comadre.keys.cli.output import (
     EXPORT_FORMAT_CHOICES,
     LIST_FORMAT_CHOICES,
+    confirm_or_abort,
     render_audit_tail,
     render_confirmation,
     render_customer_detail,
@@ -50,7 +49,6 @@ from comadre.keys.cli.output import (
     render_key_detail,
     render_last_24h_stats,
     render_show_json,
-    stderr_console,
 )
 from comadre.keys.crypto import (
     compute_tax_id_lookup,
@@ -93,12 +91,6 @@ from comadre.logging import get_logger
 _logger = get_logger("keys.cli")
 
 app = typer.Typer(help="Customer registry commands.", no_args_is_help=True)
-
-_missing_key_hint = (
-    "Generate one with: python -c 'from cryptography.fernet import "
-    "Fernet; print(Fernet.generate_key().decode())' and add it to "
-    ".env. Restart the service if monetization is enabled there too."
-)
 
 
 @app.command("create-customer")
@@ -185,27 +177,10 @@ def create_customer(
         raise typer.Exit(code=2)
 
     # 2. Load settings (trap missing/malformed encryption key or unreadable .env).
-    try:
-        settings = get_registry_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, _billing_tz = loaded
 
     # 3. Determine kind + digits + validate checksum.
     if cpf is not None:
@@ -297,17 +272,8 @@ _FIRST_RUN_CUSTOMER_HINT = (
 
 
 def _customer_row_to_json(row: CustomerListRow) -> dict[str, object]:
-    """Serialize a ``CustomerListRow`` to the AC4 JSON shape (fixed key order)."""
-    return {
-        "id": row.id,
-        "name": row.name,
-        "email": row.email,
-        "tax_id_kind": row.tax_id_kind,
-        "key_count": row.key_count,
-        "registered_at": row.registered_at,
-        "deleted_at": row.deleted_at,
-        "notes": row.notes,
-    }
+    """Serialize a ``CustomerListRow`` to the AC4 JSON shape (field order = model)."""
+    return asdict(row)
 
 
 @app.command("list-customers")
@@ -340,27 +306,10 @@ def list_customers_cmd(
         raise typer.Exit(code=2)
 
     # 2. Load settings — same exit-6 mapping as create-customer / issue-key.
-    try:
-        settings = get_registry_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, _billing_tz = loaded
 
     # 3. Open DB + apply migrations + read rows. Close in finally + suppress
     # (listings are pure reads — close errors here have nothing to protect).
@@ -416,35 +365,13 @@ _SHOW_AMBIGUOUS_HINT = (
 
 
 def _customer_detail_to_json(row: CustomerDetailRow) -> dict[str, object]:
-    """Serialize a ``CustomerDetailRow`` to the AC8 JSON shape (fixed key order)."""
-    return {
-        "id": row.id,
-        "name": row.name,
-        "email": row.email,
-        "tax_id_kind": row.tax_id_kind,
-        "key_count": row.key_count,
-        "registered_at": row.registered_at,
-        "notes": row.notes,
-    }
+    """Serialize a ``CustomerDetailRow`` to the AC8 JSON shape (field order = model)."""
+    return asdict(row)
 
 
 def _key_detail_to_json(row: KeyDetailRow) -> dict[str, object]:
-    """Serialize a ``KeyDetailRow`` to the AC8 JSON shape (fixed key order)."""
-    return {
-        "id": row.id,
-        "customer_id": row.customer_id,
-        "customer_name": row.customer_name,
-        "key_prefix": row.key_prefix,
-        "status": row.status,
-        "billing_mode": row.billing_mode,
-        "rate_limit_rpm": row.rate_limit_rpm,
-        "price_monthly": row.price_monthly,
-        "paid_until": row.paid_until,
-        "created_at": row.created_at,
-        "last_used_at": row.last_used_at,
-        "age_days": row.age_days,
-        "notes": row.notes,
-    }
+    """Serialize a ``KeyDetailRow`` to the AC8 JSON shape (field order = model)."""
+    return asdict(row)
 
 
 def _load_last_24h_stats(
@@ -485,17 +412,7 @@ def _load_last_24h_stats(
 
 def _last_24h_stats_to_json(stats: Last24hStats) -> dict[str, object]:
     """Serialize ``Last24hStats`` to the ``show --format json`` ``stats`` shape."""
-    return {
-        "requests_total": stats.requests_total,
-        "auth_success": stats.auth_success,
-        "rate_limit_429": stats.rate_limit_429,
-        "peak_rpm": stats.peak_rpm,
-        "avg_rpm_last_60s": stats.avg_rpm_last_60s,
-        "last_activity_at": stats.last_activity_at,
-        "snapshot_age_seconds": stats.snapshot_age_seconds,
-        "process_uptime_seconds": stats.process_uptime_seconds,
-        "replicas": stats.replicas,
-    }
+    return asdict(stats)
 
 
 def _audit_event_to_json(event: AuditEventRow) -> dict[str, object]:
@@ -1088,27 +1005,10 @@ def export_customer_cmd(
         raise typer.Exit(code=2)
 
     # 3. Settings ladder (exit 6).
-    try:
-        settings = get_registry_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, _billing_tz = loaded
 
     # 4. Open DB + migrations (exit 5).
 
@@ -1380,27 +1280,10 @@ def correct_tax_id_cmd(
         raise typer.Exit(code=2) from None
 
     # 4. Settings ladder (exit 6).
-    try:
-        settings = get_registry_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, _billing_tz = loaded
 
     # 5. Open DB + migrations (exit 5). The DB ladder runs BEFORE encryption
     # so a missing customer / tombstoned target / config error short-circuits
@@ -1429,24 +1312,16 @@ def correct_tax_id_cmd(
         # ``_logger.info`` discipline omits, so the interactive prompt
         # follows the same rule (the operator can ``show <id>`` if they
         # need to confirm identity before answering ``y``).
-        if not yes:
-            try:
-                typer.confirm(
-                    f"Replace tax-ID for {existing.id}. "
-                    "The previous value will be overwritten and cannot be "
-                    "recovered. Continue?",
-                    default=False,
-                    abort=True,
-                    err=True,
-                )
-            except click.exceptions.Abort:
-                stderr_console().print("Aborted.")
-                if not sys.stdin.isatty():
-                    stderr_console().print(
-                        "Hint: stdin is not a TTY — pass --yes to confirm "
-                        "scripted correction under nohup / systemd / docker exec."
-                    )
-                raise typer.Exit(code=2) from None
+        confirm_or_abort(
+            f"Replace tax-ID for {existing.id}. "
+            "The previous value will be overwritten and cannot be "
+            "recovered. Continue?",
+            yes=yes,
+            tty_hint=(
+                "Hint: stdin is not a TTY — pass --yes to confirm "
+                "scripted correction under nohup / systemd / docker exec."
+            ),
+        )
 
         # 8. Encrypt new tax-ID via the single-Fernet boundary + compute
         # the v3 lookup digest (B2 — both columns rotate atomically in the
@@ -1570,27 +1445,10 @@ def delete_customer_cmd(
         raise typer.Exit(code=2)
 
     # 3. Settings ladder (exit 6).
-    try:
-        settings = get_registry_settings()
-    except ValidationError as exc:
-        if is_missing_encryption_key(exc):
-            render_error(
-                "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-                _missing_key_hint,
-            )
-        else:
-            render_error("Configuration error", first_error_msg(exc))
-        raise typer.Exit(code=6) from None
-    except (OSError, PermissionError) as exc:
-        render_error("Configuration error: settings file unreadable", str(exc))
-        raise typer.Exit(code=6) from None
-
-    if settings.key_registry_encryption_key is None:
-        render_error(
-            "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
-            _missing_key_hint,
-        )
+    loaded = load_settings_and_tz()
+    if loaded is None:
         raise typer.Exit(code=6)
+    settings, _billing_tz = loaded
 
     # 4. Open DB + migrations (exit 5).
 
@@ -1619,23 +1477,16 @@ def delete_customer_cmd(
             raise typer.Exit(code=5) from None
 
         # 6. Confirmation gate (UX-DR11).
-        if not yes:
-            try:
-                typer.confirm(
-                    (
-                        f"This will permanently delete customer "
-                        f"{customer_name} and all associated keys "
-                        f"({pre_keys} key(s)) and stored voice clones. "
-                        "This action cannot be undone. Encrypted tax ID "
-                        "and voice biometrics will be purged. Continue?"
-                    ),
-                    default=False,
-                    abort=True,
-                    err=True,
-                )
-            except click.exceptions.Abort:
-                stderr_console().print("Aborted.")
-                raise typer.Exit(code=2) from None
+        confirm_or_abort(
+            (
+                f"This will permanently delete customer "
+                f"{customer_name} and all associated keys "
+                f"({pre_keys} key(s)) and stored voice clones. "
+                "This action cannot be undone. Encrypted tax ID "
+                "and voice biometrics will be purged. Continue?"
+            ),
+            yes=yes,
+        )
 
         # 6b. Voice-clone purge (LGPD biometric data, v3). Files are
         # deleted FIRST so a DB failure cannot leave voice biometrics

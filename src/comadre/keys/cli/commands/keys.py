@@ -14,12 +14,11 @@ from __future__ import annotations
 import contextlib
 import math
 import sqlite3
-import sys
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import click
 import typer
 from pydantic import ValidationError
 
@@ -32,13 +31,13 @@ from comadre.keys.cli._errors import first_error_msg, is_missing_encryption_key
 from comadre.keys.cli.output import (
     LIST_FORMAT_CHOICES,
     _format_brl,
+    confirm_or_abort,
     render_confirmation,
     render_empty_state,
     render_error,
     render_json,
     render_key_list,
     render_key_panel,
-    stderr_console,
 )
 from comadre.keys.db import (
     RotateKeyResult,
@@ -382,21 +381,8 @@ _FIRST_RUN_KEY_HINT = (
 
 
 def _key_row_to_json(row: ApiKeyListRow) -> dict[str, object]:
-    """Serialize an ``ApiKeyListRow`` to the AC8 JSON shape (fixed key order)."""
-    return {
-        "id": row.id,
-        "customer_id": row.customer_id,
-        "customer_name": row.customer_name,
-        "key_prefix": row.key_prefix,
-        "status": row.status,
-        "billing_mode": row.billing_mode,
-        "rate_limit_rpm": row.rate_limit_rpm,
-        "price_monthly": row.price_monthly,
-        "paid_until": row.paid_until,
-        "created_at": row.created_at,
-        "last_used_at": row.last_used_at,
-        "notes": row.notes,
-    }
+    """Serialize an ``ApiKeyListRow`` to the AC8 JSON shape (field order = model)."""
+    return asdict(row)
 
 
 def _resolve_title(
@@ -638,24 +624,13 @@ def _key_update_clauses(result: UpdateKeyResult) -> list[str]:
     return clauses
 
 
-def load_settings_and_tz() -> tuple[RegistrySettings, ZoneInfo] | None:
-    """Return ``(settings, billing_tz)`` or ``None`` after rendering an error.
+def load_registry_settings() -> RegistrySettings | None:
+    """Return registry settings or ``None`` after rendering the exit-6 panel.
 
-    Shared configuration-surface for the Story 1.6 and Story 3.1 command
-    modules so the encryption-key / billing-TZ exit-6 mapping stays DRY
-    without touching the existing ``issue-key`` / ``list-keys`` / ``show``
-    paths.
-
-    F33 — switched from ``Settings`` to ``RegistrySettings`` so the CLI
-    no longer drags TTS-runtime fields (engine paths, voices/noise
-    dirs, model URLs) through pydantic validation. Hosts that have not
-    yet deployed the FastAPI app can still operate the registry.
-
-    F36 — return type tightened from ``tuple[object, ZoneInfo] | None``
-    so call sites stop needing ``cast(Settings, settings_obj)``.
-
-    Returns ``None`` when the caller should ``raise typer.Exit(code=6)``;
-    the error panel has already been rendered.
+    Single configuration surface shared by every ``comadre-keys`` verb:
+    pydantic errors (a missing/malformed KEY_REGISTRY_ENCRYPTION_KEY gets
+    its dedicated generation hint), an unreadable settings file, and a
+    None encryption key each render the standard UX-DR6 panel.
     """
     try:
         settings = get_registry_settings()
@@ -671,14 +646,25 @@ def load_settings_and_tz() -> tuple[RegistrySettings, ZoneInfo] | None:
     except (OSError, PermissionError) as exc:
         render_error("Configuration error: settings file unreadable", str(exc))
         return None
-
     if settings.key_registry_encryption_key is None:
         render_error(
             "Configuration error: KEY_REGISTRY_ENCRYPTION_KEY is not set",
             _MISSING_KEY_HINT,
         )
         return None
+    return settings
 
+
+def load_settings_and_tz() -> tuple[RegistrySettings, ZoneInfo] | None:
+    """Return ``(settings, billing_tz)`` or ``None`` after rendering an error.
+
+    Extends :func:`load_registry_settings` with BILLING_TIMEZONE IANA
+    validation. Returns ``None`` when the caller should
+    ``raise typer.Exit(code=6)``; the error panel has already been rendered.
+    """
+    settings = load_registry_settings()
+    if settings is None:
+        return None
     try:
         billing_tz = ZoneInfo(settings.billing_timezone)
     except (ZoneInfoNotFoundError, ValueError):
@@ -688,7 +674,6 @@ def load_settings_and_tz() -> tuple[RegistrySettings, ZoneInfo] | None:
             f"Got: {settings.billing_timezone}",
         )
         return None
-
     return settings, billing_tz
 
 
@@ -955,27 +940,17 @@ def rotate_key_cmd(
             )
             raise typer.Exit(code=3)
 
-        # 4b. Confirmation gate — symmetry with revoke-key / delete-customer
-        # / rotate-encryption-key. Rotation invalidates the old plaintext
-        # immediately, so scripted callers MUST pass --yes; interactive
-        # operators get the prompt.
-        if not yes:
-            try:
-                typer.confirm(
-                    f"This will rotate key {key_row.key_prefix} — the old "
-                    f"plaintext stops working immediately. Continue?",
-                    default=False,
-                    abort=True,
-                    err=True,
-                )
-            except click.exceptions.Abort:
-                stderr_console().print("Aborted.")
-                if not sys.stdin.isatty():
-                    stderr_console().print(
-                        "Hint: stdin is not a TTY — pass --yes to confirm "
-                        "scripted rotation under nohup / systemd / docker exec."
-                    )
-                raise typer.Exit(code=2) from None
+        # 4b. Confirmation gate — rotation invalidates the old plaintext
+        # immediately, so scripted callers MUST pass --yes.
+        confirm_or_abort(
+            f"This will rotate key {key_row.key_prefix} — the old "
+            f"plaintext stops working immediately. Continue?",
+            yes=yes,
+            tty_hint=(
+                "Hint: stdin is not a TTY — pass --yes to confirm "
+                "scripted rotation under nohup / systemd / docker exec."
+            ),
+        )
 
         # 5. Generate the new plaintext.
         new_plaintext = generate_api_key_plaintext()
@@ -1112,28 +1087,14 @@ def revoke_key_cmd(
         key_row = resolve_key_target(conn, key_prefix, today=today)
 
         # 5. Confirmation gate (UX-DR11 Destroy-tier pattern).
-        if not yes:
-            try:
-                typer.confirm(
-                    f"This will permanently revoke key {key_row.key_prefix}. Continue?",
-                    default=False,
-                    abort=True,
-                    err=True,
-                )
-            except click.exceptions.Abort:
-                # Click writes nothing when we catch before escape — emit our
-                # own terminal message and remap exit 1 (Click default) to
-                # exit 2 (usage tier per UX-DR10). When stdin is not a TTY,
-                # add a hint pointing operators toward --yes so scripted
-                # invocations under nohup / systemd / docker exec do not
-                # die with a bare "Aborted." with no actionable signal.
-                stderr_console().print("Aborted.")
-                if not sys.stdin.isatty():
-                    stderr_console().print(
-                        "Hint: stdin is not a TTY — pass --yes to confirm "
-                        "scripted revocation under nohup / systemd / docker exec."
-                    )
-                raise typer.Exit(code=2) from None
+        confirm_or_abort(
+            f"This will permanently revoke key {key_row.key_prefix}. Continue?",
+            yes=yes,
+            tty_hint=(
+                "Hint: stdin is not a TTY — pass --yes to confirm "
+                "scripted revocation under nohup / systemd / docker exec."
+            ),
+        )
 
         # 6. Helper call.
         try:
