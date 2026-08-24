@@ -115,9 +115,14 @@ def render_confirmation(message: str) -> None:
     stdout_console().print(message)
 
 
+def _pad_label(label: str, width: int) -> str:
+    """Return ``label`` right-padded to ``width`` plus a trailing space."""
+    return f"{label.ljust(width)} "
+
+
 def _format_label(label: str, value: str) -> str:
     """Return `label<padding>value` with the label right-padded to _LABEL_WIDTH."""
-    return f"{label.ljust(_LABEL_WIDTH)} {value}"
+    return f"{_pad_label(label, _LABEL_WIDTH)}{value}"
 
 
 def _format_brl(amount: float) -> str:
@@ -595,11 +600,6 @@ _KEY_DETAIL_LABELS: tuple[str, ...] = (
     "Age:",
     "Notes:",
 )
-
-
-def _pad_label(label: str, width: int) -> str:
-    """Return ``label`` right-padded to ``width`` plus a trailing space."""
-    return f"{label.ljust(width)} "
 
 
 def _format_last_used(value: str | None) -> str:

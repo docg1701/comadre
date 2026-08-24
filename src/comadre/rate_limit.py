@@ -132,16 +132,15 @@ async def _check_per_ip_bucket(
     )
 
 
-async def check_health_per_ip_rate_limit(request: Request) -> None:
-    """F14 — per-IP rate-limit gate on /health.
-
-    Reads the limit from ``app.state.settings.per_ip_health_rate_limit``
-    (default 60/minute). Falls back to the hardcoded default when settings
-    are unavailable (startup window before lifespan attaches them).
-    """
+def _per_ip_limit_str(request: Request, attr: str, fallback: str) -> str:
     settings = getattr(request.app.state, "settings", None)
-    limit_str = (
-        settings.per_ip_health_rate_limit if settings else _HEALTH_PER_IP_LIMIT_DEFAULT
+    return getattr(settings, attr) if settings else fallback
+
+
+async def check_health_per_ip_rate_limit(request: Request) -> None:
+    """F14 — per-IP rate-limit gate on /health."""
+    limit_str = _per_ip_limit_str(
+        request, "per_ip_health_rate_limit", _HEALTH_PER_IP_LIMIT_DEFAULT
     )
     await _check_per_ip_bucket(request, limit_str=limit_str, bucket_prefix="health-ip")
 
@@ -149,19 +148,11 @@ async def check_health_per_ip_rate_limit(request: Request) -> None:
 async def check_speech_per_ip_rate_limit(request: Request) -> None:
     """F20 — per-IP rate-limit gate on /v1/audio/speech.
 
-    Reads the limit from ``app.state.settings.per_ip_speech_rate_limit``
-    (default 600/minute). Falls back to the hardcoded default when settings
-    are unavailable.
-
     Runs BEFORE ``verify_api_key`` so a denied-key spammer cannot bypass
-    the per-key bucket by never authenticating. The 600/min headroom is
-    well above any legitimate single-IP usage (a 10x margin over the
-    default 60-rpm per-key limit) so a NAT-shared client cluster is
-    unaffected; the bucket trips only on bot-shaped traffic.
+    the per-key bucket. 600/min headroom keeps NAT-shared users unaffected.
     """
-    settings = getattr(request.app.state, "settings", None)
-    limit_str = (
-        settings.per_ip_speech_rate_limit if settings else _SPEECH_PER_IP_LIMIT_DEFAULT
+    limit_str = _per_ip_limit_str(
+        request, "per_ip_speech_rate_limit", _SPEECH_PER_IP_LIMIT_DEFAULT
     )
     await _check_per_ip_bucket(request, limit_str=limit_str, bucket_prefix="speech-ip")
 

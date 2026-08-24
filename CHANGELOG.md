@@ -5,6 +5,22 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.6] — 2026-08-24
+
+### Changed
+
+- **Ponytail audit cleanup (round 4)** — deduplicate per-IP rate-limit
+  wrappers in `rate_limit.py` (`_per_ip_limit_str` helper removes
+  duplicated `getattr(settings, ...)` + fallback) and unify label
+  padding in `keys/cli/output.py` (`_format_label` now delegates to
+  `_pad_label` — single `ljust` implementation). Net −12 lines, zero
+  behavior change. Remaining audit findings (exception hierarchy,
+  TTLCache wrapper, counters IPC, `pyyaml`/`cachetools`/`validate-docbr`/
+  `num2words`, Row types, table factory) are load-bearing per `AGENTS.md`
+  and intentionally retained — audit false positives.
+- **Docs version sync** — bump `README.md` badge and 5 doc headers
+  from 3.1.5 → 3.1.6.
+
 ## [3.1.5] — 2026-08-24
 
 ### Changed
