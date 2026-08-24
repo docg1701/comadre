@@ -684,26 +684,6 @@
       word-break: break-all;
     }
 
-    /* Badge = the info-badge pill vocabulary. */
-    .voice-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px 10px;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-secondary);
-      white-space: nowrap;
-    }
-
-    .voice-badge.saved {
-      color: var(--success);
-      border-color: rgba(78, 234, 187, 0.3);
-      background: rgba(78, 234, 187, 0.08);
-    }
-
     /* Delete = ghost button in the download-btn mold, error-tinted. */
     .voice-delete {
       padding: 8px 14px;
@@ -1153,10 +1133,6 @@
             ? v.display_name + ' (' + v.voice + ')'
             : v.voice;
           row.appendChild(label);
-          const badge = document.createElement('span');
-          badge.className = 'voice-badge' + (v.persisted ? ' saved' : '');
-          badge.textContent = v.persisted ? 'salva' : 'sessão';
-          row.appendChild(badge);
           const del = document.createElement('button');
           del.type = 'button';
           del.className = 'voice-delete';

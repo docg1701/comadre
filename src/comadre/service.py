@@ -286,7 +286,12 @@ class PocketEngine:
 
         if raw:
             return _encode_final(wav_bytes, response_format)
-        return _apply_pipeline(wav_bytes, response_format, noise_dir, speed)
+        encoded = _apply_pipeline(wav_bytes, response_format, noise_dir, speed)
+        if response_format == "ogg":
+            from comadre.ogg_whatsapp import repack_for_whatsapp
+
+            encoded = repack_for_whatsapp(encoded)
+        return encoded
 
 
 def _parse_voice(voice_name: str) -> str:
@@ -494,7 +499,18 @@ def _apply_noise_and_encode(
         # -ar 48000 BEFORE libopus: WhatsApp's player ignores Opus streams
         # whose OpusHead input-sample-rate is non-standard (16 kHz files
         # attach as silent audio); 48 kHz is the canonical Opus rate.
-        codec_args = ["-c:a", "libopus", "-b:a", "24k", "-ar", "48000", "-ac", "1"]
+        codec_args = [
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "24k",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-application",
+            "voip",
+        ]
         fmt = "ogg"
     elif response_format == "mp3":
         codec_args = [
