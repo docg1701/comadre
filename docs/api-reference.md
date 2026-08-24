@@ -1,4 +1,4 @@
-# Comadre API Reference (v3.1.2)
+# Comadre API Reference (v3.1.3)
 
 Normative contract: `docs/pocket-tts-v3-api-spec.md`. Engine: kyutai-labs
 pocket-tts 2.1.0, language `portuguese` (sole engine).
@@ -13,7 +13,7 @@ pocket-tts 2.1.0, language `portuguese` (sole engine).
 | `speed` native only on kokoro | honored for ALL voices via ffmpeg `atempo` post-processing (0.25-4.0) |
 | no voice upload | `POST/GET/DELETE /v1/voices` (voice cloning) |
 | `/health` `engines: {kokoro, qwen3}` | `engines: {pocket}` |
-| `__version__ == "2.1.1"` | `__version__ == "3.1.2"` |
+| `__version__ == "2.1.1"` | `__version__ == "3.1.3"` |
 
 ## 2. Authentication
 
@@ -126,7 +126,7 @@ filesystem.
  "voices": ["pocket/rafael", "pocket/u_01J2K4M6N8P0Q2R4S6"],
  "engines": {"pocket": {"loaded": true, "voices": ["pocket/rafael", "..."]}},
  "queue_depth": 0, "uptime_seconds": 1234, "memory_mb": 1520,
- "version": "3.1.2"}
+ "version": "3.1.3"}
 ```
 
 Unauthenticated callers get only `{status, voices}`. Ephemeral voices are

@@ -5,6 +5,23 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.3] — 2026-08-24
+
+### Changed
+
+- **Ponytail audit cleanup** — remove dead `\_BACKUP_NOT_IMPLEMENTED_INFO` flag
+  and its unreachable `allow_warn=False` legacy branch in `keys/health.py`
+  (−60 lines, zero behavior change; backup path has been warn/ok since
+  Story 4.3 shipped 2026-04-20). The remaining `\_check_last_backup` always
+  warns when no archive is present or stale, matching current operator
+  expectations. Other audit findings (exception hierarchy, TTLCache wrapper,
+  counters IPC, `python-dateutil`/`pyyaml` single-use deps) are load-bearing
+  per `AGENTS.md` and intentionally retained — audit false positives.
+- **Docs version sync** — bump `README.md` badge and 5 doc headers
+  (`api-reference`, `api-architecture`, `local-testing-guide`,
+  `voice-management`, `pocket-tts-v3-api-spec` + `monetization` template)
+  from 3.1.2 → 3.1.3.
+
 ## [3.1.2] — 2026-08-23
 
 ### Fixed

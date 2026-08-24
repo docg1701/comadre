@@ -39,14 +39,6 @@ from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 Severity = Literal["ok", "info", "warn", "fail"]
 
-# Story 3.4 ↔ Story 4.3 handshake: Story 4.3 shipped the backup playbook
-# on 2026-04-20 so this constant flipped from ``True`` to ``False`` —
-# ``_check_last_backup`` now emits warn/ok instead of staying at
-# ``info`` forever. Kept as a named constant for symmetry with the
-# Story 3.4 forcing-function tests and for a quick operator rollback
-# surface if the backup playbook is ever regressed.
-_BACKUP_NOT_IMPLEMENTED_INFO = False
-
 # The sweep is considered fresh within 48 h (Story 3.4 spec §2). The cron
 # fires daily at 00:30 operator-TZ; a 48 h threshold tolerates one missed
 # run without flipping to warn, which absorbs ordinary ops noise.
@@ -611,19 +603,13 @@ def _check_last_backup(
     backup_parent: Path,
     backup_pattern: str,
     *,
-    allow_warn: bool,
     staleness_warn_seconds: int = 48 * 3600,
     backup_cron_install_age_seconds: int | None = None,
 ) -> HealthCheck:
     """Look for the most-recent backup artefact.
 
-    With ``allow_warn=True`` (the Story 4.3 default) this returns ``warn``
-    when no archive is present or the newest is older than
-    ``staleness_warn_seconds``, and ``ok`` otherwise. The legacy
-    ``allow_warn=False`` path keeps the Story 3.4 "forward-leaning info"
-    shape and is retained as a rollback surface (via
-    ``_BACKUP_NOT_IMPLEMENTED_INFO``) should backups ever need to be
-    disabled mid-lifecycle.
+    Returns ``warn`` when no archive is present or the newest is older
+    than ``staleness_warn_seconds``, and ``ok`` otherwise.
     """
     matches: list[Path] = []
     try:
@@ -632,53 +618,6 @@ def _check_last_backup(
     except OSError:
         matches = []
 
-    if not allow_warn:
-        if not matches:
-            return HealthCheck(
-                label="Last backup",
-                value="never (Story 4.3 not yet shipped)",
-                severity="info",
-                detail=None,
-                data={"available_after_story_4_3": False},
-            )
-        # A backup file somehow exists (manual or early adoption of 4.3).
-        # Report the mtime but stay at info severity until the constant
-        # flip enables warn/fail branches. Filter stat-races out so a
-        # concurrent retention sweep cannot raise FileNotFoundError.
-        legacy_survivors: list[tuple[Path, float]] = []
-        for match in matches:
-            try:
-                legacy_survivors.append((match, match.stat().st_mtime))
-            except OSError:
-                continue
-        if not legacy_survivors:
-            return HealthCheck(
-                label="Last backup",
-                value="never (Story 4.3 not yet shipped)",
-                severity="info",
-                detail=None,
-                data={"available_after_story_4_3": False},
-            )
-        newest, newest_mtime = max(legacy_survivors, key=lambda item: item[1])
-        mtime_epoch = int(newest_mtime)
-        mtime_iso = datetime.fromtimestamp(mtime_epoch, UTC).strftime(_ISO_UTC_FORMAT)
-        age = int(
-            (_utcnow() - datetime.fromtimestamp(mtime_epoch, UTC)).total_seconds()
-        )
-        return HealthCheck(
-            label="Last backup",
-            value=f"{mtime_iso} ({format_seconds_ago(age)})",
-            severity="info",
-            detail=None,
-            data={
-                "available_after_story_4_3": False,
-                "path": str(newest),
-                "mtime_iso": mtime_iso,
-                "age_seconds": age,
-            },
-        )
-
-    # Story 4.3 — warn / ok branches (active since the constant flipped).
     # Snapshot mtimes up-front so a concurrent retention sweep deleting an
     # archive between glob() and stat() can't raise FileNotFoundError out of
     # this check. Survivors-only, pick the newest.
@@ -870,7 +809,6 @@ def collect_health_report(
         _check_last_backup(
             backup_parent_obj,
             backup_pattern,
-            allow_warn=not _BACKUP_NOT_IMPLEMENTED_INFO,
             backup_cron_install_age_seconds=backup_cron_install_age_seconds,
         ),
         _check_auth_cache(cache_status),
