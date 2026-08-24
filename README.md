@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/version-3.1.9-blue" alt="Version 3.1.9">
+  <img src="https://img.shields.io/badge/version-3.1.10-blue" alt="Version 3.1.10">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/TTS-pocket--tts-ff6f00" alt="pocket-tts">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
@@ -99,8 +99,9 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
    any soundfile-readable format (WAV, MP3, OGG/Opus — WhatsApp voice notes
    work as-is — or FLAC), 3–30 s, up to 10 MB.
 2. A voice embedding is extracted from the sample.
-3. If `persist=true`, the clone is saved to `/voices/pocket/u_<ULID>/`
-   (`.safetensors` state + reference `.wav` + metadata `.json`); otherwise it
+3. If `persist=true`, the clone is saved to `/voices/pocket/` as
+   `u_<ULID>.safetensors` (model state) + `u_<ULID>.wav` (reference audio,
+   transcoded to PCM 24 kHz mono) + `u_<ULID>.json` (metadata); otherwise it
    lives only in memory and expires after a few hours.
 4. The response returns the new voice name plus duration and sample rate.
 
@@ -140,8 +141,6 @@ in `.env`, then restarts the service — fully offline, zero manual steps.
 - **Measured performance** — sustained ~15 audios/min on the default
   single-replica 4 vCPU deployment (~22k audios/day), scaling to ~30/min with
   2 replicas on an 8 vCPU host; typical-message latency p50 ≈ 2–6 s.
-  See [docs/cost-comparison-report.md](docs/cost-comparison-report.md) and
-  [docs/replica-scaling-report.md](docs/replica-scaling-report.md).
 - **Single FIFO queue** per instance (`asyncio.Lock`) — clone encoding and
   speech share the same queue. Scale horizontally via `deploy.replicas` in
   compose.yaml (Caddy load-balances with `least_conn`).
@@ -230,19 +229,15 @@ empty — that is intentional; the default path is auto-download).
 - [docs/monetization.md](docs/monetization.md) — Billing tiers + LGPD operator
   handbook (incl. voice-clone biometrics)
 - [docs/rate-limiting.md](docs/rate-limiting.md) — Per-key algorithm, bucket
-  identity, 429 semantics
+  identity, 429 semantics, per-IP pre-auth gates
 - [docs/troubleshooting.md](docs/troubleshooting.md) — HF gating/401,
   offline boot, torch/RAM, state regen, upload validation errors
 - [docs/api-architecture.md](docs/api-architecture.md) — Internal design,
   queue architecture, VoiceRegistry/LRU, pipelines
-- [docs/pocket-tts-v3-api-spec.md](docs/pocket-tts-v3-api-spec.md) —
-  The v3 API contract (endpoints, schemas, voice naming)
-- [docs/preprocessing-fix-plan.md](docs/preprocessing-fix-plan.md) —
-  pt-BR preprocessing audit against pocket-tts internals + fix roadmap
-- [docs/replica-scaling-report.md](docs/replica-scaling-report.md) — Measured
-  pocket-tts scaling matrix (1 vs 2 replicas × 4 vs 8 vCPU host)
-- [docs/cost-comparison-report.md](docs/cost-comparison-report.md) — Measured
-  cost & capacity comparison vs credit-based cloud TTS providers
+- [docs/local-testing-guide.md](docs/local-testing-guide.md) — End-to-end
+  local run (models, dev server, smoke tests)
+- [docs/proxmox-vm-setup.md](docs/proxmox-vm-setup.md) — Proxmox VM creation
+  guide for the target host
 
 ## Load Testing
 

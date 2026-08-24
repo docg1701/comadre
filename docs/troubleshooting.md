@@ -1,6 +1,7 @@
 # Troubleshooting
 
-Common issues with symptoms, causes, and resolution steps for both engines.
+Common issues with symptoms, causes, and resolution steps (single engine:
+pocket-tts).
 
 ## Startup Failures
 
@@ -105,7 +106,7 @@ destination paths (or the HF cache).
 
 3. **Key is suspended or revoked.** `comadre-keys show <prefix>` reveals the status. Use `comadre-keys update-key` or `issue-key` to restore access as appropriate.
 4. **Key is past `paid_until`.** A manual-billing key whose `paid_until` has lapsed authenticates as suspended. Either mark it paid through the billing workflow, extend it, or rotate.
-5. **Cache state unexpectedly stale after a CLI mutation.** `comadre-keys` mutations touch a sentinel file (`{KEY_REGISTRY_DB_PATH}.invalidate`) that the API process stats on every cache read. If you see stale auth after a CLI mutation, confirm the container and the host see the same registry directory: the CLI must be invoked via `docker compose exec tts-service comadre-keys ...` (or the host path must be bind-mounted to the same volume used inside the container). Otherwise the sentinel the CLI writes is in a different filesystem than the one the API is watching and invalidation never fires. `docker compose restart tts-service` is the unconditional fallback.
+5. **Cache state unexpectedly stale after a CLI mutation.** `comadre-keys` mutations write a monotonic counter into a sentinel file (`{KEY_REGISTRY_DB_PATH}.invalidate`) that the API reads on every cache read. If you see stale auth after a CLI mutation, confirm the container and the host see the same registry directory: the CLI must be invoked via `docker compose exec tts-service comadre-keys ...` (or the host path must be bind-mounted to the same volume used inside the container). Otherwise the sentinel the CLI writes lives in a different filesystem than the one the API is watching and invalidation never fires. `docker compose restart tts-service` is the unconditional fallback.
 
 ### 404 voice not found
 
@@ -137,7 +138,7 @@ destination paths (or the HF cache).
    docker compose exec tts-service comadre-keys update-key <key-prefix> --rpm 120
    ```
 
-   `--rpm` accepts values 1..10 000. Every `comadre-keys` mutation touches the registry invalidation sentinel, so the change takes effect on the very next request — no cache-TTL wait.
+   `--rpm` accepts values 1..10 000. Every `comadre-keys` mutation writes its counter into the registry invalidation sentinel, so the change takes effect on the very next request — no cache-TTL wait.
 3. Inspect recent rate-limit behaviour for a specific key:
 
    ```bash
@@ -251,7 +252,7 @@ pointing at a changing file.
 
 2. Check that `.env` on the host has `KEY_REGISTRY_ENCRYPTION_KEY` populated (`grep KEY_REGISTRY_ENCRYPTION_KEY ~/comadre/.env`). If the CLI is being run outside the container, the same env var must be exported in the calling shell.
 3. For "Database error" messages, verify the registry path is writable and the volume is mounted: `docker compose exec tts-service ls -la /var/lib/comadre/registry.db`.
-4. The CLI exit codes map to: 0 success, 2 usage error, 3 not found, 5 database error, 6 configuration error (see `comadre-keys --help`).
+4. The CLI exit codes map to: 0 success, 2 usage/validation error, 3 not-found, 4 Fernet shape (`rotate-encryption-key`), 5 database error, 6 configuration/permission error, 7 unhealthy (`health --format json`; see `comadre-keys --help`).
 
 ### `comadre-keys cache-status` reports "unavailable"
 
@@ -327,17 +328,20 @@ pointing at a changing file.
 
 ### Disk space
 
-**Symptom:** Service becomes slow or fails to generate audio. Disk usage warnings in health playbook.
+**Symptom:** Service becomes slow or fails; `df -h /` shows high usage.
 
-**Cause:** Generated audio files accumulate over time.
+**What consumes disk in v3:** generated audio is piped straight to the
+response (nothing is written to disk); the real consumers are the container
+image (~3-3.5 GB), the models volume (~600 MB), the registry volume (SQLite
+plus WAL sidecars), Docker build cache, and backup archives (14-day
+retention).
 
 **Resolution:**
 
-1. Check disk usage: `df -h /`
-2. Check audio volume size: `docker compose exec tts-service du -sh /audio`
-3. Verify the audio cleanup cron is active: `crontab -l | grep comadre-audio-cleanup`
-4. Expected: runs every 6 hours, deletes audio files older than 24 hours
-5. Manual cleanup: `docker compose exec tts-service find /audio -type f \( -name '*.ogg' -o -name '*.wav' \) -mmin +1440 -delete`
+1. Check usage: `df -h /` and `docker system df`
+2. Prune build cache: `docker builder prune -f`
+3. Verify the nightly backup retention is pruning: `ls -lh /var/lib/comadre/*.backup-*.tar.gz.enc | head` (inside the registry volume) — archives older than `backup_retention_days` are deleted on every `backup-keys.yml` run
+4. `comadre-keys health --format json` reports registry-side anomalies
 
 ## Log Format
 

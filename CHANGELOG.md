@@ -5,6 +5,36 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.10] — 2026-08-24
+
+### Removed
+
+- **Development-cycle docs deleted** — `docs/pocket-tts-v3-api-spec.md`
+  (build-phase normative spec; superseded by `api-reference.md`, which it
+  duplicated), `docs/preprocessing-fix-plan.md` (closed 3.1.2 audit),
+  `docs/cost-comparison-report.md` + `docs/replica-scaling-report.md`
+  (point-in-time measurement campaigns; key numbers now live inline in the
+  README performance bullet). Untracked v2 residue (`tmp/spike*`,
+  `tmp/baseline_v2_capture.py`) also removed.
+- **Dead env var** — `POCKET_SIGLA_SPACING` dropped from `compose.yaml` and
+  both ansible inventories: nothing in `src/` reads it since the 3.1.2 sigla
+  A/B removed the routine.
+
+### Changed
+
+- **Docs truth pass** — rate-limiting/monetization/configuration docs now
+  describe the F14 per-IP pre-auth gates (`PER_IP_HEALTH_RATE_LIMIT`,
+  `PER_IP_SPEECH_RATE_LIMIT`) instead of claiming no app-layer per-IP limit;
+  `.invalidate` sentinel described as F17 content-based counter (was mtime);
+  `create-customer --tax-id` example fixed to `--cpf`/`--cnpj`; clone persist
+  path documented as ffmpeg transcode (was `shutil.copyfile`); v2 leftovers
+  removed from deployment-guide/troubleshooting (audio-cleanup cron,
+  `/audio` volume, memory-warning claims that never existed);
+  `comadre-keys health` export field list gains the LGPD `voices` array.
+- **`.env.example`** — adds `BILLING_DAY`, `PER_IP_HEALTH_RATE_LIMIT`,
+  `PER_IP_SPEECH_RATE_LIMIT` with defaults matching `config.py`.
+- **Docs version sync** — bump README badge and doc headers to 3.1.10.
+
 ## [3.1.9] — 2026-08-24
 
 ### Changed

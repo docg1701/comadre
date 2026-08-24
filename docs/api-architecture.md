@@ -1,4 +1,4 @@
-# Comadre API Architecture (v3.1.9)
+# Comadre API Architecture (v3.1.10)
 
 Single-engine design: kyutai-labs/pocket-tts 2.1.0 (language `portuguese`)
 with native voice cloning. The v2 dual-engine (Kokoro + Qwen3) architecture
@@ -64,7 +64,9 @@ POST /v1/voices (multipart: file, display_name, persist)
    -> registry.create_from_upload(tmp, key_id, customer_id, display_name, persist)
         quota checks (stored 20/customer | ephemeral 5/key)
         model.get_state_for_audio_prompt(tmp, truncate=True)  # 30 s cap
-        persist: shutil.copyfile -> /voices/pocket/u_<ULID>.wav
+        persist: _transcode_to_wav -> /voices/pocket/u_<ULID>.wav (ffmpeg PCM 24 kHz mono —
+                 a raw copy would be unreadable on later regen: pocket_tts dispatches
+                 .wav to the stdlib wave module, RIFF only)
                  export_model_state -> u_<ULID>.safetensors
                  write_meta -> u_<ULID>.json {display_name, customer_id,
                     key_id, created_at, ref_duration_s, model_hash}
@@ -104,7 +106,8 @@ the single-lock-per-replica design (active connections ≈ queue depth).
 
 ## Lifespan phases
 
-1. Config + logging; registry DB + migrations + auth cache + counters.
+1. Config + logging; registry DB + migrations + auth cache + per-key counters;
+   `tax_id_lookup` backfill (v2→v3 upgrade) + cross-mount sentinel write-probe.
 2. Model check: `HF_HUB_OFFLINE=1` → verify files exist (fail fast),
    else `ensure_pocket_models()` (HF download, pinned revisions).
 3. Noise dir + voices dir checks (`/voices/pocket`).

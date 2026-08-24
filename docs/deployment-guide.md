@@ -180,7 +180,7 @@ Deploys Comadre on a clean Ubuntu VPS with a single command.
 8. Creates empty voices directory structure in Docker volume
 9. Creates `.env` with all configuration variables
 10. Builds the Docker image and starts the service (tts-service + Caddy)
-11. Configures cron jobs (audio cleanup, daily suspension sweep, nightly key-registry backup)
+11. Configures cron jobs (daily suspension sweep at 00:30, nightly key-registry backup at 02:00 — both in `billing_timezone`)
 12. Waits for the health endpoint to report `healthy`
 
 **Bootstrap does NOT deploy voice files and does NOT create customers or API keys.** Run `deploy-voices.yml` afterwards to copy voice files, and use `comadre-keys create-customer` + `comadre-keys issue-key` to populate the registry before any traffic is expected.
@@ -252,7 +252,7 @@ Updates a running Comadre deployment from the latest git commit.
 
 **What it preserves:**
 
-- Docker volumes (models, voices, audio) are not affected
+- Docker volumes (models, voices, registry) are not affected
 - `.env` file is not modified
 - Cron jobs remain unchanged
 
@@ -277,14 +277,13 @@ Read-only diagnostic tool for troubleshooting. Never modifies anything.
 **What it reports:**
 
 - Container state (running or not)
-- Health endpoint response (status, voices, engines, memory, uptime)
-- Disk usage (root filesystem and audio volume)
-- Cron job status (audio cleanup, daily suspension sweep, nightly key-registry backup)
+- Health endpoint response (status, voices, engine)
+- Root filesystem usage (`df -h /`, diagnostic print in the summary)
+- Cron job status (daily suspension sweep, nightly key-registry backup)
+- Full assertion chain: DB modes, cron presence, backup archive integrity, UFW rules, in-container `comadre-keys health`
 
-**Warnings triggered automatically:**
-
-- Memory usage above 5 GB
-- Disk usage above 80%
+**Exits non-zero on the first failed assertion** — wire it to monitoring;
+do not soften failures to debug prints.
 
 **Run:**
 
@@ -754,14 +753,13 @@ Replace the IPs with your allowed addresses. Restart Caddy after changes: `docke
 
 ## Cron Jobs
 
-The bootstrap playbook installs three user-level cron jobs and a `CRON_TZ` envvar. The container's `restart: unless-stopped` policy plus the healthcheck cover transient process failures, so no daily restart is configured.
+The bootstrap playbook installs two user-level cron jobs plus a `CRON_TZ` envvar. The container's `restart: unless-stopped` policy plus the healthcheck cover transient process failures, so no daily restart is configured.
 
 **Cron entries installed by bootstrap:**
 
-- `comadre-audio-cleanup` -- every 6 hours, deletes generated audio files older than 24 hours
 - `comadre-daily-suspension` -- 00:30 in `billing_timezone`, suspends keys whose `paid_until` has elapsed
 - `comadre-keys-backup` -- 02:00 in `billing_timezone` (configurable via `backup_hour`), captures an encrypted snapshot of the key registry; archives older than `backup_retention_days` are pruned
-- `CRON_TZ` envvar -- pins the cron daemon's timezone to `billing_timezone` so the suspension sweep and backup fire at the configured local hour
+- `CRON_TZ` envvar -- pins the cron daemon's timezone to `billing_timezone` so both crons fire at the configured local hour
 
 Verify cron is active:
 
@@ -803,19 +801,18 @@ Caddy load-balances across all healthy replicas using the `dynamic a` upstream r
 
 Memory breakdown per replica: pocket-tts peak RSS ~1.5–2 GB; the 6 GB
 per-replica limit leaves ample headroom. CPU is the binding constraint —
-measured ceilings and scaling factors in
-[replica-scaling-report.md](replica-scaling-report.md).
+sustained throughput ≈ 15 audios/min per 4-vCPU replica, ~30/min with
+two replicas on an 8-vCPU host.
 
 ### What is shared vs per-instance
 
 | Component | Scope | Notes |
 |-----------|-------|-------|
 | Models (`comadre-models`) | Shared volume | All replicas read the same model files |
-| Voices (`comadre-voices`) | Shared volume (read-only) | All replicas discover the same voices |
-| Audio (`comadre-audio`) | Shared volume | Cleanup cron runs on one replica |
+| Voices (`comadre-voices`) | Shared volume | All replicas discover the same voices; uploads write here too |
 | FIFO queue (`asyncio.Lock`) | Per-instance | Each replica has its own queue |
 | Per-key rate-limit buckets (`limits` in-memory) | Per-instance | Each replica holds its own moving-window counters. Effective RPM for a customer = `rate_limit_rpm × replicas`. |
-| Auth cache (`AuthCache`) | Per-instance | 60 s TTL ceiling; every `comadre-keys` mutation touches `{KEY_REGISTRY_DB_PATH}.invalidate` and each replica's cache flushes on the next read, so a CLI change propagates across replicas synchronously when they share the registry volume. |
+| Auth cache (`AuthCache`) | Per-instance | 60 s TTL ceiling; every `comadre-keys` mutation writes a monotonic counter to `{KEY_REGISTRY_DB_PATH}.invalidate` and each replica's cache flushes on the next read when the counter advanced. |
 | Key registry SQLite | Shared volume (`comadre-registry`) | All replicas read and write the same file. |
 | Health endpoint | Per-instance | Reports queue depth and memory for that replica only. |
 
@@ -823,7 +820,6 @@ measured ceilings and scaling factors in
 
 - **Rate-limit buckets are per-instance.** With N replicas the effective RPM for a key is `N × rate_limit_rpm` because each replica's `limits` in-memory storage runs its own moving window. The default deploy is `replicas: 1`, so this is dormant; if you scale up, either (a) divide the intended per-key RPM by the replica count when setting `comadre-keys update-key --rpm`, or (b) accept the multiplied limit as acceptable elasticity. Shared-storage rate-limiting (Redis/SQLite) is a candidate future story. See [rate-limiting.md](rate-limiting.md).
 - **Queue depth is per-instance.** The `/health` endpoint reports the queue depth of whichever replica handles the request. For cluster-wide monitoring, check all replicas or use centralized logging.
-- **Audio cleanup cron** runs `docker compose exec` which targets one replica. Since the audio volume is shared, this is sufficient.
 - **First deployment with replicas > 1** should start with `replicas: 1` to download and cache models in the shared volume. After models are cached, scale up. Concurrent downloads from multiple replicas to the same temp file can corrupt the model.
 - **Caddy blocks on all replicas healthy.** The `depends_on: condition: service_healthy` in compose.yaml means Caddy waits for every replica to pass its healthcheck before starting. If any single replica fails (e.g., OOM during concurrent model loading), Caddy never starts and the entire service is unreachable. For multi-replica deployments, consider changing to `condition: service_started`.
 

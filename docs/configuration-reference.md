@@ -33,6 +33,8 @@ Comadre is configured via environment variables. All variables are loaded at sta
 | `VOICE_EPHEMERAL_MAX_PER_KEY` | `5` | Ephemeral clones per API key. | `5` |
 | `VOICE_EPHEMERAL_GLOBAL_MAX` | `50` | Global LRU cap for ephemeral clones (cross-key eviction). | `50` |
 | `VOICE_STORED_MAX_PER_CUSTOMER` | `20` | Stored (persisted) clones per customer. | `20` |
+| `PER_IP_HEALTH_RATE_LIMIT` | `60/minute` | Per-IP application-layer rate limit for unauthenticated `GET /health` probes (bounds shape-valid bearer spray before auth). Parsed by the `limits` library; invalid formats fail closed (429) so misconfiguration is immediately visible. Set to `999999/minute` to effectively disable. | `60/minute` |
+| `PER_IP_SPEECH_RATE_LIMIT` | `600/minute` | Per-IP pre-auth gate shared by `POST /v1/audio/speech` and `POST /v1/voices`. Runs BEFORE `verify_api_key` to bound token-spray attacks against the SQLite lookup path. Raise it when many legitimate clients share one egress IP (NAT / office proxy). | `600/minute` |
 | `HF_TOKEN` | *(empty)* | HuggingFace token for the ONE-TIME first-boot download of the gated weights (accept the terms at <https://huggingface.co/kyutai/pocket-tts>). Unset after the first boot. | `hf_...` |
 | `HF_HUB_OFFLINE` | `0` | `1` = fully offline runtime (cache-only model lookup; missing files fail fast with the "run once with HF_TOKEN" message). Set to `1` after the first boot. | `1` |
 | `DOMAIN` | `localhost` | Domain name used by Caddy. A real domain triggers Let's Encrypt; `localhost` uses a self-signed cert from Caddy's internal CA. Compose-level variable, not consumed by the Python process. | `tts.example.com` |
@@ -43,7 +45,7 @@ The key registry lives at `KEY_REGISTRY_DB_PATH`, and three sibling files share 
 
 | Path | Purpose |
 | --- | --- |
-| `{KEY_REGISTRY_DB_PATH}.invalidate` | Cache-invalidation sentinel. The `comadre-keys` CLI touches this file on every `api_key` mutation; the API stats it on each cache read and flushes the `AuthCache` the moment mtime advances. See [rate-limiting.md](rate-limiting.md#operator-surface). |
+| `{KEY_REGISTRY_DB_PATH}.invalidate` | Cache-invalidation sentinel. Every `api_key` mutation writes a monotonic counter (`time.time_ns()`, atomic tmp-file + rename) into this file; the API reads the CONTENT on each cache read and flushes the `AuthCache` when the counter advances — immune to coarse-mtime filesystems (F17). Legacy touch-only files fall back to mtime detection with a WARN. See [rate-limiting.md](rate-limiting.md#operator-surface). |
 | `{KEY_REGISTRY_DB_PATH}.counters.{replica_id}.json` | Per-replica request counters snapshot written every 15 s by the API process (one file per replica, `{replica_id}` = `socket.gethostname()`). The `comadre-keys cache-status` and `show <key-prefix> --audit-tail N` commands glob every matching file and aggregate. See [rate-limiting.md](rate-limiting.md#counters). |
 | `{KEY_REGISTRY_DB_PATH}.cron-installed` | Cron-installed marker for the daily suspension sweep, written by `deploy/ansible/playbooks/bootstrap.yml` and removed by `cleanup.yml`. Two ASCII `key=value` lines (`schedule=...`, `cron_tz=...`), mode `0600`. `comadre-keys health` reads this to report the cron's installed status; the container cannot read the host crontab, so the marker is the only source of truth for the CLI. **Do not hand-edit** — manual changes drift from the real crontab and mislead `health`'s cron check. |
 | `{KEY_REGISTRY_DB_PATH}.backup-cron-installed` | Cron-installed marker for the nightly `comadre-keys-backup` cron, written by `bootstrap.yml` and removed by `cleanup.yml`. Three ASCII `key=value` lines (`schedule=...`, `cron_tz=...`, `retention_days=...`), mode `0600`. Consumed by both `health.yml` (ansible-layer assertion) **and** `comadre-keys health`'s dedicated `Backup cron` row (Story 4.4). The CLI row renders as `comadre-keys-backup at <schedule> (CRON_TZ=<tz>, retention=<days>d)` when the marker is well-formed (severity `ok`); a missing or unparseable marker flips the row to `warn` and the JSON-mode aggregate to `is_healthy=false` (exit 7). |
@@ -51,9 +53,11 @@ The key registry lives at `KEY_REGISTRY_DB_PATH`, and three sibling files share 
 
 None of these files is a configuration surface — the paths are derived from `KEY_REGISTRY_DB_PATH` and cannot be overridden. The CLI silently degrades when any of them is absent (e.g. API not running yet, or the cron has not been installed).
 
-## Rate limiting is not env-configured
+## Rate limiting: per-key via registry, per-IP via two env vars
 
-Per-key rate limits are set at key-issuance time via `comadre-keys issue-key --rpm <n>` and changed via `comadre-keys update-key --rpm <n>` (both capped at 1..10 000). There is no environment variable that sets a global RPM floor, ceiling, or per-IP limit — the registry row is authoritative. See [rate-limiting.md](rate-limiting.md) and [monetization.md](monetization.md).
+Per-key business caps are set at key-issuance time via `comadre-keys issue-key --rpm <n>` and changed via `comadre-keys update-key --rpm <n>` (both capped at 1..10 000) — there is no environment variable for them; the registry row is authoritative.
+
+The two pre-auth per-IP gates ARE env-configured: `PER_IP_HEALTH_RATE_LIMIT` (default `60/minute`) on `GET /health` and `PER_IP_SPEECH_RATE_LIMIT` (default `600/minute`) on `POST /v1/audio/speech` + `POST /v1/voices`. They bound token-spray and DoS traffic before authentication; see [rate-limiting.md](rate-limiting.md) and [monetization.md](monetization.md).
 
 ## Removed in v3.0.0
 

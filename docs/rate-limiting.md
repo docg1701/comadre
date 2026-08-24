@@ -1,6 +1,6 @@
 # Rate Limiting
 
-Comadre enforces one rate-limit bucket per API key. The per-key cap lives in the registry (`api_key.rate_limit_rpm`) and is consulted on every authenticated request. There is no per-IP rate limit at the application layer and no global toggle — the registry row is authoritative.
+Comadre enforces one rate-limit bucket per API key. The per-key cap lives in the registry (`api_key.rate_limit_rpm`) and is consulted on every authenticated request. On top of that, two pre-auth **per-IP gates** bound abuse before authentication: `PER_IP_HEALTH_RATE_LIMIT` (default `60/minute`) on `GET /health` and `PER_IP_SPEECH_RATE_LIMIT` (default `600/minute`) on the speech + voices POSTs. The business cap — what a customer buys — is always the per-key registry value; the per-IP gates are infrastructure hygiene, not billing levers.
 
 ## Design rationale
 
@@ -92,9 +92,9 @@ Notes:
 
 ## `/health` policy
 
-`GET /health` has no application-layer rate limit. The endpoint is cheap, idempotent, and does not consume model compute. When called without a valid bearer it returns a minimal payload (status + voices); when called with a valid bearer it returns the authenticated detail payload (engines, queue depth, uptime, memory, version).
+`GET /health` carries a per-IP application-layer rate limit (`PER_IP_HEALTH_RATE_LIMIT`, default 60/min/IP, F14) that runs BEFORE auth so token-spray against the SQLite-serialized key lookup is throttled at the IP layer regardless of bearer validity. When called without a valid bearer it returns a minimal payload (status + voices); when called with a valid bearer it returns the authenticated detail payload (engines, queue depth, uptime, memory, version).
 
-**Unauthenticated probe protection is the reverse proxy's job.** Caddy is expected to apply a loose IP-based rate limit on `/health` so that unauthenticated spray with shape-valid-random bearers (`cmdr_live_` + 43 valid base64url chars) cannot serialize on the single SQLite connection and starve CLI mutations. The app-layer `verify_api_key` shape check blocks trivially malformed tokens before the DB lookup, but it does not bound request rate — that is an infrastructure concern and lives in `deploy/caddy/Caddyfile`.
+**Defense in depth.** The app-layer `verify_api_key` shape check blocks trivially malformed tokens before any DB lookup, and the per-IP gate bounds request rate. Caddy-level IP hygiene remains optional extra hardening in `deploy/caddy/Caddyfile`.
 
 ## Operator surface
 
@@ -106,7 +106,7 @@ The per-key RPM is set at issuance and mutated through the `comadre-keys` CLI:
 | Change the cap after issuance | `comadre-keys update-key <key-prefix> --rpm <n>` |
 | Retire a key | `comadre-keys revoke-key <key-prefix> --reason "..."` |
 
-`--rpm` is validated at 1..10 000 by the CLI. Every `comadre-keys` mutation touches a sentinel file at `{KEY_REGISTRY_DB_PATH}.invalidate`; the running API stats this sentinel on each cache read and flushes its `AuthCache` the moment mtime advances. A revoked key stops authenticating on the very next request — no 60-second TTL window. `rotate-key` preserves the bucket; `revoke-key` removes the auth path, which makes the bucket irrelevant.
+`--rpm` is validated at 1..10 000 by the CLI. Every `comadre-keys` mutation writes a monotonic counter into the sentinel file at `{KEY_REGISTRY_DB_PATH}.invalidate`; each API replica reads the sentinel content on every cache read and flushes its `AuthCache` the moment the counter advances (F17 content-based signaling — immune to coarse-mtime filesystems). A revoked key stops authenticating on the very next request — the 60-second TTL is only a fallback for a degraded sentinel path. `rotate-key` preserves the bucket; `revoke-key` removes the auth path, which makes the bucket irrelevant.
 
 ## Bucket persistence
 
@@ -195,5 +195,5 @@ The `aggregated across N replicas` note is present when `N > 1`; single-replica 
 ## See also
 
 - [monetization.md](monetization.md) — how `rate_limit_rpm` fits into customer tiers and billing.
-- [configuration-reference.md](configuration-reference.md) — environment variables (no rate-limit env vars by design).
+- [configuration-reference.md](configuration-reference.md) — environment variables (`PER_IP_*_RATE_LIMIT` gates; per-key RPM has no env var by design).
 - [deployment-guide.md](deployment-guide.md) — scaling section with per-replica bucket caveat in context.

@@ -18,7 +18,7 @@ The registry lives at `KEY_REGISTRY_DB_PATH` (default `/var/lib/comadre/registry
 ## Issuing a key
 
 ```bash
-comadre-keys create-customer --name "Acme" --email ops@acme.example --tax-id 11144477735
+comadre-keys create-customer --name "Acme" --email ops@acme.example --cpf 11144477735
 # → prints cust_<ulid>
 comadre-keys issue-key \
   --customer cust_<ulid> \
@@ -27,7 +27,7 @@ comadre-keys issue-key \
   --price 149
 ```
 
-The plaintext (a `cmdr_live_<random>` token) is rendered once on stdout and never again. `--rpm` must be in the range `1..10 000` (cap enforced by the CLI). For bundled customers where no per-key invoice applies, use `--billing-mode complimentary` and omit `--price`.
+The plaintext (a `cmdr_live_<random>` token) is rendered once on stdout and never again. `--rpm` must be in the range `1..10 000` (cap enforced by the CLI). For bundled customers where no per-key invoice applies, use `--billing-mode complimentary` and omit `--price`. Use `--cnpj` instead of `--cpf` for legal entities — the two are mutually exclusive and exactly one is required.
 
 ## Per-key rate limiting
 
@@ -36,7 +36,7 @@ The plaintext (a `cmdr_live_<random>` token) is rendered once on stdout and neve
 - **Algorithm**: sliding-window over 1 minute, `limits.aio.strategies.MovingWindowRateLimiter` with in-memory storage.
 - **Bucket identity**: `key:<key_id>` — the registry's ULID-based `key_id`, not the plaintext and not the customer_id. Two keys for the same customer each get their own bucket.
 - **Rotation stability**: `comadre-keys rotate-key` swaps the plaintext but preserves `key_id`, so the bucket counter carries over. Rotation is not a rate-limit reset.
-- **No per-IP bucket**: the application layer does not rate-limit by IP. Reverse-proxy-level hygiene (connection limits, IP blocks) is Caddy's job.
+- **Per-IP pre-auth gates, not per-IP business caps.** Two env-tuned gates bound abuse before authentication: `PER_IP_SPEECH_RATE_LIMIT` (default 600/min/IP) on speech + voices POSTs and `PER_IP_HEALTH_RATE_LIMIT` (default 60/min/IP) on `/health`. They are hygiene levers, not billing: a customer's purchased tier is always the per-key `rate_limit_rpm`. Reverse-proxy-level IP blocking remains Caddy territory.
 
 **Multi-replica caveat.** Storage is per-replica in-memory. If `compose.yaml` runs `replicas: N > 1`, effective RPM for a customer is `N × rate_limit_rpm` (each replica enforces the limit independently). The shipped default is `replicas: 1`, so this is dormant today — raise it deliberately and size customer `rpm` values accordingly. The full trade-off is documented in [rate-limiting.md](rate-limiting.md).
 
@@ -77,18 +77,18 @@ Content-Type: application/json
 | Audit a customer or key | `comadre-keys show <cust_id-or-prefix>` | Detail panel plus the tail of the audit log for that target. |
 | Reconstruct historical revenue | `comadre-keys revenue --month YYYY-MM --as-of YYYY-MM-DD` | Replays the audit log up to `--as-of` (in `BILLING_TIMEZONE`) to reproduce status / `paid_until` / `price_monthly` as they stood that day. Validates `earliest_audit_row.date ≤ as_of ≤ today`. |
 
-**Auth cache and synchronous invalidation.** The FastAPI process caches authenticated `AuthPayload` objects (60-second TTL ceiling) keyed by the token hash. Every `comadre-keys` mutation (`update-key`, `revoke-key`, `rotate-key`) touches a sentinel file at `{KEY_REGISTRY_DB_PATH}.invalidate`; the API stats this sentinel on every cache read and flushes immediately when mtime advances. A revoked key stops authenticating on the very next request. The TTL remains a safety net for scenarios where the sentinel cannot be observed (e.g. registry file moved, volume remount).
+**Auth cache and synchronous invalidation.** The FastAPI process caches authenticated `AuthPayload` objects (60-second TTL ceiling) keyed by the token hash. Every `comadre-keys` mutation (`update-key`, `revoke-key`, `rotate-key`) writes a monotonic counter into the sentinel file at `{KEY_REGISTRY_DB_PATH}.invalidate`; each API replica reads that content on every cache read and flushes immediately when the counter advanced. A revoked key stops authenticating on the very next request. The TTL remains a safety net for scenarios where the sentinel cannot be observed (e.g. registry file moved, volume remount).
 
 ## What is explicitly out of scope
 
-- **No per-IP fallback.** The application does not rate-limit by source IP. If you need blanket IP hygiene, configure it in Caddy.
+- **No per-IP business caps.** The per-IP gates are fixed-rate abuse bounds, not purchasable tiers — you cannot sell an IP-based plan. If you need blanket IP hygiene beyond them, configure it in Caddy.
 - **No single-key environment-variable mode.** Authentication is registry-only. Every bearer token must correspond to an active row in the SQLite registry.
 - **No global on/off toggle.** The registry is always authoritative. Issuing a `complimentary` key with a high `rate_limit_rpm` is the way to provision a bypass-style tier.
-- **No app-layer `/health` rate limit.** `GET /health` is cheap and idempotent; it returns authenticated-state detail only when a valid bearer is presented.
+- **No per-IP bypass of auth.** `GET /health`'s per-IP gate runs before auth; it never grants unauthenticated access to the detail payload.
 
 ## LGPD Operator Obligations
 
-Comadre 3.1.9 processes personal data of Brazilian customers — name, email, encrypted CPF / CNPJ, and (v3) **stored voice clones, which are biometric personal data** — on your behalf. Under **Lei Geral de Proteção de Dados Pessoais** (Lei 13.709/2018, "LGPD"), **you are the data controller** (Art. 5 VI); Comadre is a software tool. This section is your operator handbook: it enumerates the obligations you carry under LGPD, names the already-shipped Comadre primitive that discharges each one, and provides the runbook you fire on a breach.
+Comadre 3.1.10 processes personal data of Brazilian customers — name, email, encrypted CPF / CNPJ, and (v3) **stored voice clones, which are biometric personal data** — on your behalf. Under **Lei Geral de Proteção de Dados Pessoais** (Lei 13.709/2018, "LGPD"), **you are the data controller** (Art. 5 VI); Comadre is a software tool. This section is your operator handbook: it enumerates the obligations you carry under LGPD, names the already-shipped Comadre primitive that discharges each one, and provides the runbook you fire on a breach.
 
 The legal basis for processing is *"execução de contrato"* (Art. 7 V) — you collect the data exclusively to execute the API-access subscription. No secondary use, no data sharing, no profiling. The retention period is bounded by the commercial relationship plus the Brazilian commercial-law minimum (typically 5 years for fiscal records). Deletion is operator-driven via `comadre-keys delete-customer --hard`, never automatic.
 
@@ -144,6 +144,7 @@ comadre-keys export-customer cust_01HG7... --format yaml > /tmp/customer-export.
 
 - Customer: `id`, `name`, `email`, decrypted `tax_id` (formatted for the kind), `tax_id_kind` (`cpf` or `cnpj`), `notes`, `registered_at`.
 - Each associated key (zero or more): `key_prefix`, `status`, `billing_mode`, `created_at`.
+- Stored voice clones owned by the customer: `voices` array with `voice`, `display_name`, `created_at` (biometric personal data under LGPD — see §Voice clones above).
 
 **Explicit exclusions.** The export does **not** include:
 
@@ -485,7 +486,7 @@ Pre-fill these roles **at deployment time** so the incident-day operator has nam
 
 The block below is a **structural starting point** for the LGPD section of your own privacy policy. Adapt every placeholder; have your counsel review the final text before publishing it on your terms-of-service page. **This template is not legal advice.**
 
-> **Scope of this template.** Drafted for the assumed Comadre 3.1.9 customer profile — Brazilian legal entities (CNPJ-bearing) and natural persons of legal age (CPF-bearing) entering an API-subscription contract. **It does not cover Art. 14 (children and adolescents).** If your customer base may include minors — even as ancillary end-users behind a contracting entity — consult counsel for an Art. 14 addendum (parental consent flow, separate retention rules, narrower processing scope). Comadre's data model has no field that surfaces a minor, but the operator's deployment context determines applicability.
+> **Scope of this template.** Drafted for the assumed Comadre 3.1.10 customer profile — Brazilian legal entities (CNPJ-bearing) and natural persons of legal age (CPF-bearing) entering an API-subscription contract. **It does not cover Art. 14 (children and adolescents).** If your customer base may include minors — even as ancillary end-users behind a contracting entity — consult counsel for an Art. 14 addendum (parental consent flow, separate retention rules, narrower processing scope). Comadre's data model has no field that surfaces a minor, but the operator's deployment context determines applicability.
 
 ```text
 — Português —

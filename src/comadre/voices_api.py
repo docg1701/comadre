@@ -1,6 +1,6 @@
 """Voice-clone endpoints — POST/GET/DELETE /v1/voices.
 
-Contract: docs/pocket-tts-v3-api-spec.md sections 2.1-2.3. HTTP concerns
+Contract: docs/api-reference.md §3.2-3.4. HTTP concerns
 only — voice validation/encoding/storage live in service.py (VoiceRegistry)
 and voice_storage.py.
 """
