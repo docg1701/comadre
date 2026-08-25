@@ -5,6 +5,15 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.13] — 2026-08-25
+
+### Fixed
+
+- **Remove dead helper** — `validate_single_line` in `keys/cli/_errors.py`
+  added in 3.1.12 had 0 callers; removed (−26 lines). Was YAGNI: 3 CLI
+  single-line flags exist but wiring was deferred to avoid message drift;
+  helper will be re-added when a 4th caller justifies it.
+
 ## [3.1.12] — 2026-08-25
 
 ### Changed
@@ -12,16 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Ponytail audit cleanup (round 8)** — dedupe cron-marker I/O in
   `keys/health.py` (`_read_marker_parsed` helper — single exists→read→parse
   ladder for `Cron` + `Backup cron`, Backup adds only its `is_file()` +
-  `retention_days` checks), simplify `_last_activity_ago` in
+  `retention_days` checks) and simplify `_last_activity_ago` in
   `keys/cli/output.py` via the shared `timeutil.parse_iso_utc` helper
-  (drops hand-rolled `replace("Z")` + `fromisoformat`), and add
-  `validate_single_line` to `keys/cli/_errors.py` as shared ladder for
-  future single-line flags (ponytail: 10+ CLI text flags, extract when a
-  4th caller appears). Net −30 lines, zero behavior change on valid
-  input. Large-file splits (`db.py` 2383 lines, `service.py` 1004 lines,
-  `customers.py` 1510 lines) deferred — splitting increases file count
-  vs ponytail "fewest files possible"; retained with module-boundary
-  contract.
+  (drops hand-rolled `replace("Z")` + `fromisoformat`). Net −15 lines,
+  zero behavior change on valid input. Large-file splits (`db.py` 2383
+  lines, `service.py` 1004 lines, `customers.py` 1510 lines) deferred —
+  splitting increases file count vs ponytail "fewest files possible";
+  retained with module-boundary contract.
 - **Docs version sync** — bump README badge and 6 doc headers from
   3.1.11 → 3.1.12.
 
