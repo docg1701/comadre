@@ -1,4 +1,4 @@
-# Comadre API Reference (v3.1.13)
+# Comadre API Reference (v3.1.14)
 
 Engine: kyutai-labs pocket-tts 2.1.0, language `portuguese` (sole engine).
 
@@ -66,8 +66,7 @@ Form fields:
 | `persist` | bool | no | default `false`; values `true/false/1/0` |
 
 Duration rules: minimum **3 s** (reject below), recommended **5-20 s**,
-hard maximum **30 s** (server truncates at 30 s — the library's
-`truncate=True` behavior).
+hard maximum **30 s** (reject above — no truncation).
 
 201 response:
 

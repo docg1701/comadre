@@ -58,6 +58,7 @@ async def generate_speech(
     # Registry key id for ephemeral-clone resolution (set by verify_api_key).
     auth_payload = getattr(request.state, "auth_payload", None)
     key_id: str | None = getattr(auth_payload, "key_id", None)
+    customer_id: str | None = getattr(auth_payload, "customer_id", None)
 
     # Determine media type
     media_type = {
@@ -86,6 +87,7 @@ async def generate_speech(
                         speed=body.speed,
                         raw=body.raw,
                         key_id=key_id,
+                        customer_id=customer_id,
                         temperature=body.temperature,
                         seed=body.seed,
                     ),

@@ -103,7 +103,7 @@ Release flow: bump versions + `## [X.Y.Z]` in `CHANGELOG.md` → commit → push
 - `cd deploy/ansible` first (`ansible.cfg` sets inventory).
 - Env before `bootstrap`/`backup`/`restore`/`health` + `HF_TOKEN` first v3 boot:
   `export COMADRE_KEY_REGISTRY_ENCRYPTION_KEY="<fernet>" COMADRE_BACKUP_PASSPHRASE="<pass>" [HF_TOKEN="<tok>"]`
-- SSH: always `-e "ansible_password=PWD" -e "ansible_become_password=PWD"` (health UFW probe needs sudo even though unprivileged).
+- SSH: passwordless — `ssh galvani@10.10.10.207` (ed25519 key installed). Playbooks still need `-e "ansible_become_password=PWD"` (health UFW probe needs sudo even though unprivileged).
 - Fresh order: `cleanup.yml` (optional) → `bootstrap.yml` (≥3600s timeout) → `deploy-voices.yml` → `health.yml` → `backup-keys.yml`.
 - `deploy-models.yml` fail with empty `pocket_*_local` is intentional.
 - Caddy: `servers { header ... }` invalid in v2 — don't re-add.

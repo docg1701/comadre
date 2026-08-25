@@ -182,6 +182,7 @@ class PocketEngine:
         *,
         raw: bool = False,
         key_id: str | None = None,
+        customer_id: str | None = None,
         temperature: float | None = None,
         seed: int | None = None,
     ) -> bytes:
@@ -199,6 +200,8 @@ class PocketEngine:
                 noise/tempo) — still encodes to the requested format.
             key_id: Registry key id, used to resolve the callers
                 ephemeral clones.
+            customer_id: Registry customer id — with ``key_id`` it lets
+                404 hints include the caller's own stored clones.
             temperature: Sampling temperature override (None = model
                 default). Lower values sound more consistent, higher more
                 expressive. Generation runs under the FIFO lock, so the
@@ -223,8 +226,8 @@ class PocketEngine:
 
         if not text.strip():
             raise InvalidRequestError(
-                message="Text must not be empty",
-                hint="Provide non-empty text for speech synthesis.",
+                message="Field 'input' must not be empty",
+                hint="Provide a non-empty input.",
             )
 
         if len(text) > self.CHAR_LIMIT:
@@ -245,7 +248,7 @@ class PocketEngine:
             )
 
         normalized = normalize_text(text)
-        state = self._registry.resolve(name, key_id=key_id)
+        state = self._registry.resolve(name, key_id=key_id, customer_id=customer_id)
         logger.info(
             "Generating speech for %d characters (voice=%s)", len(text), voice_name
         )
@@ -692,6 +695,15 @@ class VoiceRegistry:
         if entry.state_path.is_file() and self._state_matches_model(entry):
             state = self._engine.get_state_for_audio_prompt(entry.state_path)
             return state
+        if entry.state_path == entry.ref_path:
+            # Baked embedding (virtual rafael): there is no reference audio to
+            # re-encode — regenerating would try to audio-decode the state file
+            # itself. Fail loud instead; deploy-models.yml re-provisions it.
+            raise GenerationError(
+                f"Baked voice {entry.name!r} predates the loaded model"
+                " (model_hash changed) and has no reference audio to regenerate"
+                " from — re-provision it via deploy-models.yml."
+            )
         startup_logger.info(
             "Materializing voice state for %r from %s",
             entry.name,
@@ -739,7 +751,9 @@ class VoiceRegistry:
         # Deleted-on-disk entries must vanish from the live map too.
         self._files = files
 
-    def resolve(self, name: str, *, key_id: str | None = None) -> dict[str, Any]:
+    def resolve(
+        self, name: str, *, key_id: str | None = None, customer_id: str | None = None
+    ) -> dict[str, Any]:
         """Resolve a bare voice name to a model state (LRU-cached)."""
         if key_id is not None:
             ephemeral = self._ephemeral.get(key_id, {}).get(name)
@@ -754,7 +768,10 @@ class VoiceRegistry:
             entry = self._files.get(name)
         if entry is None:
             raise VoiceNotFoundError(
-                voice=f"{_VOICE_PREFIX}{name}", available=self.available_voices()
+                voice=f"{_VOICE_PREFIX}{name}",
+                available=self._available_for(
+                    key_id=key_id or "", customer_id=customer_id or ""
+                ),
             )
         state = self._loaded.pop(name, None)
         if state is None:
@@ -904,8 +921,15 @@ class VoiceRegistry:
         ephemeral = self._ephemeral.get(key_id, {}).pop(name, None)
         if ephemeral is None:
             raise VoiceNotFoundError(
-                voice=f"{_VOICE_PREFIX}{name}", available=self.available_voices()
+                voice=f"{_VOICE_PREFIX}{name}",
+                available=self._available_for(key_id=key_id, customer_id=customer_id),
             )
+
+    def _available_for(self, key_id: str, customer_id: str) -> list[str]:
+        """Full usable-voice list for 404 hints: operator catalog plus the
+        caller's own stored and ephemeral clones (list_for semantics).
+        """
+        return [v.voice for v in self.list_for(key_id=key_id, customer_id=customer_id)]
 
     def list_for(self, *, key_id: str, customer_id: str) -> list[VoiceInfo]:
         """Operator voices + the callers stored and ephemeral clones.

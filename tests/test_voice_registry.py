@@ -436,3 +436,61 @@ def test_persisted_reference_is_real_riff_wav(
     # exactly what pocket_tts.audio_read requires for .wav suffixes
     with wave.open(str(ref), "rb") as wf:
         assert wf.getframerate() == 24000
+
+
+def test_baked_voice_stale_model_hash_fails_loud(
+    registry_env: tuple[VoiceRegistry, Path, Settings],
+) -> None:
+    """A baked embedding (state_path == ref_path, e.g. virtual rafael) whose
+    model_hash predates the loaded model must fail loud instead of entering
+    the regen branch — regenerating would audio-decode the state file itself
+    (audit 2026-08-25 F2)."""
+    from comadre.exceptions import GenerationError
+
+    registry, _pocket_dir, settings = registry_env
+    baked = Path(settings.pocket_default_voice_path)
+    baked.parent.mkdir(parents=True, exist_ok=True)
+    baked.write_bytes(b"fake-embedding")
+    registry2 = VoiceRegistry(
+        registry._engine,
+        baked.parent.parent,
+        settings,  # type: ignore[arg-type]
+    )
+    assert "pocket/rafael" in registry2.available_voices()
+    registry2._model_hash = "stale-hash"  # simulate a model bump without re-bake
+    with pytest.raises(GenerationError, match="re-provision"):
+        registry2.resolve("rafael")
+
+
+def test_404_hint_lists_own_clones(
+    registry_env: tuple[VoiceRegistry, Path, Settings],
+) -> None:
+    """VoiceNotFoundError hints include the caller's own stored and ephemeral
+    clones, not just the operator catalog (audit 2026-08-25 F4)."""
+    from datetime import UTC
+
+    from comadre.service import EphemeralVoice
+
+    registry, pocket_dir, _ = registry_env
+    clone = "u_01J2K4M6N8P0Q2R4S6T5V7W8X9"
+    _add_wav(pocket_dir, clone, meta={"customer_id": "cust_1"})
+    now = datetime.now(UTC)
+    registry._ephemeral["k1"] = {
+        "u_EPH": EphemeralVoice(
+            key_id="k1",
+            customer_id="cust_1",
+            display_name=None,
+            state={"flow": {}},
+            created_at=now,
+            last_used_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+    }
+    with pytest.raises(VoiceNotFoundError) as stored_miss:
+        registry.resolve("missing", key_id="k1", customer_id="cust_1")
+    assert f"pocket/{clone}" in stored_miss.value.hint
+    assert "pocket/u_EPH" in stored_miss.value.hint
+
+    with pytest.raises(VoiceNotFoundError) as delete_miss:
+        registry.delete("u_other", key_id="k1", customer_id="cust_1")
+    assert f"pocket/{clone}" in delete_miss.value.hint

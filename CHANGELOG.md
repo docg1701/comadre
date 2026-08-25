@@ -5,6 +5,41 @@ All notable changes to Comadre are tracked here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.14] — 2026-08-25
+
+### Fixed
+
+- **CLI JSON output no longer polluted by component WARNs** —
+  `keys/cli/__init__` routed only the `keys.cli` logger to stderr, but
+  `get_logger()` attaches a per-component stdout handler: any WARN from
+  `keys.db`/`keys.auth` (e.g. chmod drift) prepended a log line to stdout and
+  broke `--format json | jq` — including `health --format json`, the
+  monitoring surface. All CLI-reachable components are now pre-routed to
+  stderr before command modules load (audit 2026-08-25 F1).
+- **Baked-voice regen guard** — a baked embedding whose `state_path ==
+  ref_path` (virtual `rafael`) with a stale `model_hash` now fails loud with
+  a re-provision message instead of entering the regeneration branch, which
+  would try to audio-decode the `.safetensors` itself (audit F2). Operator
+  WAV drops are unaffected — their state path is always a separate
+  `.safetensors`.
+- **404 voice hints include the caller's own clones** — resolve/delete misses
+  listed only the operator catalog; the hint now carries operator voices +
+  the caller's own stored and ephemeral clones (`resolve()` gained an optional
+  `customer_id`, threaded from the auth payload) (audit F4).
+- **Consistent empty-input error** — whitespace-only input now returns the
+  same envelope as empty input (`Field 'input' must not be empty`) instead of
+  a divergent wording (audit F7).
+- **Docs** — api-reference §3.2 prose claimed uploads >30 s are truncated;
+  they are rejected with 400 (the error table was right). Unmasked CPF/CNPJ
+  digit runs documented as read-as-cardinal (mask tax IDs) in the
+  preprocessing module docstring (audit F3/F5).
+
+### Added
+
+- **Audit report** — full post-ponytail-rounds audit (static + live API +
+  all 21 CLI verbs on a DB copy + DSP audio verification): `docs/audits/
+audit-2026-08-25.md`. Regression tests for each code fix.
+
 ## [3.1.13] — 2026-08-25
 
 ### Fixed

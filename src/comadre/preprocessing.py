@@ -1,4 +1,11 @@
-"""pt-BR text normalization (currency, dates, times, phones, numbers)."""
+"""pt-BR text normalization (currency, dates, times, phones, numbers).
+
+Contract note: phone digit-grouping covers MASKED pt-BR forms only
+("(11) 99999-8888", "11999998888" etc.). Longer unmasked runs (raw CPF
+11 digits, CNPJ 14) intentionally fall through to the integer expansion —
+senders must mask tax-ID digit strings or they will be read as cardinal
+numbers.
+"""
 
 from __future__ import annotations
 
