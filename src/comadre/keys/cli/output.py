@@ -40,6 +40,7 @@ from comadre.keys.models import (
     Last24hStats,
     RevenueReport,
 )
+from comadre.timeutil import parse_iso_utc as _parse_iso_utc
 
 _stdout_console: Console | None = None
 _stderr_console: Console | None = None
@@ -886,20 +887,12 @@ def render_last_24h_stats(stats: Last24hStats | None) -> None:
 
 
 def _last_activity_ago(iso_ts: str) -> str:
-    """Return "Xs ago" from an ISO 8601 UTC timestamp.
-
-    Robust against coarse ISO forms (trailing ``Z``, no fractional seconds).
-    On parse failure returns the raw timestamp — the renderer would rather
-    surface a strange string than a misleading "X seconds ago".
-    """
-    try:
-        iso_clean = iso_ts.replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(iso_clean)
-        now = datetime.now(UTC)
-        delta_seconds = int((now - parsed).total_seconds())
-        return format_seconds_ago(delta_seconds)
-    except (ValueError, TypeError):
+    """Return "Xs ago" from an ISO 8601 UTC timestamp."""
+    parsed = _parse_iso_utc(iso_ts)
+    if parsed is None:
         return iso_ts
+    delta = int((datetime.now(UTC) - parsed).total_seconds())
+    return format_seconds_ago(delta)
 
 
 def render_show_json(

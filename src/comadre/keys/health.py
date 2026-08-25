@@ -340,10 +340,13 @@ def _marker_parse(text: str) -> dict[str, str] | None:
     return result
 
 
-def _check_cron_marker(marker_path: Path) -> HealthCheck:
+def _read_marker_parsed(
+    marker_path: Path, *, label: str
+) -> tuple[dict[str, str] | None, HealthCheck | None]:
+    """Read + parse a marker; return (parsed, None) or (None, fail HealthCheck)."""
     if not marker_path.exists():
-        return HealthCheck(
-            label="Cron",
+        return None, HealthCheck(
+            label=label,
             value="Not installed",
             severity="warn",
             detail="run ansible-playbook bootstrap.yml",
@@ -352,8 +355,8 @@ def _check_cron_marker(marker_path: Path) -> HealthCheck:
     try:
         text = marker_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return HealthCheck(
-            label="Cron",
+        return None, HealthCheck(
+            label=label,
             value="Marker present but unparseable",
             severity="warn",
             detail="re-run ansible-playbook bootstrap.yml",
@@ -361,13 +364,21 @@ def _check_cron_marker(marker_path: Path) -> HealthCheck:
         )
     parsed = _marker_parse(text)
     if parsed is None:
-        return HealthCheck(
-            label="Cron",
+        return None, HealthCheck(
+            label=label,
             value="Marker present but unparseable",
             severity="warn",
             detail="re-run ansible-playbook bootstrap.yml",
             data={"installed": True, "parsed": False},
         )
+    return parsed, None
+
+
+def _check_cron_marker(marker_path: Path) -> HealthCheck:
+    parsed, err = _read_marker_parsed(marker_path, label="Cron")
+    if err is not None:
+        return err
+    assert parsed is not None  # err is None → parsed is not None
     schedule = parsed.get("schedule", "").strip()
     cron_tz = parsed.get("cron_tz", "").strip()
     if not schedule or not cron_tz:
@@ -488,54 +499,26 @@ def _check_backup_cron_marker(marker_path: Path) -> HealthCheck:
       cron_tz=<IANA-timezone>
       retention_days=<positive int>
 
-    Shares parsing with ``_check_cron_marker`` via ``_marker_parse`` and
-    mirrors its warn-on-missing / warn-on-unparseable shape. Diverges in
-    three ways:
-      - adds an ``is_file()`` guard (a directory / symlink / FIFO at the
-        marker path would otherwise route to the generic "unparseable"
-        branch with a misleading "re-run bootstrap.yml" hint);
-      - validates ``retention_days`` is a positive integer (a string like
-        ``banana`` or ``-7`` must not render as green
-        ``retention=bananad`` / ``retention=-7d``);
-      - surfaces ``retention_days`` as an int in the rendered value AND
-        in the JSON ``data`` (operators reading the health report need
-        the archive-retention horizon alongside schedule + TZ).
+    Diverges from Cron marker by adding an ``is_file()`` guard and
+    ``retention_days`` positive-int validation.
     """
-    if not marker_path.exists():
-        return HealthCheck(
-            label="Backup cron",
-            value="Not installed",
-            severity="warn",
-            detail="run ansible-playbook bootstrap.yml",
-            data={"installed": False},
-        )
-    if not marker_path.is_file():
-        return HealthCheck(
-            label="Backup cron",
-            value="Marker path is not a regular file",
-            severity="warn",
-            detail="remove it and re-run ansible-playbook bootstrap.yml",
-            data={"installed": True, "parsed": False, "regular_file": False},
-        )
-    try:
-        text = marker_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return HealthCheck(
-            label="Backup cron",
-            value="Marker present but unparseable",
-            severity="warn",
-            detail="re-run ansible-playbook bootstrap.yml",
-            data={"installed": True, "parsed": False},
-        )
-    parsed = _marker_parse(text)
-    if parsed is None:
-        return HealthCheck(
-            label="Backup cron",
-            value="Marker present but unparseable",
-            severity="warn",
-            detail="re-run ansible-playbook bootstrap.yml",
-            data={"installed": True, "parsed": False},
-        )
+    parsed, err = _read_marker_parsed(marker_path, label="Backup cron")
+    if err is not None:
+        # _read_marker_parsed covers exists + read + parse; Backup cron
+        # adds an is_file() guard that Cron doesn't need (directory at
+        # marker path would otherwise show generic "unparseable").
+        if err.value == "Not installed":
+            return err
+        if not marker_path.is_file():
+            return HealthCheck(
+                label="Backup cron",
+                value="Marker path is not a regular file",
+                severity="warn",
+                detail="remove it and re-run ansible-playbook bootstrap.yml",
+                data={"installed": True, "parsed": False, "regular_file": False},
+            )
+        return err
+    assert parsed is not None
     schedule = parsed.get("schedule", "").strip()
     cron_tz = parsed.get("cron_tz", "").strip()
     retention = parsed.get("retention_days", "").strip()

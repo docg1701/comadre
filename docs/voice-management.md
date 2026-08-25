@@ -1,4 +1,4 @@
-# Voice Management (v3.1.10)
+# Voice Management (v3.1.12)
 
 Single voice format: `pocket/<name>`. Voices live in `/voices/pocket/`
 (the `comadre-voices` volume, mounted `rw` so the app can write uploads).

@@ -1,4 +1,4 @@
-# Comadre API Architecture (v3.1.10)
+# Comadre API Architecture (v3.1.12)
 
 Single-engine design: kyutai-labs/pocket-tts 2.1.0 (language `portuguese`)
 with native voice cloning. The v2 dual-engine (Kokoro + Qwen3) architecture
